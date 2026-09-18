@@ -246,9 +246,9 @@ public sealed partial class MapRuntimeSettingsRulesTests
         try
         {
             var path = Path.Combine(root, "settings.json");
-            var json = """
+            var json = $$"""
             {
-              "SchemaVersion": 16,
+              "SchemaVersion": {{MapRuntimeSettings.CurrentSchemaVersion}},
               "OverlayAlignmentMode": 1,
               "ShowOverlayStatus": true
             }
