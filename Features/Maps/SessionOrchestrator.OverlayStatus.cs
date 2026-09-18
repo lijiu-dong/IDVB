@@ -35,6 +35,41 @@ public sealed partial class SessionOrchestrator
             gameBounds,
             gameWindowHandle);
     }
+    private readonly HashSet<string> _notifiedVpsg3DegradationKeys = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// 当 VPSG 3.0 快速对齐发生特定非算法级失效（缺少预制线图或核心服务失效）时，触发浮层提示并进行会话级防抖。
+    /// </summary>
+    private void NotifyVpsg3DegradationIfNeeded(
+        Guid mapId,
+        string floorKey,
+        IDVBuff.Core.Diagnostics.IdvbStatus? status)
+    {
+        if (!Vpsg3DegradationNotificationPolicy.TryClassifyNotification(
+                status,
+                out var isWarning,
+                out var message,
+                out var category))
+        {
+            return;
+        }
+
+        var debounceKey = $"{mapId}:{floorKey}:{category}";
+        lock (_notifiedVpsg3DegradationKeys)
+        {
+            if (!_notifiedVpsg3DegradationKeys.Add(debounceKey))
+                return;
+        }
+
+        if (isWarning)
+        {
+            IDVBuff.Features.Notifications.OverlayNotificationCenter.Warning(message!);
+        }
+        else
+        {
+            IDVBuff.Features.Notifications.OverlayNotificationCenter.Error(message!);
+        }
+    }
 }
 /*
  * 文件职责：SessionOrchestrator.OverlayStatus。

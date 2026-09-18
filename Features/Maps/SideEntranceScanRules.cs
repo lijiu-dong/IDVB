@@ -4,7 +4,6 @@ namespace IDVBuff.Features.Maps;
 
 public enum SideEntranceFeatureSourceMode
 {
-    RecognitionImage,
     PrebuiltStructureLine
 }
 
@@ -15,13 +14,15 @@ public enum SideEntranceFeatureSourceMode
 /// </summary>
 public sealed class SideEntranceScanConfig
 {
+    /// <summary>扫描最大允许耗时（毫秒）。超过此耗时扫描直接失败。</summary>
+    public double MaximumScanDurationMs { get; set; } = 1000d;
     /// <summary>是否将侧门特征裁剪中心向内挤压，以保证裁剪框完全位于识别图内。</summary>
-    public bool ClampFeatureToBounds { get; set; } = false;
+    public bool ClampFeatureToBounds { get; set; } = true;
     /// <summary>侧门特征宽度和高度相对识别图宽高的比例。</summary>
-    public double FeatureRegionRatio { get; set; } = 0.25d;
+    public double FeatureRegionRatio { get; set; } = 0.40d;
     /// <summary>生成侧门特征时首选的数据源模式。</summary>
     public SideEntranceFeatureSourceMode FeatureSourceMode { get; set; } =
-        SideEntranceFeatureSourceMode.RecognitionImage;
+        SideEntranceFeatureSourceMode.PrebuiltStructureLine;
     /// <summary>粗搜索的相对步长；决定缩放网格疏密。0.06 → 约 24 档。</summary>
     public double CoarseScaleStep { get; set; } = 0.06d;
     /// <summary>细化阶段在粗峰值两侧各取的档数。</summary>
@@ -61,12 +62,14 @@ internal static class SideEntranceScanRules
 {
     private static SideEntranceScanConfig _config = new();
 
+    public static double MaximumScanDurationMs =>
+        Math.Max(100d, _config.MaximumScanDurationMs);
     public static bool ClampFeatureToBounds => _config.ClampFeatureToBounds;
     public static double FeatureRegionRatio =>
         Math.Clamp(
             double.IsFinite(_config.FeatureRegionRatio)
                 ? _config.FeatureRegionRatio
-                : 0.25d,
+                : 0.40d,
             0.01d,
             1d);
     public static SideEntranceFeatureSourceMode FeatureSourceMode =>

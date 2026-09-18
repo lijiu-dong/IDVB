@@ -119,11 +119,34 @@ public sealed partial class SessionOrchestrator
             }
             initialPostProcess.Complete();
             initialPostProcess = null;
+
+            if (sideSw.ElapsedMilliseconds > SideEntranceScanRules.MaximumScanDurationMs)
+            {
+                failureReason =
+                    $"识别失败：侧门扫描耗时 {sideSw.ElapsedMilliseconds}ms 超过硬性上限 {SideEntranceScanRules.MaximumScanDurationMs:F0}ms";
+                _logCollector.Append(
+                    MapLogCategory.ScanLifecycle,
+                    MapLogLevel.Warning,
+                    failureReason);
+                return;
+            }
+
             var reliable = VerifySideEntranceCandidates(
                 frame,
                 candidates,
                 sideAlignmentTuning,
                 sideTimings);
+
+            if (sideSw.ElapsedMilliseconds > SideEntranceScanRules.MaximumScanDurationMs)
+            {
+                failureReason =
+                    $"识别失败：侧门扫描及结构复核总耗时 {sideSw.ElapsedMilliseconds}ms 超过硬性上限 {SideEntranceScanRules.MaximumScanDurationMs:F0}ms";
+                _logCollector.Append(
+                    MapLogCategory.ScanLifecycle,
+                    MapLogLevel.Warning,
+                    failureReason);
+                return;
+            }
 
             var orderedReliable = SideEntranceCandidateEvidence.OrderVerified(
                     reliable,
@@ -135,6 +158,18 @@ public sealed partial class SessionOrchestrator
                 frame,
                 requireStrictStructureRegistration,
                 out var referenceCandidates);
+
+            if (reliable.Count == 0)
+            {
+                failureReason = $"识别失败：侧门候选均未通过结构配准验证（侧门就绪 {sideScan.ReadyMapCount}/{sideScan.EligibleMapCount}）";
+                _logCollector.Append(
+                    MapLogCategory.ScanLifecycle,
+                    MapLogLevel.Warning,
+                    failureReason);
+                pendingChoices = choices;
+                pendingChoicesReason = failureReason;
+                return;
+            }
 
             // Ambiguity is a valid empty-recognition outcome. Never promote
             // the highest template maximum merely to fill the chooser.

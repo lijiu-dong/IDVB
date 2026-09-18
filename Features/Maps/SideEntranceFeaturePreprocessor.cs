@@ -54,12 +54,12 @@ public sealed class SideEntranceFeaturePreprocessor
     /// Increment when generated feature pixels or their matching semantics change.
     /// Persisted features from another version must be rebuilt before scanning.
     /// </summary>
-    public const string AlgorithmVersion = "4-ratio25";
+    public const string AlgorithmVersion = "6-prebuilt-structure";
 
     /// <summary>
     /// 处理侧门特征。
     /// </summary>
-    /// <param name="recognitionImage">识别图（BGR 或灰度均可）。</param>
+    /// <param name="recognitionImage">预制结构线图（CV_8UC1 二值图，白色结构线，黑色背景）。</param>
     /// <param name="anchorBounds">侧门锚点归一化坐标（相对识别图）。</param>
     /// <param name="featureRadius">目标特征半径（px）。</param>
     /// <returns>预处理结果（调用方负责 Dispose）。</returns>
@@ -82,10 +82,10 @@ public sealed class SideEntranceFeaturePreprocessor
     }
 
     /// <summary>
-    /// 按识别图宽高比例生成侧门特征。宽度和高度分别按比例计算，
-    /// 因此不会把不同宽高比的识别图强行换算成固定像素或固定正方形。
+    /// 按预制结构线图宽高比例生成侧门特征。宽度和高度分别按比例计算，
+    /// 因此不会把不同宽高比的图强行换算成固定像素或固定正方形。
     /// </summary>
-    /// <param name="featureRegionRatio">相对识别图宽高的比例，例如 0.12。</param>
+    /// <param name="featureRegionRatio">相对识别图宽高的比例，例如 0.40。</param>
     /// <param name="clampToBounds">是否将中心向内挤压以保持裁剪框位于图像内。</param>
     public SideEntranceFeatureResult Process(
         Mat recognitionImage,
@@ -105,7 +105,7 @@ public sealed class SideEntranceFeaturePreprocessor
         var imageWidth  = recognitionImage.Width;
         var imageHeight = recognitionImage.Height;
         if (imageWidth < 1 || imageHeight < 1)
-            throw new ArgumentException("识别图尺寸无效。", nameof(recognitionImage));
+            throw new ArgumentException("预制结构线图尺寸无效。", nameof(recognitionImage));
 
         var featureWidth = Math.Max(1, (int)Math.Round(imageWidth * featureRegionRatio));
         var featureHeight = Math.Max(1, (int)Math.Round(imageHeight * featureRegionRatio));
@@ -132,7 +132,7 @@ public sealed class SideEntranceFeaturePreprocessor
         var imageWidth  = recognitionImage.Width;
         var imageHeight = recognitionImage.Height;
         if (imageWidth < 1 || imageHeight < 1)
-            throw new ArgumentException("识别图尺寸无效。", nameof(recognitionImage));
+            throw new ArgumentException("预制结构线图尺寸无效。", nameof(recognitionImage));
 
         // 将归一化锚点中心换算为识别图像素坐标
         var cx = (anchorBounds.X + anchorBounds.Width  / 2d) * imageWidth;
@@ -149,20 +149,27 @@ public sealed class SideEntranceFeaturePreprocessor
         var left = (int)Math.Round(cx - featureWidth / 2d);
         var top  = (int)Math.Round(cy - featureHeight / 2d);
 
-        // 转灰度后裁剪
-        using var gray = new Mat();
+        // 统一保证为单通道 CV_8UC1 二值结构线图（0=背景，255=结构线）
+        using var binary = new Mat();
         if (recognitionImage.Channels() == 1)
-            recognitionImage.CopyTo(gray);
+        {
+            Cv2.Threshold(recognitionImage, binary, 128, 255, ThresholdTypes.Binary);
+        }
         else
+        {
+            using var gray = new Mat();
             Cv2.CvtColor(recognitionImage, gray, ColorConversionCodes.BGR2GRAY);
+            Cv2.Threshold(gray, binary, 128, 255, ThresholdTypes.Binary);
+        }
 
         var imageRect = new Rect(0, 0, imageWidth, imageHeight);
         var requestedRect = new Rect(left, top, featureWidth, featureHeight);
         var clippedRect = requestedRect.Intersect(imageRect);
         using var clipped = clippedRect.Width > 0 && clippedRect.Height > 0
-            ? new Mat(gray, clippedRect).Clone()
+            ? new Mat(binary, clippedRect).Clone()
             : new Mat();
-        var fill = Cv2.Mean(gray).Val0;
+
+        // 纯黑背景填充 (0)，彻底移除旧版平均灰度填充
         var feature = new Mat();
         Cv2.CopyMakeBorder(
             clipped,
@@ -172,7 +179,7 @@ public sealed class SideEntranceFeaturePreprocessor
             Math.Max(0, -requestedRect.X),
             Math.Max(0, requestedRect.Right - imageWidth),
             BorderTypes.Constant,
-            new Scalar(fill));
+            Scalar.All(0));
 
         // Rounding at an image edge can leave one pixel missing from the pad.
         // Normalize the final dimensions without changing the stored center.
@@ -193,13 +200,10 @@ public sealed class SideEntranceFeaturePreprocessor
                 0,
                 Math.Max(0, featureWidth - normalized.Width),
                 BorderTypes.Constant,
-                new Scalar(fill));
+                Scalar.All(0));
         }
 
-        // Every map uses the same side-gate glyph. Keeping that glyph in the
-        // template makes it the strongest (and least discriminating) signal.
-        // Replace only the annotated icon rectangle with the surrounding mean;
-        // the live scan applies the same operation to the detected gate.
+        // 清空门锚点区域（置为纯黑 0，避免门图标或锚点框污染结构线）
         var anchorLeft = (int)Math.Floor(anchorBounds.X * imageWidth) - left;
         var anchorTop = (int)Math.Floor(anchorBounds.Y * imageHeight) - top;
         var anchorWidth = (int)Math.Ceiling(anchorBounds.Width * imageWidth);
@@ -211,9 +215,9 @@ public sealed class SideEntranceFeaturePreprocessor
             Math.Clamp(anchorHeight, 1, Math.Max(1, feature.Height - Math.Clamp(anchorTop, 0, Math.Max(0, feature.Height - 1)))));
         if (iconRect.Width > 0 && iconRect.Height > 0)
         {
-            var mean = Cv2.Mean(feature);
-            Cv2.Rectangle(feature, iconRect, new Scalar(mean.Val0), -1);
+            Cv2.Rectangle(feature, iconRect, Scalar.All(0), -1);
         }
+
         return new SideEntranceFeatureResult(
             feature,
             cx,

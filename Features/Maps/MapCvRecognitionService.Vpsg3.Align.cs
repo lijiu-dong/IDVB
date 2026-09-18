@@ -45,7 +45,7 @@ public sealed partial class MapCvRecognitionService
             status = IdvbStatus.ClientError(
                 IdvbHttpCode.ServiceUnavailable,
                 IdvbSubCode.StructureCvException,
-                "ServiceDisposed",
+                "Vpsg3CoreServiceFailed",
                 "识别服务已释放",
                 stage: "Vpsg3.Precheck");
             return false;
@@ -67,8 +67,8 @@ public sealed partial class MapCvRecognitionService
             status = IdvbStatus.ClientError(
                 IdvbHttpCode.MapNotFound,
                 IdvbSubCode.FloorKeyNotMatched,
-                "Vpsg3KeyNotResolved",
-                $"无法解析 VPSG 3.0 缓存键 · map={map.SequenceNumber}#{floorKey}",
+                "Vpsg3PrebuiltMissing",
+                $"目标楼层缺少可用的预制线图 · map={map.SequenceNumber}#{floorKey}",
                 stage: "Vpsg3.KeyResolution");
             return false;
         }
@@ -93,10 +93,17 @@ public sealed partial class MapCvRecognitionService
                 _ => "索引未就绪"
             };
 
+            var reasonPhrase = indexStatus switch
+            {
+                Vpsg3IndexStatus.Missing => "Vpsg3PrebuiltMissing",
+                Vpsg3IndexStatus.Failed => "Vpsg3CoreServiceFailed",
+                _ => "Vpsg3IndexNotReady"
+            };
+
             status = IdvbStatus.Fallback(
                 IdvbHttpCode.Vpsg3FallbackToLegacy,
                 IdvbSubCode.Vpsg3FallbackIndexNotReady,
-                "Vpsg3IndexNotReady",
+                reasonPhrase,
                 $"VPSG 3.0 快速对齐跳过 · 索引未就绪({indexStatus}: {detailReason}) · map={map.SequenceNumber}#{floorKey}",
                 stage: "Vpsg3.RegistryCheck");
             MapLogCollector.Instance.AppendStatus(

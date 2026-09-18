@@ -235,15 +235,20 @@ public sealed partial class SessionOrchestrator
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     var mapId = locked.Map.Id;
-                    if (_recognition.TryGetMap(mapId) is { } targetMap
-                        && _recognition.TryAlignWithVpsg3(
-                            alignmentFrame,
-                            targetMap,
-                            targetFloorKey,
-                            locked.Result.IdentityConfidence,
-                            out var fastVpsgAttempt))
+                    if (_recognition.TryGetMap(mapId) is { } targetMap)
                     {
-                        return fastVpsgAttempt;
+                        if (_recognition.TryAlignWithVpsg3(
+                                alignmentFrame,
+                                targetMap,
+                                targetFloorKey,
+                                locked.Result.IdentityConfidence,
+                                out var fastVpsgAttempt,
+                                out var tagScanVpsgStatus))
+                        {
+                            return fastVpsgAttempt;
+                        }
+
+                        NotifyVpsg3DegradationIfNeeded(mapId, targetFloorKey, tagScanVpsgStatus);
                     }
 
                     if (!string.Equals(

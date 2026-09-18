@@ -317,6 +317,28 @@ public sealed partial class MapCvRecognitionService
                 Status = fallbackFailureStatus
             };
         }
+        else if (attempt.Recognition is not null && vpsgFallbackCause is not null)
+        {
+            var fallbackSuccessStatus = attempt.Status is { } curStatus
+                ? curStatus with { Cause = vpsgFallbackCause }
+                : IdvbStatus.Ok(
+                    $"楼层特征对齐通过(VPSG降级) · floor={floorKey}",
+                    stage: "LockedFloorFeature.Success") with { Cause = vpsgFallbackCause };
+            attempt = new MapRecognitionAttempt
+            {
+                Diagnostics = attempt.Diagnostics,
+                Recognition = attempt.Recognition,
+                Choices = attempt.Choices,
+                FailureReason = attempt.FailureReason,
+                StructureResult = attempt.StructureResult,
+                GateDetectionResult = attempt.GateDetectionResult,
+                StructureAttempted = attempt.StructureAttempted,
+                StructureAccepted = attempt.StructureAccepted,
+                StructureFailureReason = attempt.StructureFailureReason,
+                SearchStage = attempt.SearchStage,
+                Status = fallbackSuccessStatus
+            };
+        }
 
         return attempt;
     }

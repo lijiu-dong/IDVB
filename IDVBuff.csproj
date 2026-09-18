@@ -30,11 +30,11 @@
         <Product>Identity Vision Bridge</Product>
         <Company>Identity Vision Bridge</Company>
         <!-- Canonical SemVer product identity. The UI adds the conventional v prefix. -->
-        <IDVBProductVersion>1.6.0</IDVBProductVersion>
+        <IDVBProductVersion>1.6.1-preview</IDVBProductVersion>
         <IDVBReleaseLine>b01.6</IDVBReleaseLine>
         <Version>$(IDVBProductVersion)</Version>
-        <AssemblyVersion>1.6.0.0</AssemblyVersion>
-        <FileVersion>1.6.0.0</FileVersion>
+        <AssemblyVersion>1.6.1.0</AssemblyVersion>
+        <FileVersion>1.6.1.0</FileVersion>
         <InformationalVersion>$(IDVBProductVersion)</InformationalVersion>
         <UseSystemDrawing>true</UseSystemDrawing>
         <Configurations>Debug;Release;Test</Configurations>
@@ -93,13 +93,13 @@
         <ProjectReference Include="Plugins\LiveMode\IDVBuff.LiveMode.csproj" />
         <ProjectReference Include="Plugins\CustomPhrases\IDVBuff.CustomPhrases.csproj" />
 
-        <Content Include="Assets\SplashScreen.scale-200.png" />
-        <Content Include="Assets\LockScreenLogo.scale-200.png" />
-        <Content Include="Assets\Square150x150Logo.scale-200.png" />
-        <Content Include="Assets\Square44x44Logo.scale-200.png" />
-        <Content Include="Assets\Square44x44Logo.targetsize-24_altform-unplated.png" />
-        <Content Include="Assets\StoreLogo.png" />
-        <Content Include="Assets\Wide310x150Logo.scale-200.png" />
+        <Content Include="Assets\SplashScreen.scale-200.png" CopyToOutputDirectory="PreserveNewest" />
+        <Content Include="Assets\LockScreenLogo.scale-200.png" CopyToOutputDirectory="PreserveNewest" />
+        <Content Include="Assets\Square150x150Logo.scale-200.png" CopyToOutputDirectory="PreserveNewest" />
+        <Content Include="Assets\Square44x44Logo.scale-200.png" CopyToOutputDirectory="PreserveNewest" />
+        <Content Include="Assets\Square44x44Logo.targetsize-24_altform-unplated.png" CopyToOutputDirectory="PreserveNewest" />
+        <Content Include="Assets\StoreLogo.png" CopyToOutputDirectory="PreserveNewest" />
+        <Content Include="Assets\Wide310x150Logo.scale-200.png" CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Assets\Icons\*.ico" CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Assets\Icons\*.png" CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Assets\Algorithms\structure-native-observed-v2.idva"
@@ -107,7 +107,7 @@
         <Content Include="Assets\Algorithms\structure-doom-girl-hard-wangqingxin-v1.idva"
                  CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Assets\FloorIndicators\**\*" CopyToOutputDirectory="PreserveNewest" />
-        <Content Include="Assets\Guide\*.png" />
+        <Content Include="Assets\Guide\*.png" CopyToOutputDirectory="PreserveNewest" />
         <Content Include="LICENSE" CopyToOutputDirectory="PreserveNewest" />
         <Content Include="release\trust\idvb-update-2026-01.pem"
                  Link="MapTrust\idvb-update-2026-01.pem"

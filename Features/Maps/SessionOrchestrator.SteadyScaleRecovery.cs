@@ -43,6 +43,7 @@ public sealed partial class SessionOrchestrator
                 floorKey,
                 identityPriorConfidence,
                 out var vpsg3Attempt,
+                out var vpsg3Status,
                 knownScaleSeed: knownScale))
         {
             AccumulateNoDoorStageTimings(
@@ -62,6 +63,8 @@ public sealed partial class SessionOrchestrator
                 });
             return vpsg3Attempt;
         }
+
+        NotifyVpsg3DegradationIfNeeded(locked.Map.Id, floorKey, vpsg3Status);
 
         var recoveryTuning = CreateStructureTuningForFloor(
             locked.Map,

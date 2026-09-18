@@ -141,28 +141,6 @@ internal sealed class CompleteAlignmentTestScenario : IAsyncDisposable
                 mainGate,
                 sideGate);
 
-            var sideFeaturePath = Path.Combine(root, "side-feature.png");
-            var sideProfile = recognition.FirstFloor;
-            using (var sideFeature = new SideEntranceFeaturePreprocessor().Process(
-                mainImage,
-                sideProfile.FindAnchor("side-entrance")!.Bounds!,
-                SideEntranceScanRules.FeatureRegionRatio,
-                clampToBounds: SideEntranceScanRules.ClampFeatureToBounds))
-            {
-                if (!Cv2.ImWrite(sideFeaturePath, sideFeature.Feature))
-                    throw new InvalidOperationException("Failed to persist side feature.");
-                sideProfile.SideEntranceFeatureFileName = "side-feature.png";
-                sideProfile.SideEntranceFeatureSha256 =
-                    Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(sideFeaturePath))).ToLowerInvariant();
-                sideProfile.SideEntranceFeatureSourceSha256 =
-                    Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(mainPath))).ToLowerInvariant();
-                sideProfile.SideEntranceFeatureAlgorithmVersion =
-                    SideEntranceFeaturePreprocessor.AlgorithmVersion;
-                sideProfile.SideEntranceFeatureCenterX = sideFeature.CenterX;
-                sideProfile.SideEntranceFeatureCenterY = sideFeature.CenterY;
-                sideProfile.SideEntranceFeatureRadius = sideFeature.Radius;
-            }
-
             var repository = new MapRepository(Path.Combine(root, "maps"));
             var map = await repository.SaveAsync(
                 new MapDraft
@@ -195,17 +173,41 @@ internal sealed class CompleteAlignmentTestScenario : IAsyncDisposable
                         [UpperFloor] = upperPath,
                         [BasementFloor] = basementPath
                     },
-                    SideEntranceFeaturePaths = new Dictionary<string, string>
-                    {
-                        [MainFloor] = sideFeaturePath,
-                        // Deliberately provide a non-primary feature too. The
-                        // initial side scan must filter it at the operation
-                        // boundary and return only the map's primary floor.
-                        [UpperFloor] = sideFeaturePath
-                    },
                     Recognition = recognition
                 });
 
+            var mapDir = Path.Combine(root, "maps", map.Id.ToString("N"));
+            const string algorithmFileName = "prebuilt-structure.idva";
+            var algoPath = Path.Combine(mapDir, algorithmFileName);
+            var algoBytes = System.Text.Encoding.UTF8.GetBytes("""{"format":"IDVA","schema_version":"1.1","algorithm_id":"structure.synthetic.test"}""");
+            await File.WriteAllBytesAsync(algoPath, algoBytes);
+            var algoSha = Convert.ToHexString(SHA256.HashData(algoBytes)).ToLowerInvariant();
+
+            // Main floor prebuilt binary line
+            using (var cleanMain = mainImage.Clone())
+            {
+                EraseGate(cleanMain, mainGate);
+                EraseGate(cleanMain, sideGate);
+                using var cleanGray = new Mat();
+                Cv2.CvtColor(cleanMain, cleanGray, ColorConversionCodes.BGR2GRAY);
+                using var cleanBinary = new Mat();
+                Cv2.Canny(cleanGray, cleanBinary, 50, 150);
+                var prebuiltMainPath = Path.Combine(mapDir, "prebuilt-main.png");
+                Cv2.ImWrite(prebuiltMainPath, cleanBinary);
+            }
+
+            // Upper floor prebuilt binary line
+            using (var cleanUpper = upperImage.Clone())
+            {
+                using var upperGray = new Mat();
+                Cv2.CvtColor(cleanUpper, upperGray, ColorConversionCodes.BGR2GRAY);
+                using var upperBinary = new Mat();
+                Cv2.Canny(upperGray, upperBinary, 50, 150);
+                var prebuiltUpperPath = Path.Combine(mapDir, "prebuilt-upper.png");
+                Cv2.ImWrite(prebuiltUpperPath, upperBinary);
+            }
+
+            await repository.EnsureDerivedAssetsAsync([map]);
             service = new MapCvRecognitionService(repository);
             await service.RefreshCacheAsync();
             return new CompleteAlignmentTestScenario(

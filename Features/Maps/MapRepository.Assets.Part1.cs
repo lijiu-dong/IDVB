@@ -193,6 +193,7 @@ public sealed partial class MapRepository
                             storedFloor.OverlayHeight = sourceFloor.OverlayHeight;
                             storedFloor.OverlayFileLength = sourceFloor.OverlayFileLength;
                             storedFloor.OverlayLastWriteUtcTicks = sourceFloor.OverlayLastWriteUtcTicks;
+                            storedFloor.PrebuiltStructureLine = sourceFloor.PrebuiltStructureLine?.Clone();
                         }
                     }
                 }

@@ -326,6 +326,64 @@ public sealed class UpdateReleasePolicyTests
         Assert.Contains("must never promote a test-channel installer", worker);
     }
 
+    [Fact]
+    public void ReleasePayloadAndProjectConfigurationPreserveAllEssentialAssets()
+    {
+        var csproj = Read("IDVBuff.csproj");
+        var releaseRunner = Read("release", "Invoke-IDVBRelease.ps1");
+        var buildRelease = Read("installer", "Build-Release.ps1");
+        var mainPageXaml = Read("Views", "MainPage.xaml");
+        var onboardingCs = Read("Views", "MainPage.Onboarding.cs");
+
+        // 1. Ensure all referenced assets in XAML and Onboarding physically exist
+        var titleBarIcon = "Assets/Square44x44Logo.targetsize-24_altform-unplated.png";
+        Assert.Contains(titleBarIcon, mainPageXaml);
+        Assert.True(File.Exists(Path.Combine(RepositoryRoot, titleBarIcon.Replace('/', Path.DirectorySeparatorChar))),
+            $"Title bar icon '{titleBarIcon}' must exist on disk.");
+
+        var expectedGuideImages = new[]
+        {
+            "control-panel-end.png",
+            "control-panel-start.png",
+            "game-map-toggle.png",
+            "quick-scan-complete.png",
+            "quick-scan-map-open.png",
+            "quick-scan-select-map.png",
+            "quick-scan-start.png",
+            "reset-alignment.png",
+            "save-map-cache.png",
+            "switch-floor.png"
+        };
+
+        foreach (var guideImage in expectedGuideImages)
+        {
+            Assert.Contains($"\"{guideImage}\"", onboardingCs);
+            var relativePath = Path.Combine("Assets", "Guide", guideImage);
+            Assert.True(File.Exists(Path.Combine(RepositoryRoot, relativePath)),
+                $"Guide image '{relativePath}' must exist on disk.");
+        }
+
+        // 2. Ensure project file copies guide images and title bar icon to output directory
+        Assert.Contains(@"<Content Include=""Assets\Guide\*.png"" CopyToOutputDirectory=""PreserveNewest"" />", csproj);
+        Assert.Contains(@"<Content Include=""Assets\Square44x44Logo.targetsize-24_altform-unplated.png"" CopyToOutputDirectory=""PreserveNewest"" />", csproj);
+
+        // 3. Ensure release runner payload assertion checks for all essential UI and guide assets
+        Assert.Contains(@"'Assets\Square44x44Logo.targetsize-24_altform-unplated.png'", releaseRunner);
+        Assert.Contains(@"'Assets\Icons\IDVB_icon_multisize.ico'", releaseRunner);
+        Assert.Contains(@"'Assets\Icons\IDVB_icon_square_master.png'", releaseRunner);
+        foreach (var guideImage in expectedGuideImages)
+        {
+            Assert.Contains($@"'Assets\Guide\{guideImage}'", releaseRunner);
+        }
+
+        // 4. Ensure legacy installer script also requires them
+        Assert.Contains(@"'Assets\Square44x44Logo.targetsize-24_altform-unplated.png'", buildRelease);
+        foreach (var guideImage in expectedGuideImages)
+        {
+            Assert.Contains($@"'Assets\Guide\{guideImage}'", buildRelease);
+        }
+    }
+
     private static string Read(params string[] components) =>
         File.ReadAllText(Path.Combine(new[] { RepositoryRoot }.Concat(components).ToArray()));
 

@@ -199,6 +199,8 @@ public sealed partial class SessionOrchestrator
             _reliableFloorAlignments.Clear();
         ClearManualFloorScaleLocks();
         ClearMapViewportPresenceReferences();
+        lock (_notifiedVpsg3DegradationKeys)
+            _notifiedVpsg3DegradationKeys.Clear();
 
         if (resetAutomaticCacheSamples)
             ResetAutomaticMapCacheSamples();

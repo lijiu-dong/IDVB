@@ -1,5 +1,5 @@
 // IDVB Remaster — Session Orchestrator 识别管线
-using IDVBuff.Core.Contracts; using IDVBuff.Core.Models; using IDVBuff.Pipeline; using Microsoft.UI.Dispatching; using OpenCvSharp; using System.Diagnostics; namespace IDVBuff.Features.Maps; public sealed partial class SessionOrchestrator {     // ════════════════ Map Open Alignment（仅对齐，不扫描）════════════════
+using IDVBuff.Core.Contracts; using IDVBuff.Core.Diagnostics; using IDVBuff.Core.Models; using IDVBuff.Pipeline; using Microsoft.UI.Dispatching; using OpenCvSharp; using System.Diagnostics; namespace IDVBuff.Features.Maps; public sealed partial class SessionOrchestrator {     // ════════════════ Map Open Alignment（仅对齐，不扫描）════════════════
     private async Task RunMapOpenAlignmentCoreAsync(         MapGameToggleTransition toggle,         MapMatchSnapshot operationMatch,         CancellationToken cancellationToken,         bool independentAlignment)     {         var alignmentWallClock = Stopwatch.StartNew();         var trace = ActiveOperationTrace;         // A user choice is committed to _lastRecognition immediately, while
         // _pendingAlignmentIdentity records that its transform is still
         // awaiting validation. Prefer the pending identity and keep using the
@@ -135,6 +135,7 @@ using IDVBuff.Core.Contracts; using IDVBuff.Core.Models; using IDVBuff.Pipeline;
                     // Steady 稳态第一优先级：无门楼层只要支持 VPSG 3.0 且预构建索引就绪，
                     // 立即由 VPSG 3.0 直接求解全图尺度与平移，彻底避免老式边缘提取 (60ms) 与粗搜索 (70ms~200ms) 的巨额耗时！
                     MapRecognitionAttempt? vpsg3Attempt = precomputedVpsg3Attempt;
+                    IdvbStatus? steadyVpsgStatus = null;
                     if (vpsg3Attempt is null
                         && alignmentChannel.Channel != MapAlignmentChannel.LowStructure
                         && _recognition.TryAlignWithVpsg3(
@@ -143,6 +144,7 @@ using IDVBuff.Core.Contracts; using IDVBuff.Core.Models; using IDVBuff.Pipeline;
                             targetFloorKey,
                             alignmentSession.SideEntranceScanPriorConfidence,
                             out var fastVpsgAttempt,
+                            out steadyVpsgStatus,
                             knownScaleSeed: warmSeed.Session.LockedTransform.ScaleX)
                         && fastVpsgAttempt.Recognition is not null)
                     {
@@ -159,6 +161,10 @@ using IDVBuff.Core.Contracts; using IDVBuff.Core.Models; using IDVBuff.Pipeline;
                                 ["method"] = "vpsg3",
                                 ["elapsedMs"] = vpsg3Attempt.Diagnostics.TotalMilliseconds
                             });
+                    }
+                    else if (vpsg3Attempt is null && alignmentChannel.Channel != MapAlignmentChannel.LowStructure)
+                    {
+                        NotifyVpsg3DegradationIfNeeded(locked.Map.Id, targetFloorKey, steadyVpsgStatus);
                     }
 
                     if (precomputedVpsg3Attempt is not null)

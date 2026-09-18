@@ -30,9 +30,12 @@ public sealed partial class SideEntranceScanPipeline
         // 每个门分支和最后的全帧补救分支各占一个真实工作单元。
         var totalBranches = Math.Max(1, detectedGates.Count + 1);
 
+        var scanSw = System.Diagnostics.Stopwatch.StartNew();
         var associated = new List<SideEntranceScanCandidate>();
         for (var gateIndex = 0; gateIndex < detectedGates.Count; gateIndex++)
         {
+            if (scanSw.ElapsedMilliseconds > SideEntranceScanRules.MaximumScanDurationMs)
+                break;
             var gate = detectedGates[gateIndex];
             if (!gate.ScreenBounds.IsValid)
                 continue;
@@ -110,7 +113,8 @@ public sealed partial class SideEntranceScanPipeline
         // 或者根本没有检测出门时，才允许对剩余候选执行全帧无门补救搜索。
         // 若已有候选与检测门高度吻合，则门已确认为真，门位置冲突的错图严禁捞回，
         // 避免错图在全图盲搜撞出伪高分并抹平真实门候选的 Margin。
-        var shouldAttemptRescue = results.Count == 0;
+        var shouldAttemptRescue = results.Count == 0
+            && scanSw.ElapsedMilliseconds <= SideEntranceScanRules.MaximumScanDurationMs;
         var rescueInputs = shouldAttemptRescue
             ? candidates
                 .Where(item => !associatedKeys.Contains((item.map.Id, item.floorKey)))

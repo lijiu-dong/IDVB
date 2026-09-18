@@ -80,8 +80,8 @@ public sealed class AuxiliaryConfig
 
 public sealed class SideEntranceConfig
 {
-    public bool ClampFeatureToBounds { get; init; }
-    public double FeatureRegionRatio { get; init; } = 0.25d;
+    public bool ClampFeatureToBounds { get; init; } = true;
+    public double FeatureRegionRatio { get; init; } = 0.40d;
     public string FeatureSourceMode { get; init; } = "RecognitionImage";
     public bool UseAuxiliaryAnchorRecognition { get; init; }
     public bool ReusePreviousAlignmentResult { get; init; } = true;

@@ -1,100 +1,33 @@
 using OpenCvSharp;
 using IDVBuff.Pipeline;
+using System.Runtime.InteropServices;
 
 namespace IDVBuff.Features.Maps;
+
 /// <summary>
-/// 侧门专属扫描管线：对捕获帧运行模板匹配，返回 TopK 候选地图。
-/// 与双门管线并列，仅用于首次地图识别，对齐阶段仍由原有管线处理。
+/// 侧门专属扫描管线：基于二值结构线几何先验与稀疏边缘点检验的快速评价实现。
+/// 彻底废除旧版滑窗灰度模板匹配，以门锚点推演平移残差与尺度网格，实现 &lt;1ms 级极速评价。
 /// </summary>
 public sealed partial class SideEntranceScanPipeline
 {
-
-    /// <summary>
-    /// 按给定缩放重采样模板后在 <paramref name="searchRegion"/> 内匹配一次。
-    /// 模板放大用 <see cref="InterpolationFlags.Cubic"/>、缩小用
-    /// <see cref="InterpolationFlags.Area"/>，避免缩小时的锯齿压低相关性得分。
-    /// </summary>
-    /// <param name="searchRegion">搜索区域（细化窗口，全分辨率）。</param>
-    /// <param name="regionOrigin">
-    ///   搜索区域左上角在完整帧中的坐标；匹配位置会加回该原点，
-    ///   使返回的 MatchLocation 始终是帧坐标而非窗口内的相对坐标。
-    /// </param>
-    private static SideEntranceScanCandidate? Evaluate(
-        Mat searchRegion,
-        Point regionOrigin,
-        Mat template,
-        MapRecord map,
-        string floorKey,
-        double scale)
-    {
-        var width = (int)Math.Round(template.Width * scale);
-        var height = (int)Math.Round(template.Height * scale);
-        // 模板必须严格小于搜索图：等大时 MatchTemplate 只会产出 1×1 的平凡结果。
-        if (width < 8 || height < 8
-            || width >= searchRegion.Width || height >= searchRegion.Height)
-        {
-            return null;
-        }
-
-        using var scaled = new Mat();
-        Cv2.Resize(
-            template,
-            scaled,
-            new Size(width, height),
-            0d,
-            0d,
-            scale >= 1d ? InterpolationFlags.Cubic : InterpolationFlags.Area);
-
-        using var resultMat = new Mat();
-        Cv2.MatchTemplate(
-            searchRegion,
-            scaled,
-            resultMat,
-            TemplateMatchModes.CCoeffNormed);
-        Cv2.MinMaxLoc(resultMat, out _, out var maxVal, out _, out var maxLoc);
-        if (!double.IsFinite(maxVal))
-            return null;
-
-        return new SideEntranceScanCandidate
-        {
-            Map = map,
-            FloorKey = floorKey,
-            MatchScore = maxVal,
-            MatchScale = scale,
-            MatchLocation = new MapScreenRect(
-                regionOrigin.X + maxLoc.X,
-                regionOrigin.Y + maxLoc.Y,
-                width,
-                height)
-        };
-    }
-
-    private readonly record struct GateSpatialPrior(
-        double GateX,
-        double GateY,
-        double DeltaRefX,
-        double DeltaRefY,
-        double MaxResidualPixels);
-
-    private static bool TryCreateGateSpatialPrior(
+    private static SideEntranceScanCandidate? EvaluateStructuralCandidate(
         MapRecord map,
         string floorKey,
         Mat template,
-        GateDetection? detectedGate,
-        MapScreenRect? viewportBounds,
-        Rect searchBounds,
-        out GateSpatialPrior prior)
+        IReadOnlyList<Point> sparsePoints,
+        Mat validMask,
+        double gx,
+        double gy)
     {
-        prior = default;
-        if (detectedGate is null || viewportBounds is not { IsValid: true } vp)
-            return false;
+        if (template.Empty() || sparsePoints.Count == 0)
+            return null;
 
         var profile = MapFloorRules.GetFloorProfile(map, floorKey);
         var anchor = MapScanFloorRules.GetScanFeatureAnchor(map, floorKey);
         if (profile is null || anchor?.Bounds?.IsValid is not true
             || profile.RecognitionPixelWidth <= 0 || profile.RecognitionPixelHeight <= 0)
         {
-            return false;
+            return null;
         }
 
         var anchorCenterX = (anchor.Bounds.X + anchor.Bounds.Width / 2d)
@@ -111,123 +44,238 @@ public sealed partial class SideEntranceScanPipeline
             featureCenterY = anchorCenterY;
         }
 
-        var featureOriginX = featureCenterX - (template.Width / 2d);
-        var featureOriginY = featureCenterY - (template.Height / 2d);
-        var deltaRefX = anchorCenterX - featureOriginX;
-        var deltaRefY = anchorCenterY - featureOriginY;
+        var deltaAnchorRefX = anchorCenterX - featureCenterX;
+        var deltaAnchorRefY = anchorCenterY - featureCenterY;
 
-        var gateX = detectedGate.ScreenBounds.CenterX - vp.X - searchBounds.X;
-        var gateY = detectedGate.ScreenBounds.CenterY - vp.Y - searchBounds.Y;
+        var tplWidth = template.Width;
+        var tplHeight = template.Height;
 
-        var maxResidual = Math.Max(32.0d, SideEntranceScanRules.MaximumGateSpatialResidualPixels * 1.5d);
-        prior = new GateSpatialPrior(gateX, gateY, deltaRefX, deltaRefY, maxResidual);
-        return true;
-    }
-
-    /// <summary>
-    /// 在（已降采样的）粗帧上遍历缩放网格，返回得分最高的那一档缩放及其
-    /// 匹配位置。缩放是相对原始分辨率的，位置则是降采样图坐标；降采样只
-    /// 影响搜索成本与位置精度，不影响缩放语义。粗帧由调用方一次性构建并
-    /// 共享给全部候选地图，避免每张地图重复降采样完整帧。
-    /// 若提供了门空间先验，则在理论门位置周围的小窗口内搜寻极值，防止大离散误差与小尺度伪高分。
-    /// </summary>
-    private static CoarsePeak? FindCoarsePeak(
-        Mat coarseFrame,
-        Mat template,
-        int coarseFactor,
-        GateSpatialPrior? prior,
-        string logContext)
-    {
-        CoarsePeak? bestPeak = null;
         var bestScore = double.NegativeInfinity;
-        var response = new List<(double Scale, double Score)>();
-        for (var scale = SideEntranceScanRules.MinimumScale;
-            scale <= SideEntranceScanRules.MaximumScale;
-            scale *= 1d + SideEntranceScanRules.CoarseScaleStep)
+        var bestScale = 1.0d;
+        var bestDeltaX = 0d;
+        var bestDeltaY = 0d;
+
+        var minScale = SideEntranceScanRules.MinimumScale;
+        var maxScale = SideEntranceScanRules.MaximumScale;
+        var coarseStep = SideEntranceScanRules.CoarseScaleStep;
+
+        // 仅保留实机门附近的边缘点，排除远端（如大门附近）无关点
+        var maxExtentX = Math.Max(32d, (tplWidth / 2d) * maxScale);
+        var maxExtentY = Math.Max(32d, (tplHeight / 2d) * maxScale);
+        var localPoints = new List<(double rx, double ry)>(sparsePoints.Count);
+        for (var i = 0; i < sparsePoints.Count; i++)
         {
-            var width = (int)Math.Round(
-                template.Width * scale / coarseFactor);
-            var height = (int)Math.Round(
-                template.Height * scale / coarseFactor);
-            if (width < 8 || height < 8
-                || width >= coarseFrame.Width || height >= coarseFrame.Height)
+            var rx = sparsePoints[i].X - gx;
+            var ry = sparsePoints[i].Y - gy;
+            if (Math.Abs(rx) <= maxExtentX && Math.Abs(ry) <= maxExtentY)
             {
-                continue;
+                localPoints.Add((rx, ry));
             }
+        }
 
-            using var scaled = new Mat();
-            Cv2.Resize(
-                template,
-                scaled,
-                new Size(width, height),
-                0d,
-                0d,
-                InterpolationFlags.Area);
-            using var resultMat = new Mat();
-            Cv2.MatchTemplate(
-                coarseFrame,
-                scaled,
-                resultMat,
-                TemplateMatchModes.CCoeffNormed);
+        var localCount = localPoints.Count;
+        if (localCount == 0)
+            return null;
 
-            int maxLocX;
-            int maxLocY;
-            double maxVal;
+        var nPoints = localCount;
+        var relX = new double[nPoints];
+        var relY = new double[nPoints];
+        for (var i = 0; i < nPoints; i++)
+        {
+            relX[i] = localPoints[i].rx;
+            relY[i] = localPoints[i].ry;
+        }
 
-            if (prior is { } p)
+        // 多级膨胀构建距离衰减核（Cone Filter）：
+        // 5x5 膨胀 (±2px) 基础捕获层，3x3 膨胀 (±1px) 梯度层，原始模板 (0px) 峰值层
+        using var k3 = Cv2.GetStructuringElement(MorphShapes.Rect, new Size(3, 3));
+        using var dilated3 = new Mat();
+        Cv2.Dilate(template, dilated3, k3);
+
+        using var dilated5 = new Mat();
+        Cv2.Dilate(dilated3, dilated5, k3);
+
+        var step = (int)template.Step();
+        var rawBytes = new byte[tplHeight * step];
+        var d3Bytes = new byte[tplHeight * step];
+        var d5Bytes = new byte[tplHeight * step];
+        Marshal.Copy(template.Data, rawBytes, 0, rawBytes.Length);
+        Marshal.Copy(dilated3.Data, d3Bytes, 0, d3Bytes.Length);
+        Marshal.Copy(dilated5.Data, d5Bytes, 0, d5Bytes.Length);
+
+        // 以 1.0d 为中心对齐网格，避免粗网格因浮点累积误差跨越 1.000 基准
+        var scaleGrid = new List<double>(25);
+        for (var s = 1.0d; s <= maxScale; s *= 1d + coarseStep)
+            scaleGrid.Add(s);
+        for (var s = 1.0d / (1d + coarseStep); s >= minScale; s /= 1d + coarseStep)
+            scaleGrid.Add(s);
+        scaleGrid.Sort();
+
+        // 阶段一：粗尺度与整数残差搜索（覆盖门检测中心 [-3, 3] 像素内的所有整数偏移）
+        for (var scaleIdx = 0; scaleIdx < scaleGrid.Count; scaleIdx++)
+        {
+            var scale = scaleGrid[scaleIdx];
+            var invS = 1.0d / scale;
+            var baseTx = (tplWidth / 2d) + deltaAnchorRefX;
+            var baseTy = (tplHeight / 2d) + deltaAnchorRefY;
+
+            for (var dx = -3; dx <= 3; dx++)
             {
-                var expectedX = p.GateX - (p.DeltaRefX * scale);
-                var expectedY = p.GateY - (p.DeltaRefY * scale);
-                var expCoarseX = expectedX / coarseFactor;
-                var expCoarseY = expectedY / coarseFactor;
-                var maxRadius = p.MaxResidualPixels / coarseFactor;
-
-                var minX = Math.Max(0, (int)Math.Floor(expCoarseX - maxRadius));
-                var minY = Math.Max(0, (int)Math.Floor(expCoarseY - maxRadius));
-                var maxX = Math.Min(resultMat.Width, (int)Math.Ceiling(expCoarseX + maxRadius) + 1);
-                var maxY = Math.Min(resultMat.Height, (int)Math.Ceiling(expCoarseY + maxRadius) + 1);
-
-                if (maxX <= minX || maxY <= minY)
+                var shiftTx = baseTx - (dx * invS);
+                for (var dy = -3; dy <= 3; dy++)
                 {
-                    continue;
+                    var shiftTy = baseTy - (dy * invS);
+
+                    var hit5 = 0;
+                    var hit3 = 0;
+                    var hit1 = 0;
+                    var testedPoints = 0;
+
+                    for (var i = 0; i < nPoints; i++)
+                    {
+                        var tx = shiftTx + (relX[i] * invS);
+                        var ty = shiftTy + (relY[i] * invS);
+
+                        var ix = (int)Math.Round(tx);
+                        var iy = (int)Math.Round(ty);
+
+                        if (ix >= 0 && ix < tplWidth && iy >= 0 && iy < tplHeight)
+                        {
+                            testedPoints++;
+                            var offset = iy * step + ix;
+                            if (d5Bytes[offset] > 128)
+                            {
+                                hit5++;
+                                if (d3Bytes[offset] > 128)
+                                {
+                                    hit3++;
+                                    if (rawBytes[offset] > 128)
+                                        hit1++;
+                                }
+                            }
+                        }
+                    }
+
+                    var supportFactor = Math.Min(1.0d, testedPoints / 18.0d);
+                    var weightedHits = (hit5 * 0.4d) + (hit3 * 0.3d) + (hit1 * 0.3d);
+                    var hitRatio = testedPoints > 0 ? weightedHits / testedPoints : 0d;
+                    var score = hitRatio * supportFactor;
+
+                    var isBetter = score > bestScore + 1e-4d ||
+                        (Math.Abs(score - bestScore) <= 1e-4d &&
+                         Math.Abs(scale - 1.0d) < Math.Abs(bestScale - 1.0d));
+
+                    if (isBetter)
+                    {
+                        bestScore = score;
+                        bestScale = scale;
+                        bestDeltaX = dx;
+                        bestDeltaY = dy;
+                    }
                 }
-
-                using var subMat = new Mat(resultMat, new Rect(minX, minY, maxX - minX, maxY - minY));
-                Cv2.MinMaxLoc(subMat, out _, out maxVal, out _, out var localLoc);
-                maxLocX = minX + localLoc.X;
-                maxLocY = minY + localLoc.Y;
-            }
-            else
-            {
-                Cv2.MinMaxLoc(resultMat, out _, out maxVal, out _, out var loc);
-                maxLocX = loc.X;
-                maxLocY = loc.Y;
-            }
-
-            if (double.IsFinite(maxVal))
-                response.Add((scale, maxVal));
-            if (double.IsFinite(maxVal) && maxVal > bestScore)
-            {
-                bestScore = maxVal;
-                bestPeak = new CoarsePeak(scale, maxLocX, maxLocY, maxVal);
             }
         }
 
-        if (response.Count > 0)
+        // 阶段二：峰值附近的细化搜索
+        if (bestScore > 0.3d)
         {
-            MapLogCollector.Instance.Append(
-                MapLogCategory.GateDetection,
-                MapLogLevel.Info,
-                $"侧门粗搜索尺度响应 {logContext}",
-                details: new()
+            var refineSteps = SideEntranceScanRules.RefineStepsPerSide;
+            var fineStep = coarseStep / (refineSteps + 1d);
+            var fineJitters = new (double dx, double dy)[]
+            {
+                (bestDeltaX, bestDeltaY),
+                (bestDeltaX - 1, bestDeltaY), (bestDeltaX + 1, bestDeltaY),
+                (bestDeltaX, bestDeltaY - 1), (bestDeltaX, bestDeltaY + 1),
+                (bestDeltaX - 1, bestDeltaY - 1), (bestDeltaX + 1, bestDeltaY - 1),
+                (bestDeltaX - 1, bestDeltaY + 1), (bestDeltaX + 1, bestDeltaY + 1)
+            };
+
+            for (var stepIdx = -refineSteps; stepIdx <= refineSteps; stepIdx++)
+            {
+                if (stepIdx == 0) continue;
+                var scale = bestScale * (1d + stepIdx * fineStep);
+                if (scale < minScale || scale > maxScale)
+                    continue;
+
+                var invS = 1.0d / scale;
+                var baseTx = (tplWidth / 2d) + deltaAnchorRefX;
+                var baseTy = (tplHeight / 2d) + deltaAnchorRefY;
+
+                for (var j = 0; j < fineJitters.Length; j++)
                 {
-                    ["scales"] = string.Join(
-                        ",", response.Select(r => r.Scale.ToString("F3"))),
-                    ["scores"] = string.Join(
-                        ",", response.Select(r => r.Score.ToString("F4")))
-                });
+                    var (dx, dy) = fineJitters[j];
+                    var shiftTx = baseTx - (dx * invS);
+                    var shiftTy = baseTy - (dy * invS);
+
+                    var hit5 = 0;
+                    var hit3 = 0;
+                    var hit1 = 0;
+                    var testedPoints = 0;
+
+                    for (var i = 0; i < nPoints; i++)
+                    {
+                        var tx = shiftTx + (relX[i] * invS);
+                        var ty = shiftTy + (relY[i] * invS);
+
+                        var ix = (int)Math.Round(tx);
+                        var iy = (int)Math.Round(ty);
+
+                        if (ix >= 0 && ix < tplWidth && iy >= 0 && iy < tplHeight)
+                        {
+                            testedPoints++;
+                            var offset = iy * step + ix;
+                            if (d5Bytes[offset] > 128)
+                            {
+                                hit5++;
+                                if (d3Bytes[offset] > 128)
+                                {
+                                    hit3++;
+                                    if (rawBytes[offset] > 128)
+                                        hit1++;
+                                }
+                            }
+                        }
+                    }
+
+                    var supportFactor = Math.Min(1.0d, testedPoints / 18.0d);
+                    var weightedHits = (hit5 * 0.4d) + (hit3 * 0.3d) + (hit1 * 0.3d);
+                    var hitRatio = testedPoints > 0 ? weightedHits / testedPoints : 0d;
+                    var score = hitRatio * supportFactor;
+
+                    var isBetter = score > bestScore + 1e-4d ||
+                        (Math.Abs(score - bestScore) <= 1e-4d &&
+                         Math.Abs(scale - 1.0d) < Math.Abs(bestScale - 1.0d));
+
+                    if (isBetter)
+                    {
+                        bestScore = score;
+                        bestScale = scale;
+                        bestDeltaX = dx;
+                        bestDeltaY = dy;
+                    }
+                }
+            }
         }
 
-        return bestPeak;
+        if (bestScore <= 0d || !double.IsFinite(bestScore))
+            return null;
+
+        var featureOriginX = featureCenterX - (tplWidth / 2d);
+        var featureOriginY = featureCenterY - (tplHeight / 2d);
+        var matchLocX = (gx + bestDeltaX) - ((anchorCenterX - featureOriginX) * bestScale);
+        var matchLocY = (gy + bestDeltaY) - ((anchorCenterY - featureOriginY) * bestScale);
+        var matchWidth = (int)Math.Round(tplWidth * bestScale);
+        var matchHeight = (int)Math.Round(tplHeight * bestScale);
+
+        return new SideEntranceScanCandidate
+        {
+            Map = map,
+            FloorKey = floorKey,
+            MatchScore = bestScore,
+            MatchScale = bestScale,
+            MatchLocation = new MapScreenRect(matchLocX, matchLocY, matchWidth, matchHeight),
+            GateSpatialResidualPixels = Math.Sqrt(bestDeltaX * bestDeltaX + bestDeltaY * bestDeltaY),
+            Disposition = SideEntranceCandidateDisposition.NeedsVerification
+        };
     }
 }

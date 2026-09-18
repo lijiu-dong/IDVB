@@ -53,6 +53,7 @@ public sealed partial class SessionOrchestrator
             tuning,
             vpsgTuning,
             identityPriorConfidence);
+        NotifyVpsg3DegradationIfNeeded(locked.Map.Id, floorKey, attempt.Status);
         LogNoDoorStage(
             "vpsg-scale-bootstrap",
             attempt.Recognition is not null,

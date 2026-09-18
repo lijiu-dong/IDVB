@@ -20,63 +20,38 @@ public sealed partial class MapRepository
     public string GetSideEntranceFeaturePath(MapRecord record, string floorKey)
     {
         var profile = record.Recognition.GetFloor(floorKey);
-        if (profile is not null
-            && !string.IsNullOrWhiteSpace(profile.SideEntranceFeatureFileName))
-        {
-            return GetSafeMapFilePath(
-                GetMapDirectory(record.Id),
-                profile.SideEntranceFeatureFileName);
-        }
-
-        return Path.Combine(
-            GetMapDirectory(record.Id),
-            GetSideEntranceFeatureFileName(floorKey));
+        return profile is not null && !string.IsNullOrWhiteSpace(profile.SideEntranceFeatureFileName)
+            ? GetSafeMapFilePath(GetMapDirectory(record.Id), profile.SideEntranceFeatureFileName)
+            : Path.Combine(GetMapDirectory(record.Id), GetSideEntranceFeatureFileName(floorKey));
     }
 
     /// <summary>
     /// 解析指定地图楼层侧门特征的生成源图像路径。
-    /// 根据配置决定优先使用预制线图还是裁剪识别图；若预制线图不存在则自动回退至裁剪识别图。
+    /// 严格只使用预制二值轮廓图（prebuilt-{floorKey}.png），彻底删除从攻略地图裁剪灰度图的旧路径。
     /// </summary>
-    private (string path, string sourceKind, bool isFallback) ResolveSideEntranceFeatureSource(
-        MapRecord record,
-        string floorKey)
+    private (string path, string sourceKind) ResolveSideEntranceFeatureSource(MapRecord record, string floorKey)
     {
-        var recognitionPath = GetFloorRecognitionPath(record, floorKey);
-        if (SideEntranceScanRules.FeatureSourceMode == SideEntranceFeatureSourceMode.PrebuiltStructureLine)
+        var localPrebuilt = Path.Combine(GetMapDirectory(record.Id), $"prebuilt-{floorKey}.png");
+        if (File.Exists(localPrebuilt)) return (localPrebuilt, "PrebuiltStructureLine");
+        if (HasPrebuiltStructureLine(record, floorKey))
         {
-            if (HasPrebuiltStructureLine(record, floorKey))
-            {
-                var prebuiltPath = GetPrebuiltStructureLinePath(record, floorKey);
-                if (File.Exists(prebuiltPath))
-                {
-                    return (prebuiltPath, "PrebuiltStructureLine", false);
-                }
-            }
-            return (recognitionPath, "RecognitionImage", true);
+            var prebuiltPath = GetPrebuiltStructureLinePath(record, floorKey);
+            if (File.Exists(prebuiltPath)) return (prebuiltPath, "PrebuiltStructureLine");
         }
-
-        return (recognitionPath, "RecognitionImage", false);
+        throw new InvalidOperationException($"地图 {record.DisplayName} 楼层 {floorKey} 缺少预制二值轮廓图 prebuilt-{floorKey}.png。");
     }
 
     /// <summary>
     /// 在暂存目录（staging）中解析楼层侧门特征的生成源图像路径。
+    /// 严格只使用预制二值轮廓图。
     /// </summary>
-    private static (string path, string sourceKind, bool isFallback) ResolveSideEntranceStagingFeatureSource(
-        string stagingDirectory,
-        string floorKey)
+    private static (string path, string sourceKind) ResolveSideEntranceStagingFeatureSource(
+        string stagingDirectory, string floorKey)
     {
-        var recognitionPath = Path.Combine(stagingDirectory, GetFloorRecognitionFileName(floorKey));
-        if (SideEntranceScanRules.FeatureSourceMode == SideEntranceFeatureSourceMode.PrebuiltStructureLine)
-        {
-            var prebuiltPath = Path.Combine(stagingDirectory, $"prebuilt-{floorKey}.png");
-            if (File.Exists(prebuiltPath))
-            {
-                return (prebuiltPath, "PrebuiltStructureLine", false);
-            }
-            return (recognitionPath, "RecognitionImage", true);
-        }
-
-        return (recognitionPath, "RecognitionImage", false);
+        var prebuiltPath = Path.Combine(stagingDirectory, $"prebuilt-{floorKey}.png");
+        if (File.Exists(prebuiltPath))
+            return (prebuiltPath, "PrebuiltStructureLine");
+        throw new InvalidOperationException($"暂存目录缺少预制二值轮廓图 prebuilt-{floorKey}.png。");
     }
 
     /// <summary>
@@ -93,8 +68,18 @@ public sealed partial class MapRepository
         if (scanAnchor?.IsMarked is not true)
             return;
 
-        var (sourcePath, sourceKind, isFallback) =
-            ResolveSideEntranceStagingFeatureSource(stagingDirectory, profile.FloorKey);
+        string sourcePath;
+        string sourceKind;
+        try
+        {
+            (sourcePath, sourceKind) =
+                ResolveSideEntranceStagingFeatureSource(stagingDirectory, profile.FloorKey);
+        }
+        catch
+        {
+            return;
+        }
+
         if (!File.Exists(sourcePath))
             return;
 
@@ -136,20 +121,9 @@ public sealed partial class MapRepository
             MapLogCollector.Instance.Append(
                 MapLogCategory.GateDetection,
                 MapLogLevel.Info,
-                $"侧门特征已生成 · floorKey={profile.FloorKey} · source={sourceKind} · fallback={isFallback} · size={result.Feature.Width}x{result.Feature.Height} · ratio={SideEntranceScanRules.FeatureRegionRatio:F2} · sha={featureSha[..8]}",
-                details: new()
-                {
-                    ["floorKey"] = profile.FloorKey,
-                    ["sourceKind"] = sourceKind,
-                    ["isFallback"] = isFallback,
-                    ["sourcePath"] = sourcePath,
-                    ["sourceSha256"] = sourceSha,
-                    ["featureWidth"] = result.Feature.Width,
-                    ["featureHeight"] = result.Feature.Height,
-                    ["featureCenterX"] = result.CenterX,
-                    ["featureCenterY"] = result.CenterY,
-                    ["algorithmVersion"] = SideEntranceFeaturePreprocessor.AlgorithmVersion
-                });
+                $"侧门特征已生成 · floorKey={profile.FloorKey} · source={sourceKind} · size={result.Feature.Width}x{result.Feature.Height} · ratio={SideEntranceScanRules.FeatureRegionRatio:F2} · sha={featureSha[..8]}",
+                details: BuildSideFeatureLogDetails(
+                    null, profile.FloorKey, sourceKind, sourcePath, sourceSha, result));
         }
         catch
         {
@@ -197,7 +171,17 @@ public sealed partial class MapRepository
                 if (scanAnchor?.IsMarked is not true)
                     continue;
 
-                var (sourcePath, sourceKind, isFallback) = ResolveSideEntranceFeatureSource(record, floorDef.Key);
+                string sourcePath;
+                string sourceKind;
+                try
+                {
+                    (sourcePath, sourceKind) = ResolveSideEntranceFeatureSource(record, floorDef.Key);
+                }
+                catch
+                {
+                    continue;
+                }
+
                 if (!File.Exists(sourcePath))
                     continue;
 
@@ -238,21 +222,9 @@ public sealed partial class MapRepository
                     MapLogCollector.Instance.Append(
                         MapLogCategory.GateDetection,
                         MapLogLevel.Info,
-                        $"侧门特征已重建 · map={record.DisplayName}#{floorDef.Key} · source={sourceKind} · fallback={isFallback} · size={result.Feature.Width}x{result.Feature.Height} · ratio={SideEntranceScanRules.FeatureRegionRatio:F2} · sha={featureSha[..8]}",
-                        details: new()
-                        {
-                            ["mapId"] = record.Id,
-                            ["floorKey"] = floorDef.Key,
-                            ["sourceKind"] = sourceKind,
-                            ["isFallback"] = isFallback,
-                            ["sourcePath"] = sourcePath,
-                            ["sourceSha256"] = sourceSha,
-                            ["featureWidth"] = result.Feature.Width,
-                            ["featureHeight"] = result.Feature.Height,
-                            ["featureCenterX"] = result.CenterX,
-                            ["featureCenterY"] = result.CenterY,
-                            ["algorithmVersion"] = SideEntranceFeaturePreprocessor.AlgorithmVersion
-                        });
+                        $"侧门特征已重建 · map={record.DisplayName}#{floorDef.Key} · source={sourceKind} · size={result.Feature.Width}x{result.Feature.Height} · ratio={SideEntranceScanRules.FeatureRegionRatio:F2} · sha={featureSha[..8]}",
+                        details: BuildSideFeatureLogDetails(
+                            record.Id, floorDef.Key, sourceKind, sourcePath, sourceSha, result));
 
                     // 同步到 Floors 字典
                     record.Recognition.Floors[floorDef.Key] = profile;
@@ -369,7 +341,17 @@ public sealed partial class MapRepository
         }
 
         path = GetSideEntranceFeaturePath(record, floorKey);
-        var (sourcePath, _, _) = ResolveSideEntranceFeatureSource(record, floorKey);
+        string sourcePath;
+        try
+        {
+            (sourcePath, _) = ResolveSideEntranceFeatureSource(record, floorKey);
+        }
+        catch (Exception ex)
+        {
+            failureReason = ex.Message;
+            return false;
+        }
+
         if (!File.Exists(path) || !File.Exists(sourcePath))
         {
             failureReason = "侧门特征或其源图像不存在。";
@@ -403,7 +385,7 @@ public sealed partial class MapRepository
         MapRecord record,
         string floorKey,
         FloorRecognitionProfile profile,
-        string recognitionPath)
+        string? recognitionPath = null)
     {
         if (IsCvDisabledForSafeMode())
             return false;
@@ -414,19 +396,20 @@ public sealed partial class MapRepository
             return false;
         }
 
-        var (sourcePath, sourceKind, isFallback) = ResolveSideEntranceFeatureSource(record, floorKey);
+        string sourcePath;
+        string sourceKind;
+        try
+        {
+            (sourcePath, sourceKind) = ResolveSideEntranceFeatureSource(record, floorKey);
+        }
+        catch
+        {
+            return false;
+        }
+
         if (!File.Exists(sourcePath))
         {
-            if (File.Exists(recognitionPath))
-            {
-                sourcePath = recognitionPath;
-                sourceKind = "RecognitionImage";
-                isFallback = true;
-            }
-            else
-            {
-                return false;
-            }
+            return false;
         }
 
         if (TryGetValidSideEntranceFeaturePath(record, floorKey, out _, out _))
@@ -462,21 +445,9 @@ public sealed partial class MapRepository
             MapLogCollector.Instance.Append(
                 MapLogCategory.GateDetection,
                 MapLogLevel.Info,
-                $"侧门特征已更新 · map={record.DisplayName}#{floorKey} · source={sourceKind} · fallback={isFallback} · size={result.Feature.Width}x{result.Feature.Height} · ratio={SideEntranceScanRules.FeatureRegionRatio:F2} · sha={featureSha[..8]}",
-                details: new()
-                {
-                    ["mapId"] = record.Id,
-                    ["floorKey"] = floorKey,
-                    ["sourceKind"] = sourceKind,
-                    ["isFallback"] = isFallback,
-                    ["sourcePath"] = sourcePath,
-                    ["sourceSha256"] = sourceSha,
-                    ["featureWidth"] = result.Feature.Width,
-                    ["featureHeight"] = result.Feature.Height,
-                    ["featureCenterX"] = result.CenterX,
-                    ["featureCenterY"] = result.CenterY,
-                    ["algorithmVersion"] = SideEntranceFeaturePreprocessor.AlgorithmVersion
-                });
+                $"侧门特征已更新 · map={record.DisplayName}#{floorKey} · source={sourceKind} · size={result.Feature.Width}x{result.Feature.Height} · ratio={SideEntranceScanRules.FeatureRegionRatio:F2} · sha={featureSha[..8]}",
+                details: BuildSideFeatureLogDetails(
+                    record.Id, floorKey, sourceKind, sourcePath, sourceSha, result));
 
             return true;
         }
@@ -486,13 +457,30 @@ public sealed partial class MapRepository
         }
     }
 
-    private static bool IsCvDisabledForSafeMode() => string.Equals(
-        Environment.GetEnvironmentVariable("IDVB_SAFE_MODE"),
-        "1",
-        StringComparison.Ordinal);
+    private static Dictionary<string, object?> BuildSideFeatureLogDetails(
+        Guid? mapId,
+        string floorKey,
+        string sourceKind,
+        string sourcePath,
+        string sourceSha,
+        SideEntranceFeatureResult result) => new()
+    {
+        ["mapId"] = mapId,
+        ["floorKey"] = floorKey,
+        ["sourceKind"] = sourceKind,
+        ["sourcePath"] = sourcePath,
+        ["sourceSha256"] = sourceSha,
+        ["featureWidth"] = result.Feature.Width,
+        ["featureHeight"] = result.Feature.Height,
+        ["featureCenterX"] = result.CenterX,
+        ["featureCenterY"] = result.CenterY,
+        ["algorithmVersion"] = SideEntranceFeaturePreprocessor.AlgorithmVersion
+    };
 
-    private static RecognitionAnchor? GetScanFeatureAnchor(
-        FloorRecognitionProfile profile) =>
+    private static bool IsCvDisabledForSafeMode() =>
+        string.Equals(Environment.GetEnvironmentVariable("IDVB_SAFE_MODE"), "1", StringComparison.Ordinal);
+
+    private static RecognitionAnchor? GetScanFeatureAnchor(FloorRecognitionProfile profile) =>
         profile.Floor == MapFloor.First
             ? profile.FindAnchor("side-entrance")
             : profile.FindAnchor(MapScanFloorRules.SecondaryGateAnchorKey);

@@ -221,6 +221,11 @@ public sealed partial class MapRepository
                     AlgorithmSha256 = algorithm.Sha256,
                     AlgorithmSchemaVersion = algorithm.SchemaVersion
                 };
+                var profile = MapFloorRules.GetFloorProfile(map, floor.Key);
+                if (profile is not null)
+                {
+                    EnsureCurrentSideEntranceFeature(map, floor.Key, profile);
+                }
             }
             await WriteCatalogAsync(catalog);
             foreach (var map in latestMaps)

@@ -91,13 +91,17 @@ public sealed partial class SessionOrchestrator
                     identity,
                     targetFloorKey);
                 var effectiveScale = sideEntranceSeed?.LockedTransform.ScaleX > 0.05 ? (double?)sideEntranceSeed.LockedTransform.ScaleX : null;
-                if (_recognition.TryGetMap(mapId) is { } targetMap
-                    && _recognition.TryAlignWithVpsg3(
-                        frame, targetMap, targetFloorKey, identity.Result.IdentityConfidence,
-                        out var fastVpsgAttempt, knownScaleSeed: effectiveScale))
+                if (_recognition.TryGetMap(mapId) is { } targetMap)
                 {
-                    repair = null;
-                    return fastVpsgAttempt;
+                    if (_recognition.TryAlignWithVpsg3(
+                            frame, targetMap, targetFloorKey, identity.Result.IdentityConfidence,
+                            out var fastVpsgAttempt, out var bgScanVpsgStatus, knownScaleSeed: effectiveScale))
+                    {
+                        repair = null;
+                        return fastVpsgAttempt;
+                    }
+
+                    NotifyVpsg3DegradationIfNeeded(mapId, targetFloorKey, bgScanVpsgStatus);
                 }
 
                 MapRecognitionAttempt Align()
@@ -456,10 +460,7 @@ public sealed partial class SessionOrchestrator
         finally
         {
             if (ownsFrame)
-                DisposeBackgroundFrame(
-                    frame,
-                    locked.Map.Id.ToString("D"),
-                    targetFloorKey);
+                DisposeBackgroundFrame(frame, locked.Map.Id.ToString("D"), targetFloorKey);
         }
     }
 
@@ -468,33 +469,16 @@ public sealed partial class SessionOrchestrator
         string? mapId = null,
         string? floorKey = null)
     {
-        if (frame is null)
-            return;
-
+        if (frame is null) return;
         var cleanup = ActiveOperationTrace?.StartTopLevel(
-            "cleanup",
-            MapOperationWaitKind.Io,
-            mapId: mapId,
-            floorKey: floorKey);
+            "cleanup", MapOperationWaitKind.Io, mapId: mapId, floorKey: floorKey);
         try
         {
             var dispose = MapOperationTraceAmbient.StartChild(
-                "frame_dispose",
-                MapOperationWaitKind.Io,
-                mapId: mapId,
-                floorKey: floorKey);
-            try
-            {
-                frame.Dispose();
-            }
-            finally
-            {
-                dispose.Complete();
-            }
+                "frame_dispose", MapOperationWaitKind.Io, mapId: mapId, floorKey: floorKey);
+            try { frame.Dispose(); }
+            finally { dispose.Complete(); }
         }
-        finally
-        {
-            cleanup?.Complete();
-        }
+        finally { cleanup?.Complete(); }
     }
 }

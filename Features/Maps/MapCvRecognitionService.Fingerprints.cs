@@ -120,7 +120,18 @@ public sealed partial class MapCvRecognitionService
             return [];
 
         var candidates = BuildSideEntranceScanInputs(mapClass, selectedMapId);
-        return _sideEntrancePipeline.RunScan(capturedFrame, candidates, topK);
+        using var matchImage = GateTemplateDetector.CreateMatchImage(capturedFrame);
+        var gateResult = _gateDetector.Detect(
+            matchImage,
+            new MapScreenRect(0, 0, capturedFrame.Width, capturedFrame.Height),
+            capturedFrame.Width,
+            GateTemplateRules.FallbackPairThreshold);
+        return _sideEntrancePipeline.RunScan(
+            capturedFrame,
+            candidates,
+            detectedGates: gateResult,
+            topK: topK,
+            viewportBounds: new MapScreenRect(0, 0, capturedFrame.Width, capturedFrame.Height));
     }
 
     private List<(MapRecord map, string floorKey, Mat template)>
