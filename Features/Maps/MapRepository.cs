@@ -41,22 +41,6 @@ public sealed partial class MapRepository
 
     private string CatalogPath => Path.Combine(_rootDirectory, "maps.json");
 
-    public async Task<IReadOnlyList<MapRecord>> GetMapsAsync()
-    {
-        await Gate.WaitAsync();
-        try
-        {
-            var catalog = await ReadCatalogAsync();
-            return catalog.Maps
-                .OrderBy(record => record.SequenceNumber)
-                .Select(record => CloneWithClassProperties(catalog, record))
-                .ToArray();
-        }
-        finally
-        {
-            Gate.Release();
-        }
-    }
 
     public Task<MapDraft?> CreateDraftAsync(Guid id) => CreateDraftCoreAsync(id);
 
@@ -509,23 +493,4 @@ public sealed partial class MapRepository
         }
     }
 
-    private static async Task CopyRecognitionSourceAsync(string source, string destination)
-    {
-        await using var input = new FileStream(
-            source,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.Read,
-            64 * 1024,
-            FileOptions.Asynchronous | FileOptions.SequentialScan);
-        await using var output = new FileStream(
-            destination,
-            FileMode.CreateNew,
-            FileAccess.Write,
-            FileShare.None,
-            64 * 1024,
-            FileOptions.Asynchronous | FileOptions.SequentialScan);
-        await input.CopyToAsync(output);
-        await output.FlushAsync();
-    }
 }

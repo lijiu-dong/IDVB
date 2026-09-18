@@ -13,6 +13,7 @@ public sealed class OverlayWindowAdapter : IOverlayWindow
     }
 
     public bool IsVisible => _window.IsVisible;
+    public void SetNativeMiniMapHeading(double? degrees) => _window.SetNativeMiniMapHeading(degrees);
     public bool HasMap => _window.HasMap;
     public double? CurrentMiniMapScale => _window.CurrentMiniMapScale;
     public double? CurrentMiniMapWidth => _window.CurrentMiniMapWidth;
@@ -94,6 +95,12 @@ public sealed class OverlayWindowAdapter : IOverlayWindow
             floorLabel);
 
     public void ClearPersistentMiniMap() => _window.ClearPersistentMiniMap();
+    public void UpdateMiniMapPlayers(object players)
+    {
+        if (players is IReadOnlyList<MiniMapTrackedPlayer> list)
+            _window.UpdateMiniMapPlayers(list);
+    }
+    public void ClearMiniMapPlayers() => _window.ClearMiniMapPlayers();
 
     // ── 显示设置转发 ──
 

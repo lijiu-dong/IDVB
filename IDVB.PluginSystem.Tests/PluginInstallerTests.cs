@@ -6,6 +6,31 @@ namespace IDVB.PluginSystem.Tests;
 public sealed class PluginInstallerTests
 {
     [Fact]
+    public async Task FailingStartupDiagnosticDoesNotPreventRuntimeStartup()
+    {
+        using var fixture = new PluginPackageTestFixture();
+        var directories = new PluginDirectories(Path.Combine(fixture.Root, "appdata"), developerMode: false);
+        var state = new PluginStateRepository(directories);
+        var installer = new IdvpInstaller(directories, state, "1.5.0");
+        var contexts = new CountingContextFactory();
+        var observations = 0;
+        await using var runtime = new ThirdPartyPluginRuntimeManager(directories, state, installer, contexts)
+        {
+            StartupDiagnostic = _ =>
+            {
+                observations++;
+                throw new IOException("Diagnostic sink unavailable");
+            }
+        };
+        await runtime.SetMatchActivationAsync(false);
+        await runtime.StartAsync();
+        await runtime.StartAsync();
+        Assert.True(observations > 0);
+        Assert.Equal(0, contexts.Created);
+        Assert.Empty(runtime.Statuses);
+    }
+
+    [Fact]
     public async Task FirstInstallBindsPublisherAndRemainsDisabled()
     {
         using var fixture = new PluginPackageTestFixture();

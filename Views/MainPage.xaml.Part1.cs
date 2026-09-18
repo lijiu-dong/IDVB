@@ -182,7 +182,7 @@ public sealed partial class MainPage : Page
         NavigationHoverIndicator.Opacity = targetOpacity;
     }
 
-    private void NavigateTo(string moduleId, NavigationEntry? navigationEntry = null)
+    private async void NavigateTo(string moduleId, NavigationEntry? navigationEntry = null)
     {
         DisconnectDisplayPreviewSource();
         SetNavigationCompact(_navigationCompactPreference);
@@ -196,6 +196,15 @@ public sealed partial class MainPage : Page
                 QueueSelectionIndicatorAnimation(visibleSelectionTarget);
             else
                 QueueInitialNavigationIndicatorPosition(visibleSelectionTarget);
+        }
+
+        if (!App.IsServicesReady && moduleId != "home" && moduleId != "help" && moduleId != "main-settings" && moduleId != "account")
+        {
+            var loadingRing = new ProgressRing { IsActive = true, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+            ModuleContentHost.Content = loadingRing;
+            await App.ServicesReadyTask;
+            if (navigationEntry is not null && _selectedNavigationEntry != navigationEntry)
+                return;
         }
 
         var animateMainContent = true;

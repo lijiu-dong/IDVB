@@ -11,9 +11,40 @@ using IDVBuff.Core.Contracts; using IDVBuff.Core.Models; using IDVBuff.Pipeline;
         // is being captured. The operation remains Initial until the captured
         // context is classified below; this task only removes disk/decode
         // latency from the alignment critical path.
-        var indicatorGroup = FloorIndicatorTemplateRegistry.Resolve(
-            MapFloorRules.GetOrderedFloors(locked.Map).Select(f => f.Key));
+        var orderedFloors = MapFloorRules.GetOrderedFloors(locked.Map).Select(f => f.Key).ToArray();
+        var indicatorGroup = FloorIndicatorTemplateRegistry.Resolve(orderedFloors);
+        if (orderedFloors.Length <= 1)
+        {
+            _logCollector.Append(
+                MapLogCategory.FloorRecognition,
+                MapLogLevel.Info,
+                $"开图对齐：当前地图为单楼层地图，无需自动楼层检测 · map={(string.IsNullOrWhiteSpace(locked.Map.Title) ? locked.Map.Id.ToString("D") : locked.Map.Title)} · floor={primaryFloorKey}",
+                details: new()
+                {
+                    ["mapId"] = locked.Map.Id,
+                    ["floorCount"] = orderedFloors.Length,
+                    ["primaryFloor"] = primaryFloorKey
+                });
+        }
+        else if (indicatorGroup is null)
+        {
+            _logCollector.Append(
+                MapLogCategory.FloorRecognition,
+                MapLogLevel.Warning,
+                $"开图对齐：多楼层地图未匹配到适用的楼层指示器模板组，跳过自动楼层检测 · map={(string.IsNullOrWhiteSpace(locked.Map.Title) ? locked.Map.Id.ToString("D") : locked.Map.Title)} · floors=[{string.Join(",", orderedFloors)}]",
+                details: new()
+                {
+                    ["mapId"] = locked.Map.Id,
+                    ["floors"] = orderedFloors
+                });
+        }
+
         var autoFloor = indicatorGroup is null ? null : new AutoFloorCapture(locked.Map, indicatorGroup);
+        if (autoFloor is not null)
+        {
+            var initialViewport = ResolveMapViewportForCurrentWindow();
+            autoFloor.LogMonitoringStarted(initialViewport, "仅对齐开图");
+        }
         var initialPrewarmTuning = CreateStructureTuningForFloor(             locked.Map,             targetFloorKey,             CreateInitialAlignmentStructureTuning());         var initialPrewarmTask = _recognition.WarmFloorStructureCacheAsync(
             locked.Map, targetFloorKey, initialPrewarmTuning);
         // Presence detection selects the first frame that belongs to the map;
@@ -36,6 +67,22 @@ using IDVBuff.Core.Contracts; using IDVBuff.Core.Models; using IDVBuff.Pipeline;
         // or a later adaptive-scale decision.
         if (frame.DetectedFloorKey is { } detectedFloor)
         {
+            var willSwitch = !string.Equals(detectedFloor, targetFloorKey, StringComparison.Ordinal);
+            _logCollector.Append(
+                MapLogCategory.FloorRecognition,
+                MapLogLevel.Info,
+                $"自动楼层决策：{(willSwitch ? $"从 {MapFloorRules.GetFloorDisplayName(locked.Map, targetFloorKey)} 切换到 {MapFloorRules.GetFloorDisplayName(locked.Map, detectedFloor)}" : $"确认当前楼层为 {MapFloorRules.GetFloorDisplayName(locked.Map, detectedFloor)}")}",
+                details: new()
+                {
+                    ["outcome"] = "accepted",
+                    ["detectedFloor"] = detectedFloor,
+                    ["previousFloor"] = targetFloorKey,
+                    ["floorSwitched"] = willSwitch,
+                    ["mapId"] = locked.Map.Id,
+                    ["score"] = autoFloor?.Score,
+                    ["margin"] = autoFloor?.Margin,
+                    ["totalElapsedMs"] = autoFloor?.TotalMilliseconds
+                });
             PresentDetectedFloorBeforeAlignment(locked, detectedFloor, frame);
             if (detectedFloor != targetFloorKey)
             {
@@ -49,11 +96,30 @@ using IDVBuff.Core.Contracts; using IDVBuff.Core.Models; using IDVBuff.Pipeline;
             isPendingVariantAlignment = IsPendingVariantAlignment(locked.Map.Id, targetFloorKey);
             trace?.SetContext(floorKey: targetFloorKey);
         }
+        else if (autoFloor is not null)
+        {
+            _logCollector.Append(
+                MapLogCategory.FloorRecognition,
+                MapLogLevel.Warning,
+                $"自动楼层决策：未检出稳定楼层指示器，继续使用目标楼层 {MapFloorRules.GetFloorDisplayName(locked.Map, targetFloorKey)} 对齐 · 原因: {(string.IsNullOrEmpty(autoFloor.LatestFailureReason) ? "未达到判定条件" : autoFloor.LatestFailureReason)}",
+                details: new()
+                {
+                    ["outcome"] = "unresolved",
+                    ["fallbackFloor"] = targetFloorKey,
+                    ["mapId"] = locked.Map.Id,
+                    ["rejectionReason"] = autoFloor.LatestMatchResult?.RejectionReason ?? "Unresolved",
+                    ["failureDescription"] = autoFloor.LatestFailureReason,
+                    ["lastScore"] = autoFloor.Score,
+                    ["lastMargin"] = autoFloor.Margin,
+                    ["candidateScores"] = autoFloor.LatestMatchResult?.CandidateScores,
+                    ["attempts"] = autoFloor.AttemptCount,
+                    ["totalElapsedMs"] = autoFloor.TotalMilliseconds
+                });
+        }
         var alignmentContextKey = CreateAlignmentContextKey(             operationMatch,             frame,             locked.Map,             targetFloorKey);         var warmStateMissReason = recoveringSelectedIdentity             ? "identity-recovery"             : independentAlignment                 ? "independent-alignment"                 : string.Empty;         var warmSeed = recoveringSelectedIdentity || independentAlignment             ? null             : TryGetReliableFloorAlignment(                 operationMatch,                 frame,                 locked.Map,                 targetFloorKey,                 out warmStateMissReason);         var executionClass = warmSeed is null             ? MapAlignmentExecutionClass.Initial             : MapAlignmentExecutionClass.Steady;         trace?.SetContext(             route: $"{(isOtherFloor ? "structure-only-floor" : "primary-floor")}:"                 + executionClass.ToString().ToLowerInvariant());         await initialPrewarmTask;         // Start the alignment budget after stable-frame input preparation.
         var alignmentDispatch = trace?.StartTopLevel(             "alignment_dispatch_wait",             MapOperationWaitKind.Queue,             mapId: locked.Map.Id.ToString("D"),             floorKey: targetFloorKey);         try         {             cancellationToken.ThrowIfCancellationRequested();             var alignmentMode = _settings!.OverlayAlignmentMode;             var structureTuning = recoveringSelectedIdentity                 ? CreateInitialAlignmentStructureTuning()                 : CreateEffectiveStructureTuning();             var alignmentChannel = MapAlignmentChannelRegistry.Resolve(                 locked.Map,                 targetFloorKey);             structureTuning = CreateStructureTuningForFloor(                 locked.Map,                 targetFloorKey,                 structureTuning);             var tuning = recoveringSelectedIdentity                 ? CreateInitialAlignmentRecognitionTuning()                 : _settings.RecognitionTuning.Clone();             if (tuning.GateTemplateThreshold > GateTemplateRules.FallbackPairThreshold)                 tuning.GateTemplateThreshold = GateTemplateRules.FallbackPairThreshold;             var adaptiveKey = CreateAdaptiveScaleKey(                 frame,                 locked.Map,                 targetFloorKey);             RuntimeMapRecognition? aligned = null;             string? failureReason = null;             MapFeatureCacheKey? repairCacheKey = null;             MapRecognitionAttempt? finalAttempt = null;             var resetRecoveredScaleState = false;             try             {                 await Task.Run(() =>                 {                     cancellationToken.ThrowIfCancellationRequested();                     using var alignmentDeadline = new NoDoorAlignmentDeadline(                         cancellationToken,                         MapOpenAlignmentRouteRules.MaximumNoDoorAlignmentBudgetMilliseconds,                         enforceTimeBudget: false);                     using var alignmentBudget = alignmentDeadline.EnterAmbient();                     alignmentDispatch?.Complete();                     var alignmentCompute = trace?.StartTopLevel(                         "alignment_compute",                         MapOperationWaitKind.Compute,                         route: isOtherFloor ? "structure-only-floor" : "primary-floor",                         mapId: locked.Map.Id.ToString("D"),                         floorKey: targetFloorKey);                     try                     {                         // Alignment limits are acceptance targets only. The
                         // cancellation token remains reserved for match end or
                         // superseding operations.
-                        // 复用持久化的对齐会话以保留侧门身份先验与门对锁定状态。若持久化
                         // 会话与当前锁定地图不一致（如手动识别或换图），则从结果重建。
                         var lastSession = independentAlignment                             ? null                             : _lastAlignmentSession;                         var canReuseLastSession = lastSession is not null                             && lastSession.MapId == locked.Map.Id                             && lastSession.MapUpdatedAt == locked.Map.UpdatedAt                             && string.Equals(                                 lastSession.FloorKey,                                 targetFloorKey,                                 StringComparison.Ordinal)                             && (!IsAdaptiveScaleEnabled                                 || _lastReliableAdaptiveKey == adaptiveKey)                             && CanUseAdaptiveReliableSession(lastSession, adaptiveKey);                         var session = independentAlignment                             ? CreateIndependentFloorSeedSession(                                 locked,                                 targetFloorKey)                             : MapOpenAlignmentRouteRules                                 .ResolveMapOpenAlignmentSession(                                     locked.Map,                                     locked.Result,                                     recoveringSelectedIdentity                                         ? _pendingAlignmentSeed                                         : null,                                     lastSession,                                     canReuseLastSession,                                     targetFloorKey);                 // Secondary floors and a newly selected variant without a
                 // genuine side-door seed must use their own static structure

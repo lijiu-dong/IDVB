@@ -153,6 +153,9 @@ public interface IOverlayWindow : IDisposable
     /// 清除持久小地图内容。
     /// </summary>
     void ClearPersistentMiniMap();
+    void SetNativeMiniMapHeading(double? degrees) { }
+    void UpdateMiniMapPlayers(object players) { }
+    void ClearMiniMapPlayers() { }
 
     // ════════════════ 显示设置 ════════════════
 

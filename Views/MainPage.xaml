@@ -6,6 +6,34 @@
     xmlns:modules="using:IDVBuff.Modules">
 
     <Page.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.ThemeDictionaries>
+                <ResourceDictionary x:Key="Light">
+                    <SolidColorBrush x:Key="FeedbackButtonBackgroundBrush" Color="#7C3AED" />
+                    <SolidColorBrush x:Key="FeedbackButtonPointerOverBackgroundBrush" Color="#6D28D9" />
+                    <SolidColorBrush x:Key="FeedbackButtonPressedBackgroundBrush" Color="#5B21B6" />
+                    <SolidColorBrush x:Key="FeedbackButtonForegroundBrush" Color="#FFFFFF" />
+                </ResourceDictionary>
+                <ResourceDictionary x:Key="Dark">
+                    <SolidColorBrush x:Key="FeedbackButtonBackgroundBrush" Color="#8B5CF6" />
+                    <SolidColorBrush x:Key="FeedbackButtonPointerOverBackgroundBrush" Color="#9D4EDD" />
+                    <SolidColorBrush x:Key="FeedbackButtonPressedBackgroundBrush" Color="#7C3AED" />
+                    <SolidColorBrush x:Key="FeedbackButtonForegroundBrush" Color="#FFFFFF" />
+                </ResourceDictionary>
+            </ResourceDictionary.ThemeDictionaries>
+
+        <Style x:Key="PurpleFeedbackButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="{ThemeResource FeedbackButtonBackgroundBrush}" />
+            <Setter Property="Foreground" Value="{ThemeResource FeedbackButtonForegroundBrush}" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="Padding" Value="10,5" />
+            <Setter Property="Height" Value="32" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+
         <Style x:Key="NavigationButtonStyle" TargetType="Button">
             <Setter Property="HorizontalAlignment" Value="Stretch" />
             <Setter Property="HorizontalContentAlignment" Value="Stretch" />
@@ -120,6 +148,7 @@
                 </ItemsControl>
             </Grid>
         </DataTemplate>
+        </ResourceDictionary>
     </Page.Resources>
 
     <Grid x:Name="RootSurface" Background="Transparent">
@@ -132,7 +161,7 @@
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="330" />
                 <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="170" />
+                <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
             <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center" Margin="12,0">
                 <Button x:Name="NavigationCompactButton"
@@ -147,7 +176,17 @@
                 <TextBlock Text="Identity Vision Bridge" Style="{StaticResource BodyStrongTextBlockStyle}" VerticalAlignment="Center" />
             </StackPanel>
             <AutoSuggestBox Grid.Column="1" PlaceholderText="Search modules..." Width="480" HorizontalAlignment="Center" VerticalAlignment="Center" QueryIcon="Find" />
-            <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Spacing="4" Margin="0,0,12,0">
+            <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Spacing="8" Margin="0,0,12,0">
+                <Button x:Name="FeedbackButton"
+                        Style="{StaticResource PurpleFeedbackButtonStyle}"
+                        ToolTipService.ToolTip="反馈问题"
+                        AutomationProperties.Name="反馈问题"
+                        Click="FeedbackButton_Click">
+                    <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                        <FontIcon Glyph="&#xED15;" FontSize="14" FontFamily="{StaticResource SymbolThemeFontFamily}" Foreground="{ThemeResource FeedbackButtonForegroundBrush}" />
+                        <TextBlock Text="反馈问题" FontSize="13" VerticalAlignment="Center" Foreground="{ThemeResource FeedbackButtonForegroundBrush}" />
+                    </StackPanel>
+                </Button>
                 <Button Style="{StaticResource SubtleButtonStyle}" ToolTipService.ToolTip="关于" Click="Settings_Click"><FontIcon Glyph="&#xF427;" FontFamily="{StaticResource SymbolThemeFontFamily}" /></Button>
             </StackPanel>
         </Grid>

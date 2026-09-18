@@ -271,6 +271,7 @@ public sealed partial class SessionOrchestrator
             }
 
             PublishMiniMapAfterMainPresent(aligned, aligned.Result.Floor, false);
+            StartLivePlayerTracking(aligned, frame);
 
             // Rendering is the latency boundary visible to the user. Tracking
             // startup and cache I/O must not delay the final Present call.

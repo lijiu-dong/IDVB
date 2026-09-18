@@ -74,4 +74,76 @@ public sealed class FloorIndicatorTemplateRegistryTests
         Assert.Null(FloorIndicatorTemplateRegistry.Recognize(
             FloorIndicatorTemplateRegistry.Get("nightmare")!, blank, out _, out _));
     }
+
+    [Fact]
+    public void RecognizeDetailed_ValidTemplate_ReturnsExpectedMetricsAndScores()
+    {
+        var group = FloorIndicatorTemplateRegistry.Get("nightmare")!;
+        using var template = Cv2.ImRead(Path.Combine(AppContext.BaseDirectory,
+            "Assets", "FloorIndicators", group.States["1f"]));
+        using var canvas = new Mat(group.PixelHeight, group.PixelWidth, template.Type(), Scalar.All(25));
+        using (var target = new Mat(canvas, new Rect(0, 0, template.Width, template.Height)))
+            template.CopyTo(target);
+
+        var result = FloorIndicatorTemplateRegistry.RecognizeDetailed(group, canvas, templateScale: 1.0);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal("1f", result.DetectedFloor);
+        Assert.Equal("1f", result.BestFloor);
+        Assert.True(result.BestScore >= FloorIndicatorTemplateRegistry.DefaultMinScore);
+        Assert.True(result.Margin >= FloorIndicatorTemplateRegistry.DefaultMinMargin);
+        Assert.Equal("None", result.RejectionReason);
+        Assert.True(result.CandidateScores.ContainsKey("1f"));
+        Assert.True(result.CandidateScores.ContainsKey("2f"));
+        Assert.True(result.CandidateScores.ContainsKey("b1f"));
+        Assert.True(result.CandidateScores["1f"] > result.CandidateScores["2f"]);
+        Assert.True(result.CandidateScores["1f"] > result.CandidateScores["b1f"]);
+        Assert.True(result.MatchMilliseconds > 0);
+    }
+
+    [Fact]
+    public void RecognizeDetailed_BlankImage_RejectsWithScoreBelowThreshold()
+    {
+        var group = FloorIndicatorTemplateRegistry.Get("hard")!;
+        using var blank = new Mat(group.PixelHeight, group.PixelWidth, MatType.CV_8UC3, Scalar.All(10));
+
+        var result = FloorIndicatorTemplateRegistry.RecognizeDetailed(group, blank, templateScale: 1.0);
+
+        Assert.False(result.Succeeded);
+        Assert.Null(result.DetectedFloor);
+        Assert.NotNull(result.BestFloor);
+        Assert.Equal("ScoreBelowThreshold", result.RejectionReason);
+        Assert.True(result.BestScore < FloorIndicatorTemplateRegistry.DefaultMinScore);
+        Assert.Contains("低于阈值", result.FailureDescription);
+    }
+
+    [Fact]
+    public void RecognizeDetailed_EmptyImage_RejectsWithEmptyIndicatorImage()
+    {
+        var group = FloorIndicatorTemplateRegistry.Get("hard")!;
+        using var empty = new Mat();
+
+        var result = FloorIndicatorTemplateRegistry.RecognizeDetailed(group, empty);
+
+        Assert.False(result.Succeeded);
+        Assert.Null(result.DetectedFloor);
+        Assert.Null(result.BestFloor);
+        Assert.Equal("EmptyIndicatorImage", result.RejectionReason);
+        Assert.Contains("空", result.FailureDescription);
+    }
+
+    [Fact]
+    public void RecognizeDetailed_InvalidScale_RejectsWithInvalidTemplateScale()
+    {
+        var group = FloorIndicatorTemplateRegistry.Get("hard")!;
+        using var dummy = new Mat(50, 100, MatType.CV_8UC3, Scalar.All(10));
+
+        var result = FloorIndicatorTemplateRegistry.RecognizeDetailed(group, dummy, templateScale: -1.0);
+
+        Assert.False(result.Succeeded);
+        Assert.Null(result.DetectedFloor);
+        Assert.Null(result.BestFloor);
+        Assert.Equal("InvalidTemplateScale", result.RejectionReason);
+        Assert.Contains("缩放", result.FailureDescription);
+    }
 }

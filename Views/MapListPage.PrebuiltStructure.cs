@@ -114,6 +114,8 @@ public sealed partial class MapListPage
                 progress,
                 cancellation.Token);
             dialog.Hide();
+            if (!App.IsSafeMode)
+                await App.Session.RefreshMapCacheAsync();
             await ShowListAsync();
             await ShowMessageAsync(
                 "预制线图已生成",

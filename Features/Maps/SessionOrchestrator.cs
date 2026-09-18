@@ -78,6 +78,8 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
     private IReadOnlyDictionary<string, double>? _lastAlignmentPhaseTimings;
     private string? _lastStableCaptureFailureReason;
     private MapFloorRecognitionResult? _lastFloorRecognition;
+    private ScanPipelineContext? _lastScanPipelineContext;
+    private SideEntranceScanResult? _lastSideEntranceScan;
     private MapReferencePoint? _lastTrustedPlayerPoint;
     private string? _currentFloorKey;
     private MapAlignmentTrackingMode _alignmentTrackingMode = MapAlignmentTrackingMode.None;
@@ -439,6 +441,29 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
     public MapFloorRecognitionResult? LastFloorRecognition => _lastFloorRecognition;
     public MapReferencePoint? LastTrustedPlayerPosition => _lastTrustedPlayerPoint;
     public MapAlignmentTrackingMode AlignmentTrackingMode => _alignmentTrackingMode;
+    public ScanPipelineContext? LastScanPipelineContext => _lastScanPipelineContext;
+    public SideEntranceScanResult? LastSideEntranceScan => _lastSideEntranceScan;
+    public MapCvRecognitionService RecognitionService => _recognition;
+    public MapRepository MapRepository => _mapRepository;
+    public IVpsg3PreparedIndexRegistry Vpsg3Registry => _recognition.Vpsg3Registry;
+
+    public async Task<bool> WaitForVpsg3PreparedAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
+    {
+        var sw = Stopwatch.StartNew();
+        while (sw.Elapsed < timeout && !cancellationToken.IsCancellationRequested)
+        {
+            var registry = _recognition.Vpsg3Registry;
+            if (registry.Count > 0 && registry.BuildingCount == 0)
+                return registry.ReadyCount > 0;
+
+            if (registry.ReadyCount > 0 && registry.BuildingCount == 0)
+                return true;
+
+            await Task.Delay(50, cancellationToken);
+        }
+        return _recognition.Vpsg3Registry.ReadyCount > 0;
+    }
+
     public int ReadyMapCount => _recognition.ReadyMapCount;
     public int SideEntranceReadyMapCount => _recognition.SideEntranceReadyMapCount;
     public int TotalMapCount => _recognition.TotalMapCount;
@@ -450,51 +475,4 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
     public event EventHandler? StateChanged;
     public event EventHandler? ElevationRequiredDetected;
 
-    // ════════════════ ISessionOrchestrator ════════════════
-
-    public Task BeginMatchAsync() => Task.CompletedTask;
-    public async Task RunScanAsync() => await Task.CompletedTask;
-
-    public async Task BeginMatchAsync(string mapClass)
-    {
-        await _matchLifecycleGate.WaitAsync();
-        try
-        {
-            if (_disposed)
-                return;
-            if (_matchSession.Snapshot.IsStarted)
-                throw new InvalidOperationException("A match is already in progress.");
-            ResetMatchTransientState(resetAutomaticCacheSamples: true);
-            _matchPluginsActivated = false;
-            StartMatchCancellationScope();
-            var match = _matchSession.Begin(mapClass);
-            if (_settings?.DiagnosticModeEnabled is true)
-                MapDiagnosticModeCapture.BeginMatch();
-            await SetMatchPluginsActivatedCoreAsync(true);
-            _statusMessage = $"对局已开始 · {mapClass}";
-            _logCollector.Append(
-                MapLogCategory.Session,
-                MapLogLevel.Info,
-                $"进入对局 · version={match.Version} · class={match.MapClass}");
-            StateChanged?.Invoke(this, EventArgs.Empty);
-        }
-        finally
-        {
-            _matchLifecycleGate.Release();
-        }
-    }
-
-    [Obsolete("Player slots are no longer used. Call BeginMatchAsync(mapClass).")]
-    public Task BeginMatchAsync(PlayerSlot playerSlot, string mapClass) =>
-        BeginMatchAsync(mapClass);
-
-    public Task EndMatchAsync() => EndMatchAsync(saveAutomaticMapCache: false);
-
 }
-/*
- * 文件职责：SessionOrchestrator。
- * 所属模块：Features/Maps，主要负责地图识别、对齐、会话编排、缓存或覆盖层功能。
- * 设计说明：本文件承载一个相对独立的实现片段；它通过公开类型、方法或 partial 类型与同模块的其他文件协作，避免把完整地图流程集中在单个超大文件中。
- * 数据流：输入通常来自截图、识别结果、会话状态、配置或持久化缓存；输出应继续交给识别、对齐、渲染、日志或发布流程使用。调用方应遵守类型契约，并注意空值、超时、置信度和取消状态。
- * 维护约束：这里只补充说明，不改变业务逻辑。涉及楼层尺度时必须保持楼层之间完全独立；涉及 UI、窗口句柄或系统资源时应遵守生命周期与释放约定；调整算法时应同步检查相关规则、诊断和测试。
- */

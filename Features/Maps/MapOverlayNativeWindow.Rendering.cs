@@ -92,7 +92,9 @@ internal sealed record MapOverlayRenderScene(
     float MiniMapOpacity = 0.55f,
     float MiniMapOffsetX = 0f,
     float MiniMapOffsetY = 0f,
-    bool ShowFloorOnMiniMap = false);
+    bool ShowFloorOnMiniMap = false,
+    float? MiniMapRotationDegrees = null,
+    IReadOnlyList<MiniMapTrackedPlayer>? MiniMapPlayers = null);
 
 internal static partial class MapOverlayBitmapRenderer
 {
@@ -349,7 +351,8 @@ internal static partial class MapOverlayBitmapRenderer
                 scene.ShowGateMarkers, scene.ShowAuxiliaryAnchors,
                 scene.ShowTextAnnotations, scene.ShowBoxAnnotations,
                 scene.ShowLineAnnotations,
-                scene.ShowFloorOnMiniMap);
+                scene.ShowFloorOnMiniMap, scene.MiniMapRotationDegrees,
+                scene.MiniMapPlayers);
         if (scene.Player is not null)
             DrawPlayer(graphics, scene.Player, scene.Map?.ClipBounds);
         if (scene.Status is not null && layout.Status is { IsEmpty: false } statusBounds)

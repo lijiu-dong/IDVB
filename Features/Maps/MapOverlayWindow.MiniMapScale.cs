@@ -40,6 +40,7 @@ public sealed partial class MapOverlayWindow
         string? floorLabel = null)
     {
         _gameBounds = gameBounds;
+        _miniMapHeadingTransform = transform;
         _gameWindowHandle = gameWindowHandle;
         var imageKey = Path.GetFullPath(imagePath);
         // Resolve the target floor's final scale before replacing the visible
@@ -95,10 +96,13 @@ public sealed partial class MapOverlayWindow
 
     public void ClearPersistentMiniMap()
     {
+        _nativeMiniMapHeading = null;
+        _miniMapHeadingTransform = null;
         _persistentMiniMap = null;
         _miniMapScale = null;
         _miniMapBaseScale = null;
         _miniMapImageKey = null;
+        ClearMiniMapPlayers();
         RefreshVisibleContent();
     }
 

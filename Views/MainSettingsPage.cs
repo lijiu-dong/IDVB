@@ -108,6 +108,7 @@ public sealed partial class MainSettingsPage : Page
         });
         content.Children.Add(CreateRandomDelaySafetyCard());
 
+#if false
         content.Children.Add(new TextBlock
         {
             Text = "隐私",
@@ -129,6 +130,7 @@ public sealed partial class MainSettingsPage : Page
                 if (value)
                     _ = ModelImprovementUploadService.TryUploadDailyAsync(_preferences);
             }));
+#endif
 
         content.Children.Add(new TextBlock
         {
@@ -153,6 +155,12 @@ public sealed partial class MainSettingsPage : Page
                     _preferences.RealtimePerformanceOverlayEnabled = value;
                     Features.Maps.RealtimePerformanceOverlay.SetEnabled(value);
                 })));
+            content.Children.Add(CreateToggleCard(
+                "加强版小地图",
+                "（实验性）启用原生小地图 8 方位离散自适应朝向与大地图开图期间多玩家实时位置追踪映射",
+                _preferences.EnhancedMiniMapEnabled,
+                value => SavePreferenceAsync(() => _preferences.EnhancedMiniMapEnabled = value)));
+            content.Children.Add(CreateOverlayNotificationTestCard());
         }
 
         content.Children.Add(new TextBlock

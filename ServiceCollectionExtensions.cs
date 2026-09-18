@@ -1,5 +1,6 @@
 // IDVB Remaster — DI Composition Root
 
+using IDVBuff.Diagnostics;
 using IDVBuff.Core.Contracts;
 using IDVBuff.Features.Maps;
 using IDVBuff.Features.Maps.Adapters;
@@ -17,6 +18,7 @@ using IDVBuff.Survey.Registration.OpenCv;
 using IDVBuff.Survey.Fusion.OpenCv;
 using IDVBuff.Survey.Idvm;
 using IDVBuff.PluginContracts;
+using IDVBuff.Features.Notifications;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Dispatching;
 
@@ -36,7 +38,9 @@ public static class ServiceCollectionExtensions
         // ════════════════════════════════════════════════════════════
         // Infrastructure — Configuration
         // ════════════════════════════════════════════════════════════
-        configProvider ??= new TomlConfigProvider();
+        using var registrationTiming = StartupTimeline.Measure("DI registration body (after method JIT)");
+        using (StartupTimeline.Measure("DI configuration provider construction"))
+            configProvider ??= new TomlConfigProvider();
         services.AddSingleton(configProvider);
         if (configProvider is TomlConfigProvider toml)
             services.AddSingleton(toml);
@@ -47,11 +51,16 @@ public static class ServiceCollectionExtensions
                     : new TomlConfigProvider()));
 
         // 将 TOML 配置应用到各算法模块的静态规则类
-        GateTemplateRules.ApplyConfig(configProvider);
-        RecognitionConfigRules.ApplyConfig(configProvider);
-        StructureRegistrationRules.ApplyConfig(configProvider);
-        SideEntranceScanRules.ApplyConfig(configProvider);
-        OverlayDisplayRules.ApplyConfig(configProvider);
+        using (StartupTimeline.Measure("DI GateTemplateRules.ApplyConfig"))
+            GateTemplateRules.ApplyConfig(configProvider);
+        using (StartupTimeline.Measure("DI RecognitionConfigRules.ApplyConfig"))
+            RecognitionConfigRules.ApplyConfig(configProvider);
+        using (StartupTimeline.Measure("DI StructureRegistrationRules.ApplyConfig"))
+            StructureRegistrationRules.ApplyConfig(configProvider);
+        using (StartupTimeline.Measure("DI SideEntranceScanRules.ApplyConfig"))
+            SideEntranceScanRules.ApplyConfig(configProvider);
+        using (StartupTimeline.Measure("DI OverlayDisplayRules.ApplyConfig"))
+            OverlayDisplayRules.ApplyConfig(configProvider);
 
         // ════════════════════════════════════════════════════════════
         // Data — Repository
@@ -67,23 +76,43 @@ public static class ServiceCollectionExtensions
                 AppDataPaths.RootDirectory,
                 "Survey",
                 JsonSurveyTemplateStore.DefaultFileName)));
-        var surveyCapture = configProvider.Get<SurveyCaptureTuning>("survey.capture");
-        var surveyPreprocessing = configProvider.Get<SurveyPreprocessingTuning>("survey.preprocessing");
-        var surveyRegistration = configProvider.Get<SurveyRegistrationTuning>("survey.registration");
-        var surveyStorage = configProvider.Get<SurveyStorageTuning>("survey.storage");
-        var surveyFusion = configProvider.Get<SurveyFusionTuning>("survey.fusion.visual");
-        var surveyStructureFusion = configProvider.Get<SurveyFusionTuning>("survey.fusion.structure");
-        surveyFusion.StructureBinaryThreshold = surveyStructureFusion.StructureBinaryThreshold;
-        surveyCapture.Validate();
-        surveyPreprocessing.Validate();
-        surveyRegistration.Validate();
-        surveyStorage.Validate();
-        surveyFusion.Validate();
-        services.AddSingleton(surveyCapture);
-        services.AddSingleton(surveyPreprocessing);
-        services.AddSingleton(surveyRegistration);
-        services.AddSingleton(surveyStorage);
-        services.AddSingleton(surveyFusion);
+        services.AddSingleton(sp =>
+        {
+            var cp = sp.GetRequiredService<IConfigProvider>();
+            var cfg = cp.Get<SurveyCaptureTuning>("survey.capture");
+            cfg.Validate();
+            return cfg;
+        });
+        services.AddSingleton(sp =>
+        {
+            var cp = sp.GetRequiredService<IConfigProvider>();
+            var cfg = cp.Get<SurveyPreprocessingTuning>("survey.preprocessing");
+            cfg.Validate();
+            return cfg;
+        });
+        services.AddSingleton(sp =>
+        {
+            var cp = sp.GetRequiredService<IConfigProvider>();
+            var cfg = cp.Get<SurveyRegistrationTuning>("survey.registration");
+            cfg.Validate();
+            return cfg;
+        });
+        services.AddSingleton(sp =>
+        {
+            var cp = sp.GetRequiredService<IConfigProvider>();
+            var cfg = cp.Get<SurveyStorageTuning>("survey.storage");
+            cfg.Validate();
+            return cfg;
+        });
+        services.AddSingleton(sp =>
+        {
+            var cp = sp.GetRequiredService<IConfigProvider>();
+            var cfg = cp.Get<SurveyFusionTuning>("survey.fusion.visual");
+            var structure = cp.Get<SurveyFusionTuning>("survey.fusion.structure");
+            cfg.StructureBinaryThreshold = structure.StructureBinaryThreshold;
+            cfg.Validate();
+            return cfg;
+        });
         services.AddSingleton<ISurveyPreprocessor, OpenCvSurveyPreprocessor>();
         services.AddSingleton<ISurveyLayerRasterEditor, OpenCvSurveyLayerRasterEditor>();
         services.AddSingleton<ISurveyPairRegistrar, OpenCvSurveyPairRegistrar>();
@@ -131,6 +160,15 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ICaptureProtectionService, WindowCaptureProtectionService>();
         services.AddSingleton<IOverlayWindow, OverlayWindowAdapter>();
         services.AddSingleton<IOverlayRenderer, OverlayRendererAdapter>();
+        services.AddSingleton<OverlayNotificationQueue>();
+        services.AddSingleton<IOverlayNotificationService>(sp =>
+        {
+            var queue = sp.GetRequiredService<OverlayNotificationQueue>();
+            var capture = sp.GetService<ICaptureProtectionService>();
+            var service = new OverlayNotificationService(queue, capture);
+            OverlayNotificationCenter.Initialize(service);
+            return service;
+        });
 
         // ════════════════════════════════════════════════════════════
         // Services — Logging & Research

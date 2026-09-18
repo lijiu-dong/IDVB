@@ -18,6 +18,7 @@ public sealed class Vpsg3PreparedIndexRegistry : IVpsg3PreparedIndexRegistry
     public int Count => _slots.Count;
 
     public int ReadyCount => _slots.Values.Count(s => s.IsReady);
+    public int BuildingCount => _slots.Values.Count(s => s.Status == Vpsg3IndexStatus.Building);
 
     public long TotalMemoryBytes
     {

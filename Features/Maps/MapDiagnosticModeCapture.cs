@@ -114,6 +114,23 @@ internal static class MapDiagnosticModeCapture
         }
     }
 
+    internal static string? WriteNativeMiniMap(Mat image, string suffix = "")
+    {
+        // Serialize with EndMatch/Clear so an in-flight write cannot recreate a closed session.
+        lock (Gate)
+        {
+            if (_matchDirectory is null) return null;
+            var directory = Path.Combine(_matchDirectory, "原生小地图");
+            Directory.CreateDirectory(directory);
+            var path = Path.Combine(directory, $"原生小地图_{DateTime.Now:yyyyMMdd_HHmmss_fffffff}{suffix}.png");
+            // Byte encoding also supports Unicode paths. Report failures to the sampling loop.
+            if (!Cv2.ImEncode(".png", image, out var bytes))
+                throw new IOException("原生小地图 PNG 编码失败。");
+            File.WriteAllBytes(path, bytes);
+            return path;
+        }
+    }
+
     internal static void TryWrite(string path, Mat image)
     {
         try { Cv2.ImWrite(path, image); }

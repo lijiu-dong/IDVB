@@ -41,6 +41,10 @@ public sealed partial class SessionOrchestrator
     public RuntimeMapRecognition? PendingBackgroundIdentity =>
         _pendingBackgroundIdentity;
 
+    /// <summary>后台扫描产出的候选列表（如存在歧义）；已完成且未消费时非空。</summary>
+    public IReadOnlyList<MapRecognitionChoice>? PendingBackgroundChoices =>
+        _pendingBackgroundChoices;
+
     /// <summary>
     /// 后台扫描完成后保存待消费结果并标记状态。不弹候选/缩放界面、不对齐、
     /// 不提交 overlay——全部延迟到玩家第一次打开游戏地图时消费。

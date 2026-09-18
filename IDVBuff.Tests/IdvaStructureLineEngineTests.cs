@@ -231,7 +231,7 @@ public sealed class IdvaStructureLineEngineTests
         return new Scalar(pixel.Item0, pixel.Item1, pixel.Item2);
     }
 
-    private const string Algorithm = """
+    internal const string Algorithm = """
         {"format":"IDVA","schema_version":"1.1","algorithm_id":"structure.normal.route-test","display_name":"Route test","profile_family":"structure-map","profile_style":"normal","geometry_policy":{"preserve_input_size":true,"allow_resize":false,"allow_rotation":false,"allow_warp":false},"runtime":{"engine":"idvb-opencv-pipeline","language":"declarative-json","minimum_engine_version":"1.0"},"input":{"type":"raster-image","color_order":"BGR"},"output":{"type":"binary-edge-map","background":0,"edge":255,"line_width_px":2},"pipeline":[{"stage":"color_classification","mode":"HSV_RANGE"},{"stage":"ignore_route_overlays","mode":"HSV_RANGES"},{"stage":"morph_open","kernel":[3,3]},{"stage":"morph_close","kernels":[[13,13]]},{"stage":"contours","retrieval":"RETR_LIST","chain":"CHAIN_APPROX_SIMPLE"},{"stage":"draw_edges","line_width_px":2,"antialias":false}],"parameters":{"room_hsv_lo":[7,35,55],"room_hsv_hi":[22,180,190],"corridor_hsv_lo":[0,0,55],"corridor_hsv_hi":[179,60,180],"route_hsv_ranges":[{"lo":[0,80,60],"hi":[10,255,255]},{"lo":[170,80,60],"hi":[179,255,255]},{"lo":[35,60,60],"hi":[100,255,255]}],"route_mask_dilate_kernel":[5,5],"route_repair_radius_px":5}}
         """;
 }

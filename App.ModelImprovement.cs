@@ -13,9 +13,8 @@ public partial class App
         MainProgramPreferences preferences,
         bool startMinimized)
     {
-        await ShowModelImprovementConsentIfNeededAsync(preferences, startMinimized);
-        if (preferences.HelpImproveModels)
-            _ = ModelImprovementUploadService.TryUploadDailyAsync(preferences);
+        // 暂时禁用首次使用弹窗和每日自动上传，防止启动时阻塞 UI 线程
+        await Task.CompletedTask;
     }
 
     private async Task ShowModelImprovementConsentIfNeededAsync(

@@ -115,11 +115,10 @@ public sealed partial class MapListPage : UserControl
             _modernInteraction = EditorInteractionKind.Create;
             _modernPendingStart = SnapModernPoint(normalized);
             _modernPendingEnd = _modernPendingStart.Clone();
-            _modernPendingBounds = new NormalizedRectangle
-            {
-                X = _modernPendingStart.X,
-                Y = _modernPendingStart.Y
-            };
+            var isGate = _modernToolState.ActiveTool == MapEditorTool.Gate;
+            _modernPendingBounds = isGate ? null : new NormalizedRectangle { X = _modernPendingStart.X, Y = _modernPendingStart.Y };
+            if (isGate)
+                _modernGateHoverPoint = normalized;
         }
 
         _modernCanvas.CapturePointer(e.Pointer);
@@ -136,7 +135,12 @@ public sealed partial class MapListPage : UserControl
         if (_modernInteraction == EditorInteractionKind.None)
         {
             UpdateModernConcealHover(point);
-            if (_modernToolState.ActiveTool == MapEditorTool.Conceal)
+            if (_modernToolState.ActiveTool == MapEditorTool.Gate)
+                _modernGateHoverPoint = ToModernNormalizedPoint(point, true);
+            else
+                _modernGateHoverPoint = null;
+
+            if (_modernToolState.ActiveTool is MapEditorTool.Conceal or MapEditorTool.Gate)
                 RenderModernEditor();
             return;
         }
@@ -160,6 +164,15 @@ public sealed partial class MapListPage : UserControl
         var normalized = ToModernNormalizedPoint(point, true);
         if (normalized is null)
             return;
+        if (_modernToolState.ActiveTool == MapEditorTool.Gate
+            && _modernInteraction == EditorInteractionKind.Create)
+        {
+            _modernGateHoverPoint = normalized;
+            _modernPendingEnd = normalized;
+            RenderModernEditor();
+            e.Handled = true;
+            return;
+        }
         if (_modernToolState.ActiveTool == MapEditorTool.Conceal
             && _modernInteraction == EditorInteractionKind.Create)
         {
@@ -237,7 +250,7 @@ public sealed partial class MapListPage : UserControl
         if (_modernViewport is null || _modernCanvas is null)
             return;
         var pointer = e.GetCurrentPoint(_modernCanvas);
-        if (IsModernKeyDown(VirtualKey.Control) && _modernToolState.ActiveTool == MapEditorTool.Conceal)
+        if (IsModernKeyDown(VirtualKey.Control) && (_modernToolState.ActiveTool is MapEditorTool.Conceal or MapEditorTool.Gate))
         {
             ApplyModernConcealBrushWheel(pointer.Properties.MouseWheelDelta);
             e.Handled = true;
@@ -303,6 +316,13 @@ public sealed partial class MapListPage : UserControl
             CommitModernFreeCrop();
             return;
         }
+        if (tool == MapEditorTool.Gate)
+        {
+            var center = end ?? start;
+            if (center?.IsValid is true)
+                CommitModernGatePoint(center);
+            return;
+        }
 
         if (!ModernDragIsLargeEnough())
         {
@@ -352,9 +372,6 @@ public sealed partial class MapListPage : UserControl
                 CompleteModernCreation("已创建矩形。", returnToSelect: false);
                 break;
             }
-            case MapEditorTool.Gate when bounds?.IsValid is true:
-                CommitModernGate(bounds);
-                break;
             case MapEditorTool.Crop when bounds?.IsValid is true:
                 var priorCrop = profile.RecognitionRegion?.Clone();
                 var priorCropPoints = profile.FreeCropPoints.Select(point => point.Clone()).ToList();

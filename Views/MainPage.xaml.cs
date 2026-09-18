@@ -42,6 +42,8 @@ public sealed partial class MainPage : Page
     private readonly Dictionary<NavigationEntry, FrameworkElement> _navigationExpansionGlyphElements = [];
     private readonly Dictionary<NavigationEntry, ItemsControl> _navigationChildrenElements = [];
     private readonly OverlaySkeletonPreview _displaySkeletonPreview = new();
+    private readonly TaskCompletionSource _initialReady =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
     private MapStatusPage? _displayPreviewSource;
     private int _displayPreviewVisibilityRevision;
 
@@ -65,6 +67,7 @@ public sealed partial class MainPage : Page
     }
 
     public ObservableCollection<NavigationEntry> NavigationItems { get; } = [];
+    public Task InitialReady => _initialReady.Task;
     public NavigationEntry TutorialNavigationItem { get; }
     public NavigationEntry MainSettingsNavigationItem { get; }
     public NavigationEntry AccountNavigationItem { get; }
@@ -72,10 +75,19 @@ public sealed partial class MainPage : Page
     private static NavigationEntry CreateFooterNavigationEntry(string name, Symbol icon, string moduleId) =>
         new(new NavigationNode(name, icon, moduleId), parent: null);
 
-    private void MainPage_Loaded(object sender, RoutedEventArgs e)
+    private async void MainPage_Loaded(object sender, RoutedEventArgs e)
     {
-        NavigateTo("home", NavigationItems.First(entry => entry.ModuleId == "home"));
-        _ = AccountSession.RefreshAsync();
+        try
+        {
+            NavigateTo("home", NavigationItems.First(entry => entry.ModuleId == "home"));
+            _ = AccountSession.RefreshAsync();
+            if (ModuleContentHost.Content is HomePage homePage)
+                await homePage.InitialReady;
+        }
+        finally
+        {
+            _initialReady.TrySetResult();
+        }
     }
 
     private async void Navigation_ParentClick(object sender, RoutedEventArgs e)

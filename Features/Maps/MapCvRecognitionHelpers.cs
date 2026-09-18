@@ -244,6 +244,7 @@ internal static class MapCvRecognitionHelpers
         if (left.Id != right.Id
             || left.UpdatedAt != right.UpdatedAt
             || left.Recognition.SchemaVersion != right.Recognition.SchemaVersion
+            || !string.Equals(left.Class, right.Class, StringComparison.OrdinalIgnoreCase)
             || !string.Equals(
                 MapScanFloorRules.NormalizeFloorIdentity(left.ClassProperties?.ScanFloorKey),
                 MapScanFloorRules.NormalizeFloorIdentity(right.ClassProperties?.ScanFloorKey),
@@ -269,6 +270,14 @@ internal static class MapCvRecognitionHelpers
                 || a.RecognitionLastWriteUtcTicks != b.RecognitionLastWriteUtcTicks
                 || a.OverlayFileLength != b.OverlayFileLength
                 || a.OverlayLastWriteUtcTicks != b.OverlayLastWriteUtcTicks)
+                return false;
+
+            var aProfile = MapFloorRules.GetFloorProfile(left, a.Key);
+            var bProfile = MapFloorRules.GetFloorProfile(right, b.Key);
+            if (!string.Equals(aProfile?.SideEntranceFeatureSha256, bProfile?.SideEntranceFeatureSha256, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(aProfile?.SideEntranceFeatureAlgorithmVersion, bProfile?.SideEntranceFeatureAlgorithmVersion, StringComparison.Ordinal)
+                || !string.Equals(a.PrebuiltStructureLine?.Sha256, b.PrebuiltStructureLine?.Sha256, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(a.PrebuiltStructureLine?.AlgorithmSha256, b.PrebuiltStructureLine?.AlgorithmSha256, StringComparison.OrdinalIgnoreCase))
                 return false;
         }
 

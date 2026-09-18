@@ -188,4 +188,49 @@ public sealed class MapPlayerMarkerDetectorTests
         Assert.InRange(recovered.ViewportPoint.X, 541d, 544d);
         Assert.InRange(recovered.ViewportPoint.Y, 282d, 285d);
     }
+
+    [Fact]
+    public void RealSession_SuccessfullyDetectsPlayersInDisplayRegion()
+    {
+        var diagDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "IDVB", "诊断模式", "对局 1");
+        if (!Directory.Exists(diagDir)) return;
+
+        var displayDir = Path.Combine(diagDir, "显示区域");
+        if (!Directory.Exists(displayDir)) return;
+
+        var files = Directory.GetFiles(displayDir, "*.png").Take(5).ToList();
+        if (files.Count == 0) return;
+
+        using var detector = new MapPlayerMarkerDetector();
+        var totalDetections = 0;
+        foreach (var file in files)
+        {
+            using var img = Cv2.ImRead(file, ImreadModes.Color);
+            if (img.Empty()) continue;
+
+            foreach (var slot in MapPlayerAssetCatalog.Slots)
+            {
+                var path = MapPlayerAssetCatalog.ResolvePath(slot);
+                var res = detector.Detect(
+                    img,
+                    new MapScreenRect(0, 0, img.Width, img.Height),
+                    new MapScreenRect(0, 0, img.Width, img.Height),
+                    slot,
+                    path,
+                    previousPoint: null);
+                if (res.Succeeded)
+                {
+                    Assert.True(res.Confidence >= 0.58d);
+                    Assert.InRange(res.ViewportPoint.X, 0, img.Width);
+                    Assert.InRange(res.ViewportPoint.Y, 0, img.Height);
+                    totalDetections++;
+                }
+            }
+        }
+
+        // 真实 5 帧大地图开图画面中，必须能够成功稳定检出多个玩家
+        Assert.True(totalDetections >= 5, $"真实大地图玩家检出数不足：{totalDetections}");
+    }
 }

@@ -29,16 +29,15 @@ public partial class App
             return false;
 
         WriteStartupTrace("Safe mode is active; CV, overlay and plugin runtimes will not be initialized.");
+        await PrepareMapListAsync(null);
         if (!preferences.SafeModeFirstRunIntroductionCompleted)
         {
-            if (startMinimized)
-                ShowMainWindow();
+            await CompleteStartupPresentationAsync(startMinimized: false);
             await ShowSafeModeFirstRunIntroductionAsync(preferences);
         }
         if (GameProcessIntegrityService.Check().CurrentProcessIsElevated)
         {
-            if (startMinimized)
-                ShowMainWindow();
+            await CompleteStartupPresentationAsync(startMinimized: false);
             await ShowSafeModeElevationWarningAsync();
         }
 

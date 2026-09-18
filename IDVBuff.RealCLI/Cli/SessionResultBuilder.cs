@@ -5,14 +5,23 @@
 
 using IDVBuff.Features.Maps;
 using IDVBuff.RealCLI.Output;
+using IDVBuff.RealCLI.Stubs;
 
 namespace IDVBuff.RealCLI.Cli;
 
-internal static class SessionResultBuilder
+internal static partial class SessionResultBuilder
 {
+    public static RuntimeMapRecognition? GetEffectiveRecognition(SessionOrchestrator orchestrator)
+    {
+        return orchestrator.LastRecognition
+            ?? orchestrator.PendingAlignmentIdentity
+            ?? orchestrator.PendingBackgroundIdentity
+            ?? orchestrator.PendingBackgroundChoices?.FirstOrDefault()?.Recognition;
+    }
+
     public static RealCliRecognitionOutput? BuildRecognition(SessionOrchestrator orchestrator)
     {
-        var rec = orchestrator.LastRecognition;
+        var rec = GetEffectiveRecognition(orchestrator);
         if (rec is null)
             return null;
         return new RealCliRecognitionOutput

@@ -33,6 +33,8 @@ public partial class App
 
     private async Task InitializeThirdPartyPluginsAsync(IMessageBus pluginBus)
     {
+        using var timing = StartupTimeline.Measure("Third-party initialization body (after method JIT)");
+        WriteStartupTrace("Third-party directories, state and installer construction begin.");
         // Developer mode is explicit and uses isolated package, trust and state directories.
         var pluginDeveloperMode = Environment.GetCommandLineArgs().Any(argument =>
             string.Equals(argument, "--plugin-developer-mode", StringComparison.OrdinalIgnoreCase));
@@ -45,17 +47,20 @@ public partial class App
             _thirdPartyPluginState,
             BuildVersionInfo.ProductVersion);
         var thirdPartyEventHub = new ThirdPartyHostEventHub();
+        WriteStartupTrace("Third-party directories, state and installer constructed; event bridge begin.");
         _thirdPartyHostEventBridge = new ThirdPartyHostEventBridge(pluginBus, thirdPartyEventHub);
         _thirdPartyHostEventBridge.Attach();
         _pluginNotificationCenter = new PluginNotificationCenter();
         var serviceProvider = _serviceProvider
             ?? throw new InvalidOperationException("DI container is not initialized.");
+        WriteStartupTrace("Third-party event bridge attached; capability services resolution begin.");
         var capabilitySource = new ThirdPartyPluginCapabilitySource(
             thirdPartyEventHub,
             serviceProvider.GetRequiredService<IPluginInputService>(),
             serviceProvider.GetRequiredService<IPluginScreenshotService>(),
             _pluginNotificationCenter,
             QueueThirdPartyPluginFault);
+        WriteStartupTrace("Third-party capability services resolved; context and manager construction begin.");
         var contextFactory = new DefaultThirdPartyPluginContextFactory(
             capabilitySource,
             manifest => new DelegatePluginLogger((level, message, exception) =>
@@ -68,11 +73,17 @@ public partial class App
             _thirdPartyPluginDirectories,
             _thirdPartyPluginState,
             _thirdPartyPluginInstaller,
-            contextFactory);
+            contextFactory)
+        {
+            StartupDiagnostic = message => WriteStartupTrace($"Third-party: {message}")
+        };
+        WriteStartupTrace("Third-party manager constructed.");
         try
         {
-            await _thirdPartyPluginRuntime.SetMatchActivationAsync(false);
-            await _thirdPartyPluginRuntime.StartAsync();
+            using (StartupTimeline.Measure("Third-party activation gate close"))
+                await _thirdPartyPluginRuntime.SetMatchActivationAsync(false);
+            using (StartupTimeline.Measure("Third-party runtime StartAsync call"))
+                await _thirdPartyPluginRuntime.StartAsync();
         }
         catch (Exception exception)
         {

@@ -213,6 +213,8 @@ public sealed partial class MapListPage : UserControl
     private async Task RenameClassAsync(string oldName, string newName)
     {
         await _repository.RenameClassAsync(oldName, newName);
+        if (!App.IsSafeMode)
+            await App.Session.RefreshMapCacheAsync();
     }
 
     private async Task ReorderCurrentClassAsync()
@@ -230,6 +232,8 @@ public sealed partial class MapListPage : UserControl
             return;
 
         await _repository.ReorderClassAsync(_selectedClass);
+        if (!App.IsSafeMode)
+            await App.Session.RefreshMapCacheAsync();
         await ShowListAsync();
     }
 }

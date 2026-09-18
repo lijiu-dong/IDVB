@@ -242,6 +242,10 @@ public sealed partial class MapCvRecognitionService : IDisposable
         // Dispatch background bounded parallel execution (3 workers)
         _ = Task.Run(async () =>
         {
+            // Yield startup CPU priority to initial UI presentation
+            try { await Task.Delay(1500, token); }
+            catch (OperationCanceledException) { return; }
+
             var options = new ParallelOptions
             {
                 MaxDegreeOfParallelism = Vpsg3RebuildWorkerCount,

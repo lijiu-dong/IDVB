@@ -34,6 +34,7 @@ public sealed class Vpsg3Phase3BInvestigationTests
         var dataset = Vpsg3Phase0DatasetGenerator.GenerateDataset();
         try
         {
+            if (!dataset.Any(s => s.SourceType == "RealMap")) { _output.WriteLine("Skipped: No RealMap data available locally"); return; }
             var s0 = dataset.First(s => s.SourceType == "RealMap");
             var refMat = s0.ReferenceStructureLine;
             var width = refMat.Width;

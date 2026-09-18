@@ -13,15 +13,17 @@ using IDVBuff.Cli;
 using System.Runtime.InteropServices;
 using IDVBuff.Lifecycle;
 using WinRT.Interop;
+using System.IO;
+
 // Windows App SDK 单文件发布要求：在程序入口前设置此环境变量，
 // 以便运行时能在单文件包内找到原生 DLL。
 namespace IDVBuff
-{    /// <summary>
+{
+    /// <summary>
     /// Provides application-specific behavior to supplement the default Application class.
     /// </summary>
     public partial class App : Application
     {
-
         private async void AppWindow_Closing(
             AppWindow sender,
             AppWindowClosingEventArgs args)
@@ -40,52 +42,113 @@ namespace IDVBuff
 
             shutdownInProgress = true;
             var closingWindow = window;
+
+            // 立即隐藏主窗口与系统托盘图标，从用户视觉上瞬间关闭（< 10ms），绝无空白卡顿或“未响应”
+            if (closingWindow is not null)
+            {
+                try
+                {
+                    closingWindow.AppWindow.Hide();
+                    ShowWindow(WindowNative.GetWindowHandle(closingWindow), 0);
+                }
+                catch { }
+            }
+
             try
             {
-                // Detach the active page tree first.  Both map editors own image
-                // decode operations and native XAML surfaces; their Unloaded
-                // handlers cancel that work before the runtime services go away.
-                if (closingWindow is not null)
-                    closingWindow.Content = null;
+                _trayIcon?.Dispose();
+                _trayIcon = null;
+            }
+            catch { }
+            GuiInstanceCoordinator.ActivationRequested -= GuiInstance_ActivationRequested;
 
-                RealtimePerformanceOverlay.Instance?.Dispose();
+            // Watchdog: If async disposal stalls or deadlocks, force terminate after 3 seconds.
+            _ = Task.Delay(TimeSpan.FromSeconds(3)).ContinueWith(_ =>
+            {
+                CompleteApplicationExit();
+            }, TaskScheduler.Default);
+
+            try
+            {
+                // Detach the active page tree first while window is already hidden.
+                if (closingWindow is not null)
+                {
+                    try { closingWindow.Content = null; }
+                    catch { }
+                }
+
+                try { RealtimePerformanceOverlay.Instance?.Dispose(); }
+                catch { }
+                try { IDVBuff.Features.Notifications.OverlayNotificationWindow.Instance?.Dispose(); }
+                catch { }
 
                 // 释放新架构 SessionOrchestrator 及所有子资源
                 if (_idvbControlServer is not null)
                 {
-                    await _idvbControlServer.DisposeAsync();
-                    _idvbControlServer = null;
+                    try { await _idvbControlServer.DisposeAsync(); }
+                    catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"IDVB control server dispose failed: {ex}"); }
+                    finally { _idvbControlServer = null; }
                 }
 
                 if (_updateShutdownServer is not null)
                 {
-                    await _updateShutdownServer.DisposeAsync();
-                    _updateShutdownServer = null;
+                    try { await _updateShutdownServer.DisposeAsync(); }
+                    catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"Update shutdown server dispose failed: {ex}"); }
+                    finally { _updateShutdownServer = null; }
                 }
 
                 // TTM 持有插件设置页的 UI 实例，必须在插件停止前关闭摘除。
-                _teachingTipManager?.Close();
-                _teachingTipManager = null;
-                await StopThirdPartyPluginsAsync();
-                _pluginManager?.Stop();
-                _pluginManager = null;
-                _hostEventBridge?.Dispose();
-                _hostEventBridge = null;
-                DisposeSafeModeTraditionalWindowInput();
+                try
+                {
+                    _teachingTipManager?.Close();
+                    _teachingTipManager = null;
+                }
+                catch { }
+
+                try
+                {
+                    await StopThirdPartyPluginsAsync().WaitAsync(TimeSpan.FromSeconds(1));
+                }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"Stop third party plugins failed: {ex}"); }
+
+                try
+                {
+                    _pluginManager?.Stop();
+                    _pluginManager = null;
+                }
+                catch { }
+
+                try
+                {
+                    _hostEventBridge?.Dispose();
+                    _hostEventBridge = null;
+                }
+                catch { }
+
+                try { DisposeSafeModeTraditionalWindowInput(); }
+                catch { }
 
                 if (_serviceProvider?.GetService<Features.Maps.SessionOrchestrator>() is IAsyncDisposable ad)
                 {
-                    await ad.DisposeAsync()
-                        .AsTask()
-                        .WaitAsync(TimeSpan.FromSeconds(8));
+                    try
+                    {
+                        await ad.DisposeAsync()
+                            .AsTask()
+                            .WaitAsync(TimeSpan.FromMilliseconds(1500));
+                    }
+                    catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"SessionOrchestrator dispose failed: {ex}"); }
                 }
 
                 if (_serviceProvider is { } sp)
                 {
-                    await sp.DisposeAsync()
-                        .AsTask()
-                        .WaitAsync(TimeSpan.FromSeconds(8));
-                    _serviceProvider = null;
+                    try
+                    {
+                        await sp.DisposeAsync()
+                            .AsTask()
+                            .WaitAsync(TimeSpan.FromSeconds(1));
+                    }
+                    catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"ServiceProvider dispose failed: {ex}"); }
+                    finally { _serviceProvider = null; }
                 }
 
             }
@@ -101,21 +164,30 @@ namespace IDVBuff
                 // process-wide, so disposing the DI graph alone cannot release
                 // them when a WinUI window has kept the process alive.  Keep
                 // this cleanup in finally so a timed-out service cannot skip it.
-                MapStructurePreprocessor.ClearReferenceCache();
-                MapOverlayBitmapRenderer.InvalidateImageCache();
+                try
+                {
+                    MapStructurePreprocessor.ClearReferenceCache();
+                    MapOverlayBitmapRenderer.InvalidateImageCache();
+                }
+                catch { }
+
                 shutdownComplete = true;
                 shutdownInProgress = false;
                 try
                 {
                     if (closingWindow is not null)
+                    {
+                        closingWindow.Closed -= Window_Closed;
                         closingWindow.Close();
-                    else
-                        CompleteApplicationExit();
+                    }
                 }
                 catch (Exception exception)
                 {
                     System.Diagnostics.Debug.WriteLine(
                         $"Main window close failed: {exception}");
+                }
+                finally
+                {
                     CompleteApplicationExit();
                 }
             }
@@ -173,6 +245,8 @@ namespace IDVBuff
 
         private void ShowMainWindow()
         {
+            if (_startupPresentationPending)
+                return;
             var currentWindow = window;
             if (currentWindow is null)
                 return;
@@ -265,7 +339,7 @@ namespace IDVBuff
                 try
                 {
                     await ApplyQuickStartSelectionAsync(session);
-                    if (window?.Content is Frame { Content: MainPage mainPage })
+                    if (_mainFrame?.Content is MainPage mainPage)
                         await mainPage.ShowRecommendedConfigurationGuideAsync();
                 }
                 catch (Exception exception)
@@ -331,6 +405,38 @@ namespace IDVBuff
             {
                 RequestApplicationExit();
             }
+        }
+
+        private static void TrySetWindowIcon(Window targetWindow)
+        {
+            var iconPath = Path.Combine(
+                AppContext.BaseDirectory,
+                "Assets",
+                "Icons",
+                "IDVB_icon_multisize.ico");
+
+            if (!File.Exists(iconPath))
+                return;
+
+            try
+            {
+                targetWindow.AppWindow.SetIcon(iconPath);
+            }
+            catch (Exception exception)
+            {
+                System.Diagnostics.Debug.WriteLine(
+                    $"Unable to set IDVB icon: {exception.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Invoked when Navigation to a certain page fails
+        /// </summary>
+        /// <param name="sender">The Frame which failed navigation</param>
+        /// <param name="e">Details about the navigation failure</param>
+        void OnNavigationFailed(object sender, NavigationFailedEventArgs e)
+        {
+            throw new Exception("Failed to load Page " + e.SourcePageType.FullName);
         }
     }
 }

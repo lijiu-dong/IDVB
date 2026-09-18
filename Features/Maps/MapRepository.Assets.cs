@@ -55,11 +55,12 @@ public sealed partial class MapRepository
             if (source.Empty())
                 throw new InvalidOperationException($"Image cannot be read: '{sourcePath}'.");
 
+            using var bgr = MapBackgroundProcessor.CompositeToBgr(source);
             const int maxWidth = 400;
-            var width = Math.Min(maxWidth, source.Width);
-            var height = Math.Max(1, (int)Math.Round(source.Height * (width / (double)source.Width)));
+            var width = Math.Min(maxWidth, bgr.Width);
+            var height = Math.Max(1, (int)Math.Round(bgr.Height * (width / (double)bgr.Width)));
             using var thumbnail = new Mat();
-            Cv2.Resize(source, thumbnail, new Size(width, height), 0, 0, InterpolationFlags.Area);
+            Cv2.Resize(bgr, thumbnail, new Size(width, height), 0, 0, InterpolationFlags.Area);
             if (!Cv2.ImWrite(destinationPath, thumbnail, [new ImageEncodingParam(ImwriteFlags.JpegQuality, 82)]))
                 throw new InvalidOperationException($"Image cannot be written: '{destinationPath}'.");
         });

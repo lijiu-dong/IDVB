@@ -8,7 +8,6 @@ using IDVBuff.Pipeline;
 namespace IDVBuff.Features.Maps;
 public sealed partial class SessionOrchestrator
 {
-
     private async Task RunBackgroundConsumeAlignmentAsync(
         MapGameToggleTransition toggle,
         MapMatchSnapshot operationMatch,
@@ -156,7 +155,6 @@ public sealed partial class SessionOrchestrator
                     repair = fallbackRepair;
                     return missingMapFallbackAttempt;
                 }
-
                 if (MapOpenAlignmentRouteRules.IsCompatibleReliableFloorSession(
                         validatedStructureScaleSeed,
                         selectedMap.Id,

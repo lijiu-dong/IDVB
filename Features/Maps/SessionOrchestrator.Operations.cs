@@ -24,6 +24,14 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
         StateChanged?.Invoke(this, EventArgs.Empty);
     }
 
+    public async Task EnsureMapCacheSynchronizedAsync()
+    {
+        if (_recognition.CatalogRevision != _mapRepository.GetCatalogRevision())
+        {
+            await RefreshMapCacheAsync();
+        }
+    }
+
     public Task RunQuickScanAsync() => RunQuickScanAsync(candidateSelector: null);
 
     public async Task RunQuickScanAsync(
@@ -44,6 +52,8 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
             ReportCliGuardFailure("地图识别功能已禁用。", MapLogCategory.Session);
             return;
         }
+
+        await EnsureMapCacheSynchronizedAsync();
         if (!_matchSession.Snapshot.IsStarted)
         {
             _statusMessage = "请先在对局控件中点击“进入对局”，再执行扫描。";

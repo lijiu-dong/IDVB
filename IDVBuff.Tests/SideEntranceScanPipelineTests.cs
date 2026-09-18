@@ -400,7 +400,7 @@ public sealed partial class SideEntranceScanPipelineTests
 
         Assert.InRange(standardDeviation.Val0, 0d, 0.001d);
         Assert.True(mean.Val0 < 250d);
-        Assert.Equal("3-ratio-gate-masked", SideEntranceFeaturePreprocessor.AlgorithmVersion);
+        Assert.Equal("4-ratio25", SideEntranceFeaturePreprocessor.AlgorithmVersion);
     }
 
     [Fact]

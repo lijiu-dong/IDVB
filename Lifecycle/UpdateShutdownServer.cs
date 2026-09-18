@@ -23,14 +23,14 @@ internal sealed class UpdateShutdownServer : IAsyncDisposable
     {
         while (!cancellationToken.IsCancellationRequested)
         {
-            await using var server = new NamedPipeServerStream(
-                UpdateProtocol.ShutdownPipeName,
-                PipeDirection.InOut,
-                1,
-                PipeTransmissionMode.Byte,
-                PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
             try
             {
+                await using var server = new NamedPipeServerStream(
+                    UpdateProtocol.ShutdownPipeName,
+                    PipeDirection.InOut,
+                    1,
+                    PipeTransmissionMode.Byte,
+                    PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
                 await server.WaitForConnectionAsync(cancellationToken);
                 await HandleRequestAsync(server, cancellationToken);
             }
@@ -40,6 +40,8 @@ internal sealed class UpdateShutdownServer : IAsyncDisposable
             }
             catch (IOException)
             {
+                try { await Task.Delay(500, cancellationToken); }
+                catch (OperationCanceledException) { break; }
             }
             catch (Exception exception)
             {
@@ -110,6 +112,7 @@ internal sealed class UpdateShutdownServer : IAsyncDisposable
             try { await _serverTask.WaitAsync(TimeSpan.FromSeconds(2)); }
             catch (OperationCanceledException) { }
             catch (TimeoutException) { }
+            catch (Exception) { }
         }
         _shutdown.Dispose();
     }

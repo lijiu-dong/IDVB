@@ -1,5 +1,6 @@
 using IDVBuff.Features.QuickStart;
 using IDVBuff.Features.Maps;
+using IDVBuff.Lifecycle;
 
 namespace IDVBuff.Tests;
 
@@ -78,6 +79,25 @@ public sealed class QuickStartTests
 
         // A setting not listed by recommendation 1 keeps its default value.
         Assert.False(recommended.PlayerTrackingEnabled);
+    }
+
+    [Fact]
+    public void RecommendationOneDisablesMinimizeToTrayInMainProgramPreferences()
+    {
+        var preferences = new MainProgramPreferences { MinimizeToTray = true };
+        QuickStartRecommendedSettings.ApplyRecommendation1(preferences);
+
+        Assert.False(preferences.MinimizeToTray);
+
+        var created = QuickStartRecommendedSettings.CreateRecommendedPreferences();
+        Assert.False(created.MinimizeToTray);
+    }
+
+    [Fact]
+    public void MainProgramPreferences_MinimizeToTray_DefaultsToFalse()
+    {
+        var preferences = new MainProgramPreferences();
+        Assert.False(preferences.MinimizeToTray);
     }
 
     private static string CreateTemporaryDirectory()

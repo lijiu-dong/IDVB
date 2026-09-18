@@ -48,4 +48,42 @@ public sealed partial class MapRepository
             ? GetSafeMapFilePath(GetMapDirectory(record.Id), firstFloor.ImageFileName)
             : GetStoredFloorImagePath(record.Id, record.FloorOneFileName, "floor-1");
     }
+
+    public async Task<IReadOnlyList<MapRecord>> GetMapsAsync()
+    {
+        await Gate.WaitAsync();
+        try
+        {
+            var catalog = await ReadCatalogAsync();
+            return catalog.Maps
+                .OrderBy(record => record.SequenceNumber)
+                .Select(record => CloneWithClassProperties(catalog, record))
+                .ToArray();
+        }
+        finally
+        {
+            Gate.Release();
+        }
+    }
+
+    private static async Task CopyRecognitionSourceAsync(string source, string destination)
+    {
+        await using var input = new FileStream(
+            source,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            64 * 1024,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        await using var output = new FileStream(
+            destination,
+            FileMode.CreateNew,
+            FileAccess.Write,
+            FileShare.None,
+            64 * 1024,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        await input.CopyToAsync(output);
+        await output.FlushAsync();
+    }
+
 }

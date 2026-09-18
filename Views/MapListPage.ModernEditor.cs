@@ -58,6 +58,9 @@ public sealed partial class MapListPage : UserControl
     private StackPanel? _modernLayerList;
     private TextBlock? _modernStatusText;
     private TextBlock? _modernZoomText;
+    private TextBlock? _modernFloorResolutionText;
+    private FrameworkElement? _modernFloorResolutionContainer;
+    private Button? _modernDownsampleButton;
     private Border? _modernColorIndicator;
     private BitmapImage? _modernBitmap;
     private const int ModernEditorDecodePixelWidth = 2048;
@@ -97,6 +100,7 @@ public sealed partial class MapListPage : UserControl
     private readonly Stack<ModernUndoAction> _modernCreationUndoStack = new();
     private readonly MapConcealStrokeBuilder _modernConcealStroke = new();
     private NormalizedPoint? _modernConcealHoverPoint;
+    private NormalizedPoint? _modernGateHoverPoint;
     private Polyline? _modernConcealPreviewStroke;
     private Shape? _modernConcealPreviewTip;
     private int _modernConcealPreviewPointCount;
@@ -141,6 +145,72 @@ public sealed partial class MapListPage : UserControl
         _modernLayerDrawerButton = CreateViewButton("\uE8A9", "图层", (_, _) => ToggleModernLayerDrawer());
         _modernLayerDrawerButton.Visibility = Visibility.Collapsed;
         row.Children.Add(_modernLayerDrawerButton);
+
+        row.Children.Add(new Rectangle
+        {
+            Width = 1,
+            Height = 18,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(4, 0, 4, 0),
+            Fill = new SolidColorBrush(EditorBorder)
+        });
+
+        var resPill = new Border
+        {
+            Padding = new Thickness(8, 4, 8, 4),
+            VerticalAlignment = VerticalAlignment.Center,
+            CornerRadius = new CornerRadius(6),
+            Background = new SolidColorBrush(Color.FromArgb(35, 255, 255, 255))
+        };
+        var resContent = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 6,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        resContent.Children.Add(new FontIcon
+        {
+            Glyph = "\uEB9F",
+            FontSize = 13,
+            Foreground = new SolidColorBrush(EditorMuted),
+            VerticalAlignment = VerticalAlignment.Center
+        });
+        _modernFloorResolutionText = new TextBlock
+        {
+            Text = "原图 -- \u00D7 --",
+            FontSize = 11,
+            Foreground = new SolidColorBrush(EditorText),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        resContent.Children.Add(_modernFloorResolutionText);
+        resPill.Child = resContent;
+        ToolTipService.SetToolTip(resPill, "当前楼层原图物理分辨率");
+        _modernFloorResolutionContainer = resPill;
+        row.Children.Add(resPill);
+
+        _modernDownsampleButton = new Button
+        {
+            Content = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 4,
+                Children =
+                {
+                    new FontIcon { Glyph = "\uE790", FontSize = 12 },
+                    new TextBlock { Text = "降采样", FontSize = 11, VerticalAlignment = VerticalAlignment.Center }
+                }
+            },
+            Height = 30,
+            Padding = new Thickness(8, 2, 8, 2),
+            CornerRadius = new CornerRadius(6),
+            Background = new SolidColorBrush(Color.FromArgb(35, 255, 255, 255)),
+            Foreground = new SolidColorBrush(EditorText),
+            BorderThickness = new Thickness(0),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        ToolTipService.SetToolTip(_modernDownsampleButton, "对当前地图全系列楼层原图执行降采样（直接修改原图 · 不可撤销）");
+        _modernDownsampleButton.Click += async (_, _) => await ShowModernDownsampleDialogAsync();
+        row.Children.Add(_modernDownsampleButton);
 
         var toolbarScroller = new ScrollViewer
         {
@@ -337,6 +407,9 @@ public sealed partial class MapListPage : UserControl
         _modernCanvas = null;
         _modernLayerList = null;
         _modernExportButton = null;
+        _modernFloorResolutionText = null;
+        _modernFloorResolutionContainer = null;
+        _modernDownsampleButton = null;
         _modernBitmap = null;
         _modernLayerGroups.Clear();
         _editorToolButtons.Clear();
@@ -344,129 +417,12 @@ public sealed partial class MapListPage : UserControl
         _modernFreeCropPoints.Clear();
         _modernConcealStroke.Cancel();
         _modernConcealHoverPoint = null;
+        _modernGateHoverPoint = null;
         _modernSelection = null;
         _modernExportRendering = false;
         _modernExportInProgress = false;
         _modernToolState.Reset();
     }
 
-    private async Task LoadEditorPreferencesAsync()
-    {
-        if (_recentColorsLoaded)
-            return;
-        _editorPreferenceState = await _editorPreferences.LoadAsync();
-        _recentAnnotationColors.Replace(_editorPreferenceState.RecentColors.AsEnumerable().Reverse());
-        _recentColorsLoaded = true;
-    }
-
-    private async Task RememberEditorColorAsync(string color)
-    {
-        if (!_recentAnnotationColors.Use(color))
-            return;
-        try
-        {
-            _editorPreferenceState.RecentColors = _recentAnnotationColors.Colors.ToList();
-            await _editorPreferences.SaveAsync(_editorPreferenceState);
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-            System.Diagnostics.Debug.WriteLine($"Unable to save map editor colors: {exception.Message}");
-        }
-    }
-
-    private void ShowModernColorPicker(Button placementTarget)
-    {
-        var panel = new StackPanel { Spacing = 8, Width = 300 };
-        panel.Children.Add(new TextBlock
-        {
-            Text = "最近使用",
-            FontSize = 12,
-            Foreground = new SolidColorBrush(EditorMuted)
-        });
-        var recents = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 7, MinHeight = 34 };
-        foreach (var recent in _recentAnnotationColors.Colors)
-        {
-            var captured = recent;
-            var swatch = new Button
-            {
-                Width = 31,
-                Height = 31,
-                Padding = new Thickness(0),
-                Background = new SolidColorBrush(ParseEditorColor(recent)),
-                BorderBrush = new SolidColorBrush(EditorText),
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(16)
-            };
-            swatch.Click += (_, _) => ApplySelectedEditorColor(captured);
-            recents.Children.Add(swatch);
-        }
-        panel.Children.Add(recents);
-        var picker = new ColorPicker
-        {
-            IsAlphaEnabled = false,
-            IsAlphaSliderVisible = false,
-            IsAlphaTextInputVisible = false,
-            Color = ParseEditorColor(_currentAnnotationColor)
-        };
-        picker.ColorChanged += (_, args) => ApplySelectedEditorColor(ToEditorColorHex(args.NewColor));
-        panel.Children.Add(picker);
-        var flyout = new Flyout { Content = panel, Placement = FlyoutPlacementMode.RightEdgeAlignedTop };
-        flyout.ShowAt(placementTarget);
-    }
-
-    private void ApplySelectedEditorColor(string color)
-    {
-        if (!MapAnnotationColor.TryNormalize(color, out var normalized))
-            return;
-        _currentAnnotationColor = normalized;
-        if (_modernColorIndicator is not null)
-            _modernColorIndicator.Background = new SolidColorBrush(ParseEditorColor(normalized));
-    }
-
-    private async Task SaveEditorPreferencesAsync()
-    {
-        try
-        {
-            _editorPreferenceState.RecentColors = _recentAnnotationColors.Colors.ToList();
-            await _editorPreferences.SaveAsync(_editorPreferenceState);
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-            System.Diagnostics.Debug.WriteLine($"Unable to save map editor preferences: {exception.Message}");
-        }
-    }
-
-    private void SelectModernTool(MapEditorTool tool, Button? placementTarget = null)
-    {
-        if (_modernToolState.ActiveTool == tool
-            && tool is MapEditorTool.Text or MapEditorTool.Line or MapEditorTool.Conceal)
-        {
-            if (placementTarget is not null)
-            {
-                if (tool == MapEditorTool.Text)
-                    ShowModernTextProperties(placementTarget);
-                else if (tool == MapEditorTool.Line)
-                    ShowModernLineProperties(placementTarget);
-                else
-                    ShowModernConcealProperties(placementTarget);
-            }
-            return;
-        }
-        EndModernContinuousLine();
-        _modernToolState.ActiveFloorKey = _activeFloorKey;
-        _modernToolState.Select(tool);
-        CancelModernInteraction(restoreGeometry: true);
-        _modernSelection = null;
-        SetModernStatus(tool == MapEditorTool.Gate
-            ? _modernToolState.UsesPrimaryGatePair
-                ? "请先拖动标记正门。"
-                : "请拖动标记次要门特征。"
-            : ModernToolHint(tool));
-        RefreshModernToolVisuals();
-        RenderModernEditor();
-        RefreshModernLayerList();
-    }
-
-    private void EndModernContinuousLine() => _modernContinuousLineStart = null;
 
 }

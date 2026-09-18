@@ -1,4 +1,4 @@
-using Microsoft.UI.Xaml;
+﻿using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
@@ -153,9 +153,31 @@ public sealed partial class MapManualCandidateWindow
         };
     }
 
+    private readonly Dictionary<int, ImageSource?> _previewImageCache = new();
+
+    private async Task<ImageSource?> GetOrCreateChoicePreviewAsync(
+        MapRecognitionChoice choice,
+        int originalIndex)
+    {
+        if (_previewImageCache.TryGetValue(originalIndex, out var cached))
+            return cached;
+
+        ImageSource? source = originalIndex < _preloadedChoicePreviews?.Count
+            ? _preloadedChoicePreviews[originalIndex]
+            : null;
+        source ??= await CreateChoicePreviewAsync(choice, _repository);
+        _previewImageCache[originalIndex] = source;
+        return source;
+    }
+
+    private Task<FrameworkElement> CreateChoiceCellAsync(
+        MapRecognitionChoice choice,
+        int index) => CreateChoiceCellAsync(choice, index, index);
+
     private async Task<FrameworkElement> CreateChoiceCellAsync(
         MapRecognitionChoice choice,
-        int index)
+        int displayIndex,
+        int originalIndex)
     {
         var grid = new Grid();
         grid.RowDefinitions.Add(new RowDefinition
@@ -173,10 +195,7 @@ public sealed partial class MapManualCandidateWindow
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(4)
         };
-        image.Source = index < _preloadedChoicePreviews?.Count
-            ? _preloadedChoicePreviews[index]
-            : null;
-        image.Source ??= await CreateChoicePreviewAsync(choice, _repository);
+        image.Source = await GetOrCreateChoicePreviewAsync(choice, originalIndex);
         Grid.SetRow(image, 0);
         grid.Children.Add(image);
 
@@ -214,7 +233,7 @@ public sealed partial class MapManualCandidateWindow
         var details = new StackPanel { Spacing = 2 };
         details.Children.Add(new TextBlock
         {
-            Text = $"{index + 1}. {choice.Recognition.Map.DisplayName}",
+            Text = $"{displayIndex + 1}. {choice.Recognition.Map.DisplayName}",
             FontSize = 16,
             FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
             Foreground = new SolidColorBrush(Color.FromArgb(255, 255, 255, 255))

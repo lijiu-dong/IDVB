@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using IDVBuff.Features.Maps;
 using OpenCvSharp;
 
@@ -62,12 +63,10 @@ internal sealed class CompleteAlignmentTestScenario : IAsyncDisposable
     public static MapRecognitionTuning RecognitionTuning => new()
     {
         GateTemplateThreshold = 0.70d,
-        MinimumConfidence = 0.30d,
-        VectorErrorTolerance = 0.06d,
-        AmbiguityMargin = 0.01d,
-        ConfirmationAdvantage = 0.01d,
-        ForceBestRecognitionResult = true,
-        ForceCandidateSelection = false
+        MinimumConfidence = 0.40d,
+        VectorErrorTolerance = 0.15d,
+        AmbiguityMargin = 0.05d,
+        ConfirmationAdvantage = 0.08d
     };
 
     public static MapStructureRegistrationTuning StructureTuning
@@ -76,8 +75,7 @@ internal sealed class CompleteAlignmentTestScenario : IAsyncDisposable
         {
             var tuning = new MapStructureRegistrationTuning
             {
-                UseAuxiliaryAnchorRecognition = false,
-                EnableFastAlignment = false,
+                Mode = MapStructureRegistrationMode.Standard,
                 StructureFallbackBudgetMilliseconds = 5_000,
                 MinimumEdgePixels = 50,
                 MinimumSpanPixels = 18,
@@ -133,7 +131,7 @@ internal sealed class CompleteAlignmentTestScenario : IAsyncDisposable
                 || !Cv2.ImWrite(upperPath, upperImage)
                 || !Cv2.ImWrite(basementPath, basementImage))
             {
-                throw new InvalidOperationException("Failed to persist synthetic map images.");
+                throw new InvalidOperationException("Failed to persist reference images.");
             }
 
             var recognition = BuildRecognition(
@@ -142,19 +140,29 @@ internal sealed class CompleteAlignmentTestScenario : IAsyncDisposable
                 basementImage.Size(),
                 mainGate,
                 sideGate);
+
             var sideFeaturePath = Path.Combine(root, "side-feature.png");
             var sideProfile = recognition.FirstFloor;
             using (var sideFeature = new SideEntranceFeaturePreprocessor().Process(
                 mainImage,
                 sideProfile.FindAnchor("side-entrance")!.Bounds!,
-                featureRadius: 48))
+                SideEntranceScanRules.FeatureRegionRatio,
+                clampToBounds: SideEntranceScanRules.ClampFeatureToBounds))
             {
                 if (!Cv2.ImWrite(sideFeaturePath, sideFeature.Feature))
                     throw new InvalidOperationException("Failed to persist side feature.");
+                sideProfile.SideEntranceFeatureFileName = "side-feature.png";
+                sideProfile.SideEntranceFeatureSha256 =
+                    Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(sideFeaturePath))).ToLowerInvariant();
+                sideProfile.SideEntranceFeatureSourceSha256 =
+                    Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(mainPath))).ToLowerInvariant();
+                sideProfile.SideEntranceFeatureAlgorithmVersion =
+                    SideEntranceFeaturePreprocessor.AlgorithmVersion;
                 sideProfile.SideEntranceFeatureCenterX = sideFeature.CenterX;
                 sideProfile.SideEntranceFeatureCenterY = sideFeature.CenterY;
                 sideProfile.SideEntranceFeatureRadius = sideFeature.Radius;
             }
+
             var repository = new MapRepository(Path.Combine(root, "maps"));
             var map = await repository.SaveAsync(
                 new MapDraft

@@ -7,6 +7,7 @@
 
         <!-- WinUI 3 -->
         <UseWinUI>true</UseWinUI>
+        <EnableDefaultPageItems>false</EnableDefaultPageItems>
         <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
         <EnableMsixTooling>true</EnableMsixTooling>
         <WindowsPackageType>None</WindowsPackageType>
@@ -29,7 +30,7 @@
         <Product>Identity Vision Bridge</Product>
         <Company>Identity Vision Bridge</Company>
         <!-- Canonical SemVer product identity. The UI adds the conventional v prefix. -->
-        <IDVBProductVersion>1.6.0-unstable.5</IDVBProductVersion>
+        <IDVBProductVersion>1.6.0</IDVBProductVersion>
         <IDVBReleaseLine>b01.6</IDVBReleaseLine>
         <Version>$(IDVBProductVersion)</Version>
         <AssemblyVersion>1.6.0.0</AssemblyVersion>
@@ -184,6 +185,7 @@
         <Page Remove=".verify\**\*.xaml" />
         <Page Remove=".claude\**\*.xaml" />
         <Page Remove="scratch\**\*.xaml" />
+        <Page Include="Views\MainPage.xaml" />
         <None Remove="IDVBuff.slnx" />
     </ItemGroup>
 

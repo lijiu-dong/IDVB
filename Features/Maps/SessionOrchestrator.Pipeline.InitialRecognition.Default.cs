@@ -85,6 +85,7 @@ public sealed partial class SessionOrchestrator
         scanCtx = (ScanPipelineContext)scanPipeline.RunAsync(scanCtx).GetAwaiter().GetResult();
         scanPipelineSpan.Complete();
         _lastScanPhaseTimings = scanCtx.PhaseTimings;
+        _lastScanPipelineContext = scanCtx;
 
         _logCollector.Append(
             MapLogCategory.ScanLifecycle,

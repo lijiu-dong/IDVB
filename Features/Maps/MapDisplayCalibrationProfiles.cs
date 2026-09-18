@@ -16,6 +16,7 @@ public sealed class MapDisplayCalibrationProfile
     public int ClientHeight { get; set; }
     public NormalizedRectangle? MapViewportRegion { get; set; }
     public NormalizedRectangle? FloorDisplayRegion { get; set; }
+    public NormalizedRectangle? NativeMiniMapRegion { get; set; }
     public uint LastObservedDpi { get; set; }
     public MapDisplayCalibrationSource Source { get; set; } =
         MapDisplayCalibrationSource.Exact;
@@ -26,7 +27,25 @@ public sealed class MapDisplayCalibrationProfile
         ClientWidth > 0
         && ClientHeight > 0
         && (MapViewportRegion?.IsValid is true
-            || FloorDisplayRegion?.IsValid is true);
+            || FloorDisplayRegion?.IsValid is true
+            || IsNativeMiniMapRegionValid(NativeMiniMapRegion));
+
+    internal static bool IsNativeMiniMapRegionValid(NormalizedRectangle? region) =>
+        region is { IsValid: true, X: >= 0, Y: >= 0 }
+        && region.X + region.Width <= 1
+        && region.Y + region.Height <= 1;
+
+    public static NormalizedRectangle CreateDefaultNativeMiniMapRegion(int clientWidth, int clientHeight)
+    {
+        if (clientWidth <= 0 || clientHeight <= 0)
+        {
+            return new NormalizedRectangle { X = 0.04167, Y = 0.09333, Width = 0.05903, Height = 0.09889 };
+        }
+        var aspect = (double)clientWidth / clientHeight;
+        var normWidth = Math.Clamp(0.09445 / aspect, 0.01, 0.5);
+        var normLeft = Math.Clamp(0.06667 / aspect, 0.0, 1.0 - normWidth);
+        return new NormalizedRectangle { X = normLeft, Y = 0.09333, Width = normWidth, Height = 0.09889 };
+    }
 
     public MapDisplayCalibrationProfile Clone() => new()
     {
@@ -35,6 +54,7 @@ public sealed class MapDisplayCalibrationProfile
         ClientHeight = ClientHeight,
         MapViewportRegion = MapViewportRegion?.Clone(),
         FloorDisplayRegion = FloorDisplayRegion?.Clone(),
+        NativeMiniMapRegion = NativeMiniMapRegion?.Clone(),
         LastObservedDpi = LastObservedDpi,
         Source = Source,
         UpdatedAt = UpdatedAt
@@ -48,6 +68,11 @@ public sealed partial class MapRuntimeSettings
         get;
         set;
     } = [];
+
+    public NormalizedRectangle? NativeMiniMapRegion { get; set; }
+    public int NativeMiniMapCalibrationClientWidth { get; set; }
+    public int NativeMiniMapCalibrationClientHeight { get; set; }
+    public int NativeMiniMapCalibrationVersion { get; set; }
 
     public MapDisplayCalibrationProfile? GetExactDisplayCalibration(
         int clientWidth,
@@ -114,6 +139,44 @@ public sealed partial class MapRuntimeSettings
         FloorCalibrationVersion = CurrentCalibrationVersion;
     }
 
+    public NormalizedRectangle? ResolveNativeMiniMapRegion(
+        int clientWidth,
+        int clientHeight,
+        bool fallbackToDefault = false)
+    {
+        var exact = GetExactDisplayCalibration(clientWidth, clientHeight)?.NativeMiniMapRegion;
+        if (MapDisplayCalibrationProfile.IsNativeMiniMapRegionValid(exact))
+            return exact!.Clone();
+
+        if (MapDisplayCalibrationProfile.IsNativeMiniMapRegionValid(NativeMiniMapRegion)
+            && ((NativeMiniMapCalibrationClientWidth == clientWidth && NativeMiniMapCalibrationClientHeight == clientHeight)
+                || (NativeMiniMapCalibrationClientWidth == 0 && NativeMiniMapCalibrationClientHeight == 0)))
+        {
+            return NativeMiniMapRegion!.Clone();
+        }
+
+        return fallbackToDefault
+            ? MapDisplayCalibrationProfile.CreateDefaultNativeMiniMapRegion(clientWidth, clientHeight)
+            : null;
+    }
+
+    public void UpsertNativeMiniMapCalibration(
+        NormalizedRectangle region, int clientWidth, int clientHeight, uint observedDpi)
+    {
+        if (!MapDisplayCalibrationProfile.IsNativeMiniMapRegionValid(region)
+            || clientWidth <= 0 || clientHeight <= 0)
+            throw new ArgumentException("原生小地图区域必须完整位于游戏客户区内。");
+        var profile = GetOrCreateDisplayCalibration(clientWidth, clientHeight);
+        profile.NativeMiniMapRegion = region.Clone();
+        profile.LastObservedDpi = observedDpi;
+        profile.Source = MapDisplayCalibrationSource.Exact;
+        profile.UpdatedAt = DateTimeOffset.UtcNow;
+        NativeMiniMapRegion = region.Clone();
+        NativeMiniMapCalibrationClientWidth = clientWidth;
+        NativeMiniMapCalibrationClientHeight = clientHeight;
+        NativeMiniMapCalibrationVersion = CurrentCalibrationVersion;
+    }
+
     private MapDisplayCalibrationProfile GetOrCreateDisplayCalibration(
         int clientWidth,
         int clientHeight)
@@ -171,6 +234,17 @@ public sealed partial class MapRuntimeSettings
                 FloorCalibrationClientWidth,
                 FloorCalibrationClientHeight);
             migrated.FloorDisplayRegion ??= FloorDisplayRegion.Clone();
+            if (migrated.Source != MapDisplayCalibrationSource.Exact)
+                migrated.Source = MapDisplayCalibrationSource.Migrated;
+        }
+        if (NativeMiniMapRegion?.IsValid is true
+            && NativeMiniMapCalibrationClientWidth > 0
+            && NativeMiniMapCalibrationClientHeight > 0)
+        {
+            var migrated = GetOrCreateDisplayCalibration(
+                NativeMiniMapCalibrationClientWidth,
+                NativeMiniMapCalibrationClientHeight);
+            migrated.NativeMiniMapRegion ??= NativeMiniMapRegion.Clone();
             if (migrated.Source != MapDisplayCalibrationSource.Exact)
                 migrated.Source = MapDisplayCalibrationSource.Migrated;
         }

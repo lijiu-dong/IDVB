@@ -11,6 +11,7 @@ using Windows.Foundation;
 using Windows.UI;
 
 namespace IDVBuff.Views;
+
 public sealed partial class MapListPage : UserControl
 {
 
@@ -225,7 +226,10 @@ public sealed partial class MapListPage : UserControl
 
         var imagePath = GetActiveFloorImagePath();
         if (string.IsNullOrWhiteSpace(imagePath))
+        {
+            UpdateModernFloorResolution(0, 0);
             return;
+        }
         if (!_modernFloorBitmaps.TryGetValue(floorKey, out var entry))
         {
             using var imageInfo = System.Drawing.Image.FromFile(imagePath);
@@ -259,6 +263,7 @@ public sealed partial class MapListPage : UserControl
             _modernImage.Visibility = IsModernItemVisible("image", "image") ? Visibility.Visible : Visibility.Collapsed;
         }
         SetModernStatus($"正在编辑 {GetModernFloorDisplayName(floorKey)}。", false);
+        UpdateModernFloorResolution(entry.SourceWidth, entry.SourceHeight);
         RefreshModernLayerList();
         ApplyModernFloorBitmap(
             _modernBitmap,
@@ -281,6 +286,7 @@ public sealed partial class MapListPage : UserControl
         {
             return;
         }
+        UpdateModernFloorResolution(sourceWidth, sourceHeight);
         _modernScene.Width = sourceWidth;
         _modernScene.Height = sourceHeight;
         _modernCanvas.Width = sourceWidth;

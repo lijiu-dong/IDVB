@@ -51,7 +51,7 @@ public sealed class DefaultDualGateCompleteAlignmentTests
 
         var recognition = Assert.IsType<RuntimeMapRecognition>(attempt.Recognition);
         Assert.Equal(1, attempt.Diagnostics.GateCandidateCount);
-        Assert.Equal(MapAlignmentTrackingMode.SingleGateTracking, attempt.Diagnostics.TrackingMode);
+        Assert.Equal(MapAlignmentTrackingMode.StructureMatched, attempt.Diagnostics.TrackingMode);
         Assert.True(attempt.StructureAttempted);
         Assert.True(attempt.StructureAccepted, attempt.StructureFailureReason);
         Assert.True(double.IsFinite(recognition.Result.Confidence));

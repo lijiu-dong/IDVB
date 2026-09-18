@@ -92,6 +92,9 @@ public interface IVpsg3PreparedIndexRegistry : IDisposable
     /// <summary>Count of floors currently in Ready state.</summary>
     int ReadyCount { get; }
 
+    /// <summary>Count of floors currently in Building state.</summary>
+    int BuildingCount { get; }
+
     /// <summary>Total estimated resident memory in bytes across all prepared floor indices.</summary>
     long TotalMemoryBytes { get; }
 

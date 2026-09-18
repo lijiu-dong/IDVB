@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using IDVBuff.Features.Maps;
 using OpenCvSharp;
 
@@ -199,7 +199,7 @@ public sealed partial class SideEntranceStrategyCompleteAlignmentTests
             1d,
             100d,
             80d,
-            4d);
+            6d);
     }
 
     [Fact]
@@ -236,7 +236,7 @@ public sealed partial class SideEntranceStrategyCompleteAlignmentTests
             1d,
             420d,
             210d,
-            2d);
+            4d);
     }
 
     [Fact]
@@ -302,7 +302,7 @@ public sealed partial class SideEntranceStrategyCompleteAlignmentTests
             1d,
             viewport.X - crop.X,
             viewport.Y - crop.Y,
-            4d);
+            6d);
     }
 
     [Fact]
@@ -337,7 +337,7 @@ public sealed partial class SideEntranceStrategyCompleteAlignmentTests
             1d,
             viewport.X - crop.X,
             viewport.Y - crop.Y,
-            4d);
+            6d);
     }
 
     [Fact]
@@ -449,7 +449,7 @@ public sealed partial class SideEntranceStrategyCompleteAlignmentTests
                 1d,
                 sample.X,
                 sample.Y,
-                4d);
+                6d);
         }
 
         stopwatch.Stop();

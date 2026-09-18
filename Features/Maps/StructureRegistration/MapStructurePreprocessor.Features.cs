@@ -102,23 +102,7 @@ public sealed partial class MapStructurePreprocessor
         return repeated;
     }
 
-    private static Mat ToBgr(Mat source)
-    {
-        var bgr = new Mat();
-        switch (source.Channels())
-        {
-            case 4:
-                Cv2.CvtColor(source, bgr, ColorConversionCodes.BGRA2BGR);
-                break;
-            case 3:
-                source.CopyTo(bgr);
-                break;
-            default:
-                Cv2.CvtColor(source, bgr, ColorConversionCodes.GRAY2BGR);
-                break;
-        }
-        return bgr;
-    }
+    private static Mat ToBgr(Mat source) => MapBackgroundProcessor.CompositeToBgr(source);
 
     private static void RetainDominantStructureCluster(
         Mat binary,

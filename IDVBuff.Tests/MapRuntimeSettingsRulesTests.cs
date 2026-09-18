@@ -131,7 +131,7 @@ public sealed partial class MapRuntimeSettingsRulesTests
 
         tuning.Normalize();
 
-        Assert.Equal(0.70d, tuning.MinimumConfidence);
+        Assert.Equal(PlayerTrackingRules.DefaultMinimumConfidence, tuning.MinimumConfidence);
         Assert.Equal(1, tuning.LocalSearchFailureLimit);
         Assert.Equal(5000, tuning.StaleHideMilliseconds);
     }
@@ -156,7 +156,7 @@ public sealed partial class MapRuntimeSettingsRulesTests
         Assert.Equal(MapRuntimeSettings.CurrentSchemaVersion, settings.SchemaVersion);
         Assert.Equal(0.62d, settings.SessionTuning.MediumConfidence);
         Assert.Equal(0.60d, settings.FloorRecognitionTuning.MinimumConfidence);
-        Assert.Equal(0.70d, settings.PlayerTrackingTuning.MinimumConfidence);
+        Assert.Equal(PlayerTrackingRules.DefaultMinimumConfidence, settings.PlayerTrackingTuning.MinimumConfidence);
         Assert.DoesNotContain(
             "BackgroundValidationMilliseconds",
             JsonSerializer.Serialize(settings));

@@ -167,7 +167,9 @@ internal static partial class MapOverlayBitmapRenderer
         bool showTextAnnotations = true,
         bool showBoxAnnotations = true,
         bool showLineAnnotations = true,
-        bool showFloorOnMiniMap = false)
+        bool showFloorOnMiniMap = false,
+        float? rotationDegrees = null,
+        IReadOnlyList<MiniMapTrackedPlayer>? miniMapPlayers = null)
     {
         if (miniMap.Width <= 0 || miniMap.Height <= 0
             || !File.Exists(miniMap.ImagePath))
@@ -194,6 +196,19 @@ internal static partial class MapOverlayBitmapRenderer
             showLineAnnotations,
             showFloorOnMiniMap);
 
+        var state = graphics.Save();
+        if (rotationDegrees is { } rotation && float.IsFinite(rotation))
+        {
+            // A fixed diagonal fit keeps the entire guide visible without zooming in/out as it turns.
+            var fit = Math.Min(destRect.Width, destRect.Height)
+                / MathF.Sqrt(destRect.Width * destRect.Width + destRect.Height * destRect.Height);
+            var cx = destRect.Left + destRect.Width / 2;
+            var cy = destRect.Top + destRect.Height / 2;
+            graphics.TranslateTransform(cx, cy);
+            graphics.RotateTransform(rotation);
+            graphics.ScaleTransform(fit, fit);
+            graphics.TranslateTransform(-cx, -cy);
+        }
         var oldInterpolation = graphics.InterpolationMode;
         var oldQuality = graphics.CompositingQuality;
         var oldSmoothing = graphics.SmoothingMode;
@@ -202,26 +217,30 @@ internal static partial class MapOverlayBitmapRenderer
         {
             // layerBitmap 在烘焙阶段已经完成了高质量 Bicubic 缩放与抗锯齿
             // 此处为 1:1 像素精确平移贴图，使用 NearestNeighbor/HighSpeed 规避 GDI+ 逐像素重采样（实测耗时降至 0.1ms 级）
-            graphics.InterpolationMode = InterpolationMode.NearestNeighbor;
+            graphics.InterpolationMode = rotationDegrees.HasValue
+                ? InterpolationMode.Bilinear : InterpolationMode.NearestNeighbor;
             graphics.CompositingQuality = CompositingQuality.HighSpeed;
             graphics.SmoothingMode = SmoothingMode.None;
             graphics.PixelOffsetMode = PixelOffsetMode.HighSpeed;
 
-            graphics.DrawImage(
-                layerBitmap,
-                Rectangle.Round(destRect),
-                0,
-                0,
-                layerBitmap.Width,
-                layerBitmap.Height,
-                GraphicsUnit.Pixel);
-        }
+                graphics.DrawImage(
+                    layerBitmap,
+                    Rectangle.Round(destRect),
+                    0,
+                    0,
+                    layerBitmap.Width,
+                    layerBitmap.Height,
+                    GraphicsUnit.Pixel);
+
+                DrawMiniMapPlayers(graphics, miniMap, destRect, dpiScale, miniMapPlayers, rotationDegrees);
+            }
         finally
         {
             graphics.InterpolationMode = oldInterpolation;
             graphics.CompositingQuality = oldQuality;
             graphics.SmoothingMode = oldSmoothing;
             graphics.PixelOffsetMode = oldPixelOffset;
+            graphics.Restore(state);
         }
     }
 

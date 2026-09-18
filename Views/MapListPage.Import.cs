@@ -289,21 +289,44 @@ public sealed partial class MapListPage : UserControl
     {
         var combo = new ComboBox { PlaceholderText = "不使用模板", MinWidth = 300 };
         combo.Items.Add(new ComboBoxItem { Content = "不使用模板", Tag = null });
-        var templates = MapTemplates.BuiltIn.Concat(await new MapTemplateStore().LoadAsync());
+        var templates = MapTemplates.BuiltIn.Concat(await new MapTemplateStore().LoadAsync()).ToList();
         foreach (var availableTemplate in templates)
             combo.Items.Add(new ComboBoxItem { Content = availableTemplate.Name, Tag = availableTemplate });
-        combo.SelectedIndex = 0;
+
+        var memory = ShellLayoutMemory.Load();
+        if (!string.IsNullOrWhiteSpace(memory.LastSelectedMapTemplateId))
+        {
+            var matchedItem = combo.Items.OfType<ComboBoxItem>()
+                .FirstOrDefault(item => item.Tag is MapTemplate template && string.Equals(template.Id, memory.LastSelectedMapTemplateId, StringComparison.OrdinalIgnoreCase));
+            combo.SelectedItem = matchedItem ?? combo.Items[0];
+        }
+        else
+        {
+            combo.SelectedIndex = 0;
+        }
+
         var dialog = new ContentDialog
         {
             XamlRoot = XamlRoot, Title = "选择地图模板", Content = combo,
             PrimaryButtonText = "确认", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Primary
         };
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary
-            || (combo.SelectedItem as ComboBoxItem)?.Tag is not MapTemplate template) return;
-        draft.Floors = template.Floors.Select((floor, index) => new FloorDefinition
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+
+        var selectedTag = (combo.SelectedItem as ComboBoxItem)?.Tag;
+        if (selectedTag is MapTemplate selectedTemplate)
         {
-            Key = floor.Key, DisplayName = floor.DisplayName, SortOrder = index + 1
-        }).ToList();
+            memory.LastSelectedMapTemplateId = selectedTemplate.Id;
+            memory.Save();
+            draft.Floors = selectedTemplate.Floors.Select((floor, index) => new FloorDefinition
+            {
+                Key = floor.Key, DisplayName = floor.DisplayName, SortOrder = index + 1
+            }).ToList();
+        }
+        else
+        {
+            memory.LastSelectedMapTemplateId = null;
+            memory.Save();
+        }
     }
 
     private UIElement CreateMapTagsEditor(MapDraft draft, IReadOnlyList<MapTagGroup> groups)

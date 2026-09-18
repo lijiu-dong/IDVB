@@ -118,16 +118,20 @@ public sealed class MapPlayerMarkerDetector : IDisposable
                 best = candidate;
         }
 
+        var minScore = best is not null && best.ColorAgreement >= 0.70d
+            ? Math.Min(PlayerTrackingRules.MinimumTemplateScore, 0.46d)
+            : PlayerTrackingRules.MinimumTemplateScore;
+
         if (best is null
-            || best.TemplateScore < PlayerTrackingRules.MinimumTemplateScore
+            || best.TemplateScore < minScore
             || best.ColorAgreement < PlayerTrackingRules.MinimumColorAgreement
             || best.Confidence < trackingTuning.MinimumConfidence)
         {
             _consecutiveFailures++;
-            return Failure(
-                best is null
-                    ? "玩家图标模板大于搜索区域。"
-                    : $"玩家图标置信度 {best.Confidence:P0} 不足。");
+            var reason = best is null
+                ? "玩家图标模板大于搜索区域。"
+                : $"匹配未达标: score={best.TemplateScore:F2}/min{minScore:F2}, color={best.ColorAgreement:F2}/min{PlayerTrackingRules.MinimumColorAgreement:F2}, conf={best.Confidence:F2}/min{trackingTuning.MinimumConfidence:F2}";
+            return Failure(reason, playerSlot, best);
         }
 
         _consecutiveFailures = 0;
@@ -388,10 +392,18 @@ public sealed class MapPlayerMarkerDetector : IDisposable
             1d);
     }
 
-    private MapPlayerMarkerDetection Failure(string reason) =>
+    private static MapPlayerMarkerDetection Failure(string reason, PlayerSlot slot = default, PlayerCandidate? candidate = null) =>
         new()
         {
-            FailureReason = reason
+            Succeeded = false,
+            PlayerSlot = slot,
+            FailureReason = reason,
+            LocalBounds = candidate?.Bounds ?? default,
+            TemplateScore = candidate?.TemplateScore ?? 0,
+            ColorAgreement = candidate?.ColorAgreement ?? 0,
+            ShapeAgreement = candidate?.ShapeAgreement ?? 0,
+            Confidence = candidate?.Confidence ?? 0,
+            ViewportPoint = candidate is not null ? new MapViewportPoint(candidate.Bounds.X + candidate.Bounds.Width / 2.0, candidate.Bounds.Y + candidate.Bounds.Height / 2.0) : default
         };
 
     private static Mat ToGray(Mat source)

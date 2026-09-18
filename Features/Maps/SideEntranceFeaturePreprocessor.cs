@@ -54,7 +54,7 @@ public sealed class SideEntranceFeaturePreprocessor
     /// Increment when generated feature pixels or their matching semantics change.
     /// Persisted features from another version must be rebuilt before scanning.
     /// </summary>
-    public const string AlgorithmVersion = "3-ratio-gate-masked";
+    public const string AlgorithmVersion = "4-ratio25";
 
     /// <summary>
     /// 处理侧门特征。

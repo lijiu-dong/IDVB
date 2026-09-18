@@ -188,22 +188,7 @@ public sealed partial class IdvaStructureLineEngine
 
         public static PipelineState Create(Mat source)
         {
-            var bgr = new Mat();
-            switch (source.Channels())
-            {
-                case 4:
-                    Cv2.CvtColor(source, bgr, ColorConversionCodes.BGRA2BGR);
-                    break;
-                case 3:
-                    source.CopyTo(bgr);
-                    break;
-                case 1:
-                    Cv2.CvtColor(source, bgr, ColorConversionCodes.GRAY2BGR);
-                    break;
-                default:
-                    bgr.Dispose();
-                    throw new InvalidDataException("IDVA 输入只支持灰度、BGR 或 BGRA 图像。");
-            }
+            var bgr = MapBackgroundProcessor.CompositeToBgr(source);
             return new PipelineState(
                 bgr,
                 new Mat(source.Size(), MatType.CV_8UC1, Scalar.Black),

@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <Nullable>enable</Nullable>
@@ -29,6 +29,11 @@
 
   <ItemGroup>
     <Compile Include="..\AppDataPaths.cs" Link="Production\AppDataPaths.cs" />
+    <Compile Include="..\Features\Feedback\FeedbackTextValidator.cs" Link="Production\Feedback\FeedbackTextValidator.cs" />
+    <Compile Include="..\Features\Feedback\FeedbackModels.cs" Link="Production\Feedback\FeedbackModels.cs" />
+    <Compile Include="..\Features\Feedback\IFeedbackService.cs" Link="Production\Feedback\IFeedbackService.cs" />
+    <Compile Include="..\Features\Feedback\OfficialFeedbackService.cs" Link="Production\Feedback\OfficialFeedbackService.cs" />
+    <Compile Include="..\Features\Feedback\FeedbackPackageBuilder.cs" Link="Production\Feedback\FeedbackPackageBuilder.cs" />
     <Compile Include="..\Features\QuickStart\QuickStartRecommendedSettings.cs" Link="Production\QuickStart\QuickStartRecommendedSettings.cs" />
     <Compile Include="..\Features\QuickStart\QuickStartStateStore.cs" Link="Production\QuickStart\QuickStartStateStore.cs" />
     <Compile Include="..\Diagnostics\OutputLog.cs" Link="Production\Diagnostics\OutputLog.cs" />
@@ -37,6 +42,15 @@
     <Compile Include="..\Features\Plugins\PluginPreferencesStore.cs" Link="Production\Plugins\PluginPreferencesStore.cs" />
     <Compile Include="..\Features\Windows\WindowCaptureProtectionService.cs" Link="Production\Features\Windows\WindowCaptureProtectionService.cs" />
     <Compile Include="..\Lifecycle\VelopackInstallLayout.cs" Link="Production\VelopackInstallLayout.cs" />
+    <Compile Include="..\Features\Notifications\OverlayNotificationTheme.cs" Link="Production\Notifications\OverlayNotificationTheme.cs" />
+    <Compile Include="..\Features\Notifications\OverlayNotificationItem.cs" Link="Production\Notifications\OverlayNotificationItem.cs" />
+    <Compile Include="..\Features\Notifications\OverlayNotificationCardState.cs" Link="Production\Notifications\OverlayNotificationCardState.cs" />
+    <Compile Include="..\Features\Notifications\OverlayNotificationQueue.cs" Link="Production\Notifications\OverlayNotificationQueue.cs" />
+    <Compile Include="..\Features\Notifications\OverlayNotificationRenderer.cs" Link="Production\Notifications\OverlayNotificationRenderer.cs" />
+    <Compile Include="..\Features\Notifications\OverlayNotificationWindow.cs" Link="Production\Notifications\OverlayNotificationWindow.cs" />
+    <Compile Include="..\Features\Notifications\OverlayNotificationService.cs" Link="Production\Notifications\OverlayNotificationService.cs" />
+    <Compile Include="..\Features\Notifications\OverlayNotificationCenter.cs" Link="Production\Notifications\OverlayNotificationCenter.cs" />
+    <Compile Include="..\Features\Notifications\DeveloperNotificationTrigger.cs" Link="Production\Notifications\DeveloperNotificationTrigger.cs" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="System.Drawing.Common" Version="10.0.9" />
     <PackageReference Include="xunit" Version="2.9.3" />
@@ -65,6 +79,7 @@
     <Compile Include="..\Features\Maps\MapPlayerModels.cs" Link="Production\MapPlayerModels.cs" />
     <Compile Include="..\Features\Maps\MapMatchLifecycleRules.cs" Link="Production\MapMatchLifecycleRules.cs" />
     <Compile Include="..\Features\Maps\MapPlayerMarkerDetector.cs" Link="Production\MapPlayerMarkerDetector.cs" />
+    <Compile Include="..\Features\Maps\NativeMiniMapHeadingDetector.cs" Link="Production\NativeMiniMapHeadingDetector.cs" />
     <Compile Include="..\Features\Maps\PlayerTrackingRules.cs" Link="Production\PlayerTrackingRules.cs" />
     <Compile Include="..\Features\Maps\MapViewportStabilityTracker.cs" Link="Production\MapViewportStabilityTracker.cs" />
     <Compile Include="..\Features\Maps\MapViewportPresenceDetector.cs" Link="Production\MapViewportPresenceDetector.cs" />
@@ -113,6 +128,7 @@
     <Compile Include="..\Features\Maps\MapRecognitionModels.Part*.cs" />
     <Compile Include="..\Features\Maps\MapRecognitionAttempt.cs" Link="Production\MapRecognitionAttempt.cs" />
     <Compile Include="..\Features\Maps\MapCandidatePresentationRules.cs" Link="Production\MapCandidatePresentationRules.cs" />
+    <Compile Include="..\Features\Maps\MapCandidateTagFilterRules.cs" Link="Production\MapCandidateTagFilterRules.cs" />
     <Compile Include="..\Features\Maps\MapFeatureCacheModels.cs" Link="Production\MapFeatureCacheModels.cs" />
     <Compile Include="..\Features\Maps\MapFeatureCacheModels.Part*.cs" />
     <Compile Include="..\Features\Maps\MapFeatureCacheRepository.cs" Link="Production\MapFeatureCacheRepository.cs" />

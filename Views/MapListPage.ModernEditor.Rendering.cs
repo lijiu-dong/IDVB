@@ -49,7 +49,10 @@ public sealed partial class MapListPage : UserControl
             {
                 if (anchor.Bounds?.IsValid is not true || !IsModernItemVisible("special", ModernAnchorKey(anchor.Id)))
                     continue;
-                AddModernRectangle(ToModernSourceBounds(anchor.Bounds), GetAnchorColor(anchor), dashed: false, thickness: 3.5);
+                if (IsGateAnchor(anchor.Key))
+                    AddModernGatePoint(ToModernSourceBounds(anchor.Bounds), GetAnchorColor(anchor), dashed: false);
+                else
+                    AddModernRectangle(ToModernSourceBounds(anchor.Bounds), GetAnchorColor(anchor), dashed: false, thickness: 3.5);
             }
             foreach (var layer in profile.BackgroundLayers)
             {
@@ -60,13 +63,12 @@ public sealed partial class MapListPage : UserControl
 
         if (!_modernExportRendering && _modernToolState.PendingMainGate?.IsValid is true)
         {
-            AddModernRectangle(
+            AddModernGatePoint(
                 MapRecognitionCoordinates.ToSourceRectangle(
                     _modernToolState.PendingMainGate,
                     profile.GetEffectiveRecognitionRegion()),
                 MainEntranceBlue,
-                dashed: true,
-                thickness: 3.5);
+                dashed: true);
         }
 
         if (!_modernExportRendering && _modernInteraction == EditorInteractionKind.Create)
@@ -100,6 +102,9 @@ public sealed partial class MapListPage : UserControl
 
         if (!_modernExportRendering && _modernToolState.ActiveTool == MapEditorTool.Conceal)
             AddModernConcealPreview();
+
+        if (!_modernExportRendering && _modernToolState.ActiveTool == MapEditorTool.Gate)
+            AddModernGatePreview();
 
         if (!_modernExportRendering)
             AddModernSelectionAdorner();
@@ -231,6 +236,61 @@ public sealed partial class MapListPage : UserControl
         _modernCanvas.Children.Add(rectangle);
     }
 
+    private void AddModernGatePoint(NormalizedRectangle? bounds, Color color, bool dashed)
+    {
+        if (_modernCanvas is null || bounds?.IsValid is not true)
+            return;
+        var centerX = (bounds.X + bounds.Width / 2d) * _modernCanvas.Width;
+        var centerY = (bounds.Y + bounds.Height / 2d) * _modernCanvas.Height;
+        AddModernGateVisual(centerX, centerY, color, dashed, 92);
+    }
+
+    private void AddModernGatePreview()
+    {
+        if (_modernCanvas is null || _modernGateHoverPoint is not { } hover)
+            return;
+        var color = !_modernToolState.UsesPrimaryGatePair
+            ? SecondFloorPurple
+            : _modernToolState.PendingMainGate is null
+                ? MainEntranceBlue
+                : SideEntranceGreen;
+        AddModernGateVisual(hover.X * _modernCanvas.Width, hover.Y * _modernCanvas.Height, color, false, 68);
+    }
+
+    private void AddModernGateVisual(double pixelX, double pixelY, Color color, bool dashed, byte fillAlpha)
+    {
+        if (_modernCanvas is null)
+            return;
+        var size = (double)_editorPreferenceState.ConcealDefaults.BrushSizePixels;
+        var ellipse = new Ellipse
+        {
+            Width = size,
+            Height = size,
+            Fill = new SolidColorBrush(Color.FromArgb(fillAlpha, color.R, color.G, color.B)),
+            Stroke = new SolidColorBrush(color),
+            StrokeThickness = Math.Max(1.5d, 2.5d / ModernZoomFactor),
+            IsHitTestVisible = false
+        };
+        if (dashed)
+            ellipse.StrokeDashArray = new DoubleCollection { 4, 3 };
+
+        Canvas.SetLeft(ellipse, pixelX - size / 2d);
+        Canvas.SetTop(ellipse, pixelY - size / 2d);
+        _modernCanvas.Children.Add(ellipse);
+
+        var centerDotSize = Math.Max(3d, 5d / ModernZoomFactor);
+        var centerDot = new Ellipse
+        {
+            Width = centerDotSize,
+            Height = centerDotSize,
+            Fill = new SolidColorBrush(color),
+            IsHitTestVisible = false
+        };
+        Canvas.SetLeft(centerDot, pixelX - centerDotSize / 2d);
+        Canvas.SetTop(centerDot, pixelY - centerDotSize / 2d);
+        _modernCanvas.Children.Add(centerDot);
+    }
+
     private void AddModernLine(NormalizedPoint start, NormalizedPoint end, Color color, bool dashed)
     {
         if (_modernCanvas is null)
@@ -289,6 +349,13 @@ public sealed partial class MapListPage : UserControl
         if (bounds?.IsValid is not true)
             return;
         AddModernRectangle(bounds, Color.FromArgb(255, 255, 255, 255), true, 1.5);
+        if (_modernSelection.Kind == EditorSelectionKind.Anchor
+            && FindModernSelectedAnchor() is { } selectedAnchor
+            && IsGateAnchor(selectedAnchor.Key))
+        {
+            // 门特征是点触笔，只关心中心点，不显示缩放把手
+            return;
+        }
         var pixels = ToModernPixelRect(bounds);
         foreach (var (handle, x, y) in new[]
         {
@@ -305,6 +372,10 @@ public sealed partial class MapListPage : UserControl
             AddModernHandle(handle, x, y);
         }
     }
+
+    private static bool IsGateAnchor(string? key) =>
+        key is "main-entrance" or "side-entrance"
+        || string.Equals(key, MapScanFloorRules.SecondaryGateAnchorKey, StringComparison.OrdinalIgnoreCase);
 
     private void AddModernHandle(string handle, double x, double y)
     {
@@ -367,7 +438,27 @@ public sealed partial class MapListPage : UserControl
         if (_modernSelection.Kind == EditorSelectionKind.Anchor)
         {
             var anchor = FindModernSelectedAnchor();
-            return anchor?.Bounds?.IsValid is true ? ToModernSourceBounds(anchor.Bounds) : null;
+            if (anchor?.Bounds?.IsValid is not true)
+                return null;
+            if (IsGateAnchor(anchor.Key))
+            {
+                var source = ToModernSourceBounds(anchor.Bounds);
+                var cx = source.X + source.Width / 2d;
+                var cy = source.Y + source.Height / 2d;
+                var canvasW = _modernCanvas?.Width > 0 ? _modernCanvas.Width : 1000;
+                var canvasH = _modernCanvas?.Height > 0 ? _modernCanvas.Height : 1000;
+                var brushSize = (double)_editorPreferenceState.ConcealDefaults.BrushSizePixels;
+                var nw = brushSize / canvasW;
+                var nh = brushSize / canvasH;
+                return new NormalizedRectangle
+                {
+                    X = cx - nw / 2d,
+                    Y = cy - nh / 2d,
+                    Width = nw,
+                    Height = nh
+                };
+            }
+            return ToModernSourceBounds(anchor.Bounds);
         }
         return FindModernSelectedAnnotation()?.Bounds;
     }

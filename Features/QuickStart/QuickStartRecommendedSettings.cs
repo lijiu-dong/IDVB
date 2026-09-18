@@ -1,4 +1,5 @@
 using IDVBuff.Features.Maps;
+using IDVBuff.Lifecycle;
 
 namespace IDVBuff.Features.QuickStart;
 
@@ -48,5 +49,23 @@ public static class QuickStartRecommendedSettings
         settings.ShowFloorOnMiniMap = true;
 
         return settings;
+    }
+
+    /// <summary>
+    /// Applies recommended configuration 1 to the main program preferences.
+    /// </summary>
+    public static void ApplyRecommendation1(MainProgramPreferences preferences)
+    {
+        preferences.MinimizeToTray = false;
+    }
+
+    /// <summary>
+    /// Creates the recommended main program preferences for configuration 1.
+    /// </summary>
+    public static MainProgramPreferences CreateRecommendedPreferences()
+    {
+        var preferences = new MainProgramPreferences();
+        ApplyRecommendation1(preferences);
+        return preferences;
     }
 }

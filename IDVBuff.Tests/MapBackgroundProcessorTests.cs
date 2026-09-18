@@ -48,7 +48,7 @@ public sealed class MapBackgroundProcessorTests
         Assert.Equal(new Vec4b(0, 0, 0, 0), result.Recognition.At<Vec4b>(0, 1));
         Assert.Equal(new Vec4b(10, 20, 39, 255), result.Recognition.At<Vec4b>(0, 2));
         Assert.Equal(new Vec4b(220, 40, 70, 255), result.Recognition.At<Vec4b>(0, 3));
-        Assert.Equal(new Vec4b(220, 40, 70, 0), result.Recognition.At<Vec4b>(0, 4));
+        Assert.Equal(new Vec4b(0, 0, 0, 0), result.Recognition.At<Vec4b>(0, 4));
     }
 
     [Fact]

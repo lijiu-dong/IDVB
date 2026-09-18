@@ -60,6 +60,7 @@ public sealed partial class SessionOrchestrator
                 "initial_recognition",
                 MapOperationWaitKind.Compute);
             pendingSideEntranceScan = sideScan;
+            _lastSideEntranceScan = sideScan;
             _lastDiagnostics = new MapScanDiagnostics
             {
                 ReadyMapCount = _recognition.ReadyMapCount,

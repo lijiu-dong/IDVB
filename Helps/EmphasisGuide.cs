@@ -117,7 +117,7 @@ public sealed class EmphasisGuide : IDisposable
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var checkMessage = new TextBlock
         {
-            Foreground = new SolidColorBrush(Color.FromArgb(255, 255, 181, 71)),
+            Foreground = FluentTheme.Brush("SystemFillColorCriticalBrush"),
             TextWrapping = TextWrapping.Wrap,
             Visibility = Visibility.Collapsed
         };
@@ -133,8 +133,10 @@ public sealed class EmphasisGuide : IDisposable
             VerticalAlignment = VerticalAlignment.Bottom,
             Padding = new Thickness(20),
             CornerRadius = new CornerRadius(8),
-            Background = new SolidColorBrush(Color.FromArgb(255, 31, 31, 31)),
-            BorderBrush = new SolidColorBrush(Color.FromArgb(255, 92, 92, 92)),
+            // These managed brushes are updated by FluentTheme when the shell
+            // changes ActualTheme, including while an onboarding step is open.
+            Background = FluentTheme.CardBrush(),
+            BorderBrush = FluentTheme.Brush("CardStrokeColorDefaultBrush"),
             BorderThickness = new Thickness(1),
             Child = new Grid
             {
@@ -334,7 +336,7 @@ public sealed class EmphasisGuide : IDisposable
                 Padding = new Thickness(0),
                 Content = thumbnail,
                 BorderThickness = new Thickness(1),
-                BorderBrush = new SolidColorBrush(Color.FromArgb(255, 92, 92, 92))
+                BorderBrush = FluentTheme.Brush("CardStrokeColorDefaultBrush")
             };
             button.Click += (_, _) => ShowPreview(imageUri);
             images.Children.Add(button);

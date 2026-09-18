@@ -72,4 +72,19 @@ public sealed partial class MapStatusPage : UserControl
         Refresh();
     }
 
+    private async void SelectMapByTags_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (_refreshing)
+            return;
+        try
+        {
+            await _runtime.SetSelectMapByTagsEnabledAsync(_selectMapByTagsToggle.IsOn);
+        }
+        catch (Exception exception)
+        {
+            _status.Text = exception.Message;
+        }
+        Refresh();
+    }
+
 }

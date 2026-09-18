@@ -19,6 +19,10 @@ using IDVBuff.RealCLI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Dispatching;
 using System.Diagnostics;
+using System.Text;
+
+Console.OutputEncoding = Encoding.UTF8;
+Console.InputEncoding = Encoding.UTF8;
 
 // ── DispatcherQueue 初始化 ──
 // 控制台应用没有 WinUI 消息泵，使用 DispatcherQueueController 创建同步调度器。
@@ -38,6 +42,7 @@ var command = args[0].ToLowerInvariant();
 return command switch
 {
     "run" => await RunSingleAsync(args[1..], dispatcher),
+    "bench" or "benchmark" => await ScanBenchmarkCommand.RunAsync(args[1..], dispatcher),
     "batch" => await RunBatchAsync(args[1..], dispatcher),
     "mapopen" => await MapOpenCommand.RunAsync(args[1..], dispatcher),
     "mapopen-replay" => await MapOpenReplayCommand.RunAsync(args[1..], dispatcher),
@@ -58,6 +63,10 @@ static async Task<int> RunSingleAsync(string[] args, DispatcherQueue dispatcher)
     string? imagePath = null;
     string? outputPath = null;
     string? settingsRoot = null;
+    string? expectedMap = null;
+    string? mapClass = null;
+    var prewarmVpsg3 = false;
+    var prewarmTimeoutSec = 15;
     var consume = false;
 
     for (var i = 0; i < args.Length; i++)
@@ -75,6 +84,16 @@ static async Task<int> RunSingleAsync(string[] args, DispatcherQueue dispatcher)
                 settingsRoot = args[++i]; break;
             case "--consume":
                 consume = true; break;
+            case "--expected":
+            case "-e":
+                expectedMap = args[++i]; break;
+            case "--mapclass":
+            case "-c":
+                mapClass = args[++i]; break;
+            case "--prewarm-vpsg3":
+                prewarmVpsg3 = true; break;
+            case "--prewarm-timeout":
+                prewarmTimeoutSec = int.Parse(args[++i]); break;
         }
     }
 
@@ -92,12 +111,43 @@ static async Task<int> RunSingleAsync(string[] args, DispatcherQueue dispatcher)
     try
     {
         var orchestrator = OrchestratorFactory.BuildOrchestrator(dispatcher, imagePath, settingsRoot, out var overlay);
-        var result = await RunRecognitionAsync(orchestrator, overlay, imagePath, consume);
+        var result = await RealCliRunner.RunRecognitionAsync(
+            orchestrator,
+            overlay,
+            imagePath,
+            consume: consume,
+            expectedMap: expectedMap,
+            mapClass: mapClass,
+            prewarmVpsg3: prewarmVpsg3,
+            prewarmTimeout: TimeSpan.FromSeconds(prewarmTimeoutSec));
+
+        // 控制台诊断摘要输出到 stderr（保证 stdout 纯净输出结构化 JSON）
+        var statusStr = result.IsMatchCorrect ? "验证匹配成功" : result.Succeeded ? "识别完成" : "识别失败";
+        Console.Error.WriteLine($"[RealCLI] 扫描诊断：{statusStr} · 耗时 {result.TotalWallMs:F1}ms");
+        if (result.Recognition is { } rec)
+        {
+            Console.Error.WriteLine($"  实际识别: {rec.MapDisplayName} (楼层: {rec.Floor}, 置信度: {rec.Confidence:P1})");
+        }
+        if (result.ExpectedMap is { } exp)
+        {
+            Console.Error.WriteLine($"  预期地图: {exp.MapDisplayName ?? exp.MapId} | 校验结论: {result.VerificationResult}");
+        }
+        if (result.Vpsg3Diagnostics is { Attempted: true } vpsg)
+        {
+            Console.Error.WriteLine($"  VPSG 3.0: {(vpsg.IsAccepted ? "快速对齐通过" : $"对齐降级 ({vpsg.FallbackReason ?? "未达标"})")} (点数: {vpsg.SparsePointCount}, HitsK5: {vpsg.HitsK5}, Scale: {vpsg.Scale:F3})");
+        }
+        if (result.CodeExecutionPath is { Count: > 0 } path)
+        {
+            Console.Error.WriteLine($"  执行路径: {string.Join(" -> ", path.Select(p => p.Split(' ')[0]))}");
+        }
 
         if (outputPath is not null)
             await RealCliOutputWriter.WriteAsync(result, outputPath);
         else
             RealCliOutputWriter.WriteLine(result);
+
+        if (!string.IsNullOrWhiteSpace(expectedMap))
+            return result.IsMatchCorrect ? 0 : 1;
 
         return result.Succeeded ? 0 : 1;
     }
@@ -220,105 +270,12 @@ static async Task<int> RunBatchAsync(string[] args, DispatcherQueue dispatcher)
 // 核心：驱动 SessionOrchestrator 执行完整识别管线
 // ════════════════════════════════════════════════════════════════
 
-static async Task<RealCliSessionResult> RunRecognitionAsync(
+static Task<RealCliSessionResult> RunRecognitionAsync(
     SessionOrchestrator orchestrator,
     RecordingOverlayWindow overlay,
     string imagePath,
-    bool consume = false)
-{
-    var sw = Stopwatch.StartNew();
-
-    try
-    {
-        // 初始化：加载设置、预热缓存、检查完整性
-        await orchestrator.InitializeAsync();
-        // Real CLI 也遵循产品生命周期：扫描必须发生在进入对局之后。
-        // S1 是 MapMatchSession 的兼容默认分组；截图仍由 CLI 的文件捕获器提供。
-        await orchestrator.BeginMatchAsync(
-            orchestrator.Settings.LastSelectedMapClass
-            ?? "S0 厄运之女 · 噩梦（爱吃醋）");
-
-        // 🔥 这就是真实的 IDVB 识别管线
-        // SessionOrchestrator.RunQuickScanAsync() 内部调用：
-        //   RunRecognitionPipelineAsync()
-        //     → RunRecognitionPipelineCoreAsync()
-        //       → IGameWindowCapture.TryCaptureViewport()  ← FileBasedCapture（来自文件）
-        //       → PipelineFactory.CreateScanPipeline()    ← 真实 ScanPipeline
-        //       → MapCvAlignmentService.AlignSelectedCore() ← 真实对齐引擎
-        //       → IOverlayWindow.UpdateMap()              ← RecordingOverlayWindow（记录）
-        //       → IOverlayWindow.Show()                   ← RecordingOverlayWindow（记录）
-        await orchestrator.RunQuickScanAsync();
-
-        // 后台扫描 E2E：若 --consume，且后台扫描已完成未消费，则公开缝合点
-        // 消费结果（headless 下候选窗自动选可靠项、PlayerDecidesScale 默认 false 跳过缩放）。
-        // 消费缝合点要求游戏地图处于打开状态（模拟玩家按下地图键）——后台扫描
-        // 完成后不再预置地图为打开，CLI 需显式同步。
-        if (consume)
-        {
-            orchestrator.SynchronizeExternalGameMapState(true);
-            await orchestrator.ConsumeBackgroundScanAsync();
-        }
-
-        sw.Stop();
-
-        // 收集结果
-        var result = ExtractResult(orchestrator, overlay, imagePath, sw.Elapsed.TotalMilliseconds, null);
-        await orchestrator.EndMatchAsync();
-        return result;
-    }
-    catch (Exception ex)
-    {
-        sw.Stop();
-        return new RealCliSessionResult
-        {
-            ImagePath = imagePath,
-            Succeeded = false,
-            StatusMessage = $"Fatal 异常：{ex.Message}",
-            FatalError = ex.ToString(),
-            TotalWallMs = sw.Elapsed.TotalMilliseconds
-        };
-    }
-    finally
-    {
-        await orchestrator.DisposeAsync();
-    }
-}
-
-// ════════════════════════════════════════════════════════════════
-// 从 SessionOrchestrator 提取结果（只读属性访问，不走任何识别逻辑）
-// ════════════════════════════════════════════════════════════════
-
-static RealCliSessionResult ExtractResult(
-    SessionOrchestrator orchestrator,
-    RecordingOverlayWindow overlay,
-    string imagePath,
-    double totalMs,
-    string? error)
-{
-    var rec = orchestrator.LastRecognition;
-
-    // 扫描管线各阶段耗时
-    var scanPhaseTimings = orchestrator.LastScanPhaseTimings?
-        .ToDictionary(kv => kv.Key, kv => kv.Value);
-
-    return new RealCliSessionResult
-    {
-        ImagePath = imagePath,
-        Succeeded = rec is not null,
-        StatusMessage = orchestrator.StatusMessage,
-        Recognition = SessionResultBuilder.BuildRecognition(orchestrator),
-        FailureReason = rec is null ? (orchestrator.StatusMessage ?? "识别失败：无结果") : null,
-        BackgroundScanStatus = orchestrator.BackgroundScanStatus.ToString(),
-        IsBackgroundScanCompleted = orchestrator.IsBackgroundScanCompleted,
-        OverlayEvents = overlay.Events.ToList(),
-        AlignmentSession = SessionResultBuilder.BuildAlignmentSession(orchestrator),
-        ScanPhaseTimings = scanPhaseTimings,
-        Diagnostics = SessionResultBuilder.BuildDiagnostics(orchestrator),
-        LogEntries = SessionResultBuilder.BuildLogEntries(orchestrator),
-        TotalWallMs = totalMs,
-        FatalError = error
-    };
-}
+    bool consume = false) =>
+    RealCliRunner.RunRecognitionAsync(orchestrator, overlay, imagePath, consume);
 
 // ════════════════════════════════════════════════════════════════
 // 工具函数
@@ -352,17 +309,19 @@ static string[] ResolveGlob(string pattern)
 static int UnknownCommand(string command)
 {
     Console.Error.WriteLine($"未知命令：{command}");
-    Console.Error.WriteLine("可用命令：run | batch | mapopen | mapopen-replay | model-train | model-replay | model-device | model-memory-test | survey");
+    Console.Error.WriteLine("可用命令：run | bench | batch | mapopen | mapopen-replay | model-train | model-replay | model-device | model-memory-test | survey");
     return 1;
 }
 
 static void PrintUsage()
 {
     Console.WriteLine("""
-        IDVB.RealCLI — 真正驱动 IDVB 的集成测试 CLI
+        IDVB.RealCLI — 真正驱动 IDVB 的集成测试与诊断 CLI
 
         用法：
-          IDVB.RealCLI.exe run --image <path> [--out <path>] [--settings <path>]
+          IDVB.RealCLI.exe run --image <path> [--expected <map>] [--out <path>] [--settings <path>]
+          IDVB.RealCLI.exe bench --dir <directory> [--expected <map>] [--infer-map] [--out <path>]
+          IDVB.RealCLI.exe bench --manifest <manifest.json> [--out <path>]
           IDVB.RealCLI.exe batch --files <glob> [--parallel N] [--out <path>]
           IDVB.RealCLI.exe mapopen --image <path> [--candidate N] [--out <path>] [--settings <path>]
           IDVB.RealCLI.exe mapopen-replay --manifest <path> [--out <path>] [--settings <path>]
@@ -371,9 +330,21 @@ static void PrintUsage()
 
         run 命令：
           --image, -i <path>    输入截图路径（必需）
+          --expected, -e <map>  预期地图名称/序号/Guid（用于自动校验 Ground Truth）
           --out, -o <path>      输出 JSON 路径（可选，默认 stdout）
           --settings, -s <path> 自定义 settings.json 目录（可选）
+          --mapclass, -c <pool> 指定段位地图池（可选）
+          --prewarm-vpsg3       等待 VPSG 3.0 空间索引构建完毕后再扫描
           --consume             后台扫描完成后立即消费（仅识别→对齐提交 E2E）
+
+        bench 命令（批量扫描诊断与"烤机"测试）：
+          --dir, -d <path>      待测试截图目录（支持递归查找所有子目录）
+          --manifest, -m <path> 测试清单 JSON 文件
+          --expected, -e <map>  覆盖指定目录所有截图的预期地图
+          --infer-map           自动从文件夹或文件名推导预期地图（如 "红教堂_01.png"）
+          --out, -o <path>      保存基准测试汇总 JSON 报告
+          --prewarm-timeout N   VPSG 3.0 索引就绪等待超时秒数（默认 20s）
+          --fresh, --isolated   每个样本使用独立 DI 容器（默认常驻会话模式）
 
         batch 命令：
           --files, -f <glob>    文件匹配模式（必需，如 "samples/**/*.png"）
@@ -393,9 +364,8 @@ static void PrintUsage()
           --settings, -s <path> 覆盖 manifest 中的 settingsRoot（可选）
 
         示例：
-          IDVB.RealCLI.exe run --image screenshot.png
-          IDVB.RealCLI.exe run --image screenshot.png --out result.json
-          IDVB.RealCLI.exe batch --files "samples/**/*.png" --parallel 4 --out summary.json
-          IDVB.RealCLI.exe mapopen --image two_gate.png --candidate 1 --out mapopen.json
+          IDVB.RealCLI.exe run --image screenshot.png --expected 红教堂
+          IDVB.RealCLI.exe bench --dir ./recordings --infer-map --out bench_report.json
+          IDVB.RealCLI.exe bench --manifest ./dataset.json --out bench_report.json
         """);
 }

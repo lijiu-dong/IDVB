@@ -23,6 +23,7 @@ internal static class AccountSession
     private const long MaximumPublicationPackageBytes = 90L * 1024 * 1024;
     private static readonly HttpClient Http = new() { BaseAddress = new Uri("https://community.idvb.xgflee.com/") };
     private static string? _publishToken;
+    public static string? PublishToken => _publishToken;
     public static AccountIdentity? Identity { get; private set; }
     public static event EventHandler? Changed;
 

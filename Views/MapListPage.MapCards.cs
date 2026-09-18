@@ -275,6 +275,8 @@ public sealed partial class MapListPage : UserControl
         try
         {
             await _repository.ToggleVariantGroupAsync(_selectedClass, _selectedMapIds);
+            if (!App.IsSafeMode)
+                await App.Session.RefreshMapCacheAsync();
             await ShowListAsync();
         }
         catch (Exception exception)

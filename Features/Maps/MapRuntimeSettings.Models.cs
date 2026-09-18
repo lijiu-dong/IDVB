@@ -5,7 +5,7 @@ namespace IDVBuff.Features.Maps;
 /// <summary>Persisted runtime configuration for the 解锁地图 status module.</summary>
 public sealed partial class MapRuntimeSettings
 {
-    public const int CurrentSchemaVersion = 16;
+    public const int CurrentSchemaVersion = 17;
     public const int CurrentCalibrationVersion = MapRuntimeSettingsRules.CurrentCalibrationVersion;
 
     public int SchemaVersion { get; set; } = CurrentSchemaVersion;
@@ -17,6 +17,11 @@ public sealed partial class MapRuntimeSettings
     /// 扫描被标记为完成状态；玩家第一次打开游戏地图时才按顺序进入候选/缩放并尝试对齐。
     /// </summary>
     public bool BackgroundScanEnabled { get; set; }
+    /// <summary>
+    /// 通过标签选择地图：开启后快捷扫描不再触发原本的录制截图和批量比对，
+    /// 而是直接给出当前地图类的全部结果，并在候选界面通过绑定的标签组进行手动筛选。
+    /// </summary>
+    public bool SelectMapByTagsEnabled { get; set; }
     /// <summary>
     /// 扫描候选是否逐项执行严格结构配准。关闭时扫描只提供模板候选，
     /// 玩家选择地图后仍会在正式对齐阶段执行结构配准。
@@ -118,6 +123,7 @@ public sealed partial class MapRuntimeSettings
         IsEnabled = false,
         FirstScanStrategy = FirstScanStrategy.SideEntrance,
         BackgroundScanEnabled = false,
+        SelectMapByTagsEnabled = false,
         RequireStrictStructureRegistrationDuringScan = true,
         EnableContinuousAlignment = false,
         ShowOverlayStatus = true,
@@ -295,6 +301,7 @@ public sealed partial class MapRuntimeSettings
         IsEnabled = IsEnabled,
         FirstScanStrategy = FirstScanStrategy,
         BackgroundScanEnabled = BackgroundScanEnabled,
+        SelectMapByTagsEnabled = SelectMapByTagsEnabled,
         RequireStrictStructureRegistrationDuringScan =
             RequireStrictStructureRegistrationDuringScan,
         EnableContinuousAlignment = EnableContinuousAlignment,

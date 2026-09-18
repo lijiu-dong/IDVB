@@ -1,4 +1,5 @@
 using IDVBuff.Features.Plugins;
+using IDVBuff.Features.QuickStart;
 
 namespace IDVBuff;
 
@@ -8,8 +9,11 @@ public partial class App
         Features.Maps.SessionOrchestrator session)
     {
         await session.ApplyQuickStartRecommendedSettingsAsync();
+        var preferences = Lifecycle.MainProgramPreferences.Load();
+        QuickStartRecommendedSettings.ApplyRecommendation1(preferences);
+        preferences.Save();
         await session.SetMapImprovementDataCollectionEnabledAsync(
-            Lifecycle.MainProgramPreferences.Load().HelpImproveModels);
+            preferences.HelpImproveModels);
         DisableBuiltInPluginsForQuickStart();
         if (_thirdPartyPluginRuntime is not null)
             await _thirdPartyPluginRuntime.DisableAllAsync();

@@ -7,6 +7,14 @@ namespace IdentityVisionBridge.PluginRuntime;
 
 public sealed partial class ThirdPartyPluginRuntimeManager : IAsyncDisposable
 {
+    /// <summary>Optional host-owned startup diagnostics; observer failures never alter plugin lifecycle.</summary>
+    public Action<string>? StartupDiagnostic { get; set; }
+
+    private void TraceStartup(string message)
+    {
+        try { StartupDiagnostic?.Invoke(message); }
+        catch { /* Diagnostic observers must not change runtime behavior. */ }
+    }
     private static readonly TimeSpan InitializeTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan StartTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan StopTimeout = TimeSpan.FromSeconds(5);
@@ -52,7 +60,9 @@ public sealed partial class ThirdPartyPluginRuntimeManager : IAsyncDisposable
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
+        TraceStartup("Runtime StartAsync entered; lifecycle gate wait begin.");
         await _lifecycleGate.WaitAsync(cancellationToken);
+        TraceStartup("Runtime lifecycle gate acquired.");
         try
         {
             if (_started)
@@ -60,11 +70,17 @@ public sealed partial class ThirdPartyPluginRuntimeManager : IAsyncDisposable
                 return;
             }
 
+            TraceStartup("Runtime directories begin.");
             _directories.EnsureCreated();
+            TraceStartup("Runtime directories complete; startup recovery begin.");
             await RecoverStartupStateAsync(cancellationToken);
+            TraceStartup("Runtime startup recovery complete; pending install changes begin.");
             await _installer.ApplyStartupChangesAsync(cancellationToken);
+            TraceStartup("Runtime pending install changes complete; compatibility check begin.");
             await _installer.RecheckCompatibilityAsync(cancellationToken);
+            TraceStartup("Runtime compatibility check complete; catalog read begin.");
             var catalog = await _state.ReadCatalogAsync(cancellationToken);
+            TraceStartup("Runtime catalog read complete; status population begin.");
             PopulateInitialStatuses(catalog);
             var enabled = catalog.Plugins
                 .Where(static plugin => plugin.Enabled && plugin.ActiveVersion is not null &&
@@ -73,6 +89,7 @@ public sealed partial class ThirdPartyPluginRuntimeManager : IAsyncDisposable
 
             if (SafeMode.IsActive || !_matchActivationAllowed || enabled.Length == 0)
             {
+                TraceStartup($"Runtime startup complete without plugin activation: safeMode={SafeMode.IsActive}; activationAllowed={_matchActivationAllowed}; enabledCount={enabled.Length}.");
                 _started = true;
                 return;
             }

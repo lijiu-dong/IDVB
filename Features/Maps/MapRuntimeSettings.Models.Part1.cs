@@ -10,6 +10,9 @@ public sealed partial class MapRuntimeSettings
         var previousSchema = SchemaVersion;
         SchemaVersion = CurrentSchemaVersion;
         EnableContinuousAlignment = false;
+        // 标签候选曾被强制开启；升级后仅一次性恢复为关闭，后续尊重用户选择。
+        if (previousSchema < 17)
+            SelectMapByTagsEnabled = false;
         if (SelectedMapId == Guid.Empty)
             SelectedMapId = null;
         LastSelectedMapClass = string.IsNullOrWhiteSpace(LastSelectedMapClass)
@@ -207,6 +210,16 @@ public sealed partial class MapRuntimeSettings
             FloorCalibrationClientWidth = 0;
             FloorCalibrationClientHeight = 0;
             FloorCalibrationVersion = 0;
+        }
+        NativeMiniMapRegion = NormalizeRegion(NativeMiniMapRegion);
+        NativeMiniMapCalibrationClientWidth = Math.Max(0, NativeMiniMapCalibrationClientWidth);
+        NativeMiniMapCalibrationClientHeight = Math.Max(0, NativeMiniMapCalibrationClientHeight);
+        NativeMiniMapCalibrationVersion = Math.Max(0, NativeMiniMapCalibrationVersion);
+        if (NativeMiniMapRegion is null)
+        {
+            NativeMiniMapCalibrationClientWidth = 0;
+            NativeMiniMapCalibrationClientHeight = 0;
+            NativeMiniMapCalibrationVersion = 0;
         }
         NormalizeDisplayCalibrationProfiles();
         if (previousSchema < 14)

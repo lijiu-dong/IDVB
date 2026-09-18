@@ -180,6 +180,7 @@ public static class MapBackgroundProcessor
             keyedAlpha.CopyTo(finalAlpha, neutralMask);
             var result = new Mat();
             Cv2.Merge([bgraChannels[0], bgraChannels[1], bgraChannels[2], finalAlpha], result);
+            NormalizeTransparentPixels(result);
             return result;
         }
         finally
@@ -189,6 +190,89 @@ public static class MapBackgroundProcessor
             foreach (var channel in hsvChannels)
                 channel.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Zeros out color channels (B, G, R) for any pixels where Alpha == 0 to prevent
+    /// hidden texture or white background noise from leaking when Alpha is discarded.
+    /// </summary>
+    public static void NormalizeTransparentPixels(Mat bgra)
+    {
+        if (bgra is null || bgra.IsDisposed || bgra.Channels() != 4)
+            return;
+
+        var channels = Cv2.Split(bgra);
+        try
+        {
+            using var zeroAlphaMask = new Mat();
+            Cv2.Compare(channels[3], 0, zeroAlphaMask, CmpTypes.EQ);
+            channels[0].SetTo(Scalar.Black, zeroAlphaMask);
+            channels[1].SetTo(Scalar.Black, zeroAlphaMask);
+            channels[2].SetTo(Scalar.Black, zeroAlphaMask);
+            Cv2.Merge(channels, bgra);
+        }
+        finally
+        {
+            foreach (var channel in channels)
+                channel.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Converts an image of 1, 3, or 4 channels into a 3-channel BGR image.
+    /// If the input is 4-channel BGRA, pixels are composited onto a solid black background
+    /// using their Alpha values (premultiplied over black), ensuring transparent areas (Alpha=0)
+    /// become solid black without leaking underlying dirty RGB noise.
+    /// </summary>
+    public static Mat CompositeToBgr(Mat source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        if (source.Empty())
+            throw new InvalidOperationException("无法转换空图像。");
+
+        if (source.Channels() == 3)
+        {
+            var bgr = new Mat();
+            source.CopyTo(bgr);
+            return bgr;
+        }
+
+        if (source.Channels() == 1)
+        {
+            var bgr = new Mat();
+            Cv2.CvtColor(source, bgr, ColorConversionCodes.GRAY2BGR);
+            return bgr;
+        }
+
+        if (source.Channels() == 4)
+        {
+            var channels = Cv2.Split(source);
+            try
+            {
+                using var alpha = channels[3];
+                using var alphaFloat = new Mat();
+                alpha.ConvertTo(alphaFloat, MatType.CV_32FC1, 1.0 / 255.0);
+
+                for (var i = 0; i < 3; i++)
+                {
+                    using var channelFloat = new Mat();
+                    channels[i].ConvertTo(channelFloat, MatType.CV_32FC1);
+                    Cv2.Multiply(channelFloat, alphaFloat, channelFloat);
+                    channelFloat.ConvertTo(channels[i], MatType.CV_8UC1);
+                }
+
+                var bgr = new Mat();
+                Cv2.Merge([channels[0], channels[1], channels[2]], bgr);
+                return bgr;
+            }
+            finally
+            {
+                foreach (var channel in channels)
+                    channel.Dispose();
+            }
+        }
+
+        throw new InvalidOperationException($"不支持的图像通道数: {source.Channels()}。");
     }
 
     private static void DrawBrush(Mat mask, Point center, int size, MapBackgroundLayerShape shape)
@@ -293,6 +377,7 @@ public static class MapBackgroundProcessor
         {
             case 4:
                 source.CopyTo(result);
+                NormalizeTransparentPixels(result);
                 break;
             case 3:
                 Cv2.CvtColor(source, result, ColorConversionCodes.BGR2BGRA);

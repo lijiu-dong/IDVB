@@ -193,6 +193,15 @@ public static class MapPlayerAssetCatalog
     public static bool AreAllAvailable =>
         Slots.All(slot => File.Exists(ResolvePath(slot)));
 }
+
+/// <summary>
+/// 常驻小地图上追踪的玩家标记数据。
+/// </summary>
+public sealed record MiniMapTrackedPlayer(
+    PlayerSlot Slot,
+    double NormalizedX,
+    double NormalizedY,
+    DateTimeOffset LastSeen);
 /*
  * 文件职责：MapPlayerModels。
  * 所属模块：Features/Maps，主要负责地图识别、对齐、会话编排、缓存或覆盖层功能。

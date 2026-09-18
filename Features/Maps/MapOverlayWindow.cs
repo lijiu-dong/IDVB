@@ -439,7 +439,9 @@ public sealed partial class MapOverlayWindow : IDisposable
             MiniMapOpacity: _miniMapOpacity,
             MiniMapOffsetX: _miniMapOffsetX,
             MiniMapOffsetY: _miniMapOffsetY,
-            ShowFloorOnMiniMap: _showFloorOnMiniMap);
+            ShowFloorOnMiniMap: _showFloorOnMiniMap,
+            MiniMapRotationDegrees: ResolveMiniMapRotation(),
+            MiniMapPlayers: GetCurrentMiniMapPlayers());
 
         try
         {

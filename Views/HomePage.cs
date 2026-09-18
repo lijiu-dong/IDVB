@@ -14,6 +14,8 @@ public sealed class HomePage : Page
 
     private readonly MapRepository _mapRepository = new();
     private readonly MapRecognitionStatisticsRepository _statisticsRepository = new();
+    private readonly TaskCompletionSource _initialReady =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TextBlock _mapCountValue = CreateMetricValue();
     private readonly TextBlock _successRateValue = CreateMetricValue();
     private readonly TextBlock _successRateDetail = CreateMetricDetail();
@@ -102,6 +104,8 @@ public sealed class HomePage : Page
         root.Children.Add(section);
         return root;
     }
+
+    public Task InitialReady => _initialReady.Task;
 
     private Button CreateLaunchGameButton()
     {
@@ -247,6 +251,10 @@ public sealed class HomePage : Page
             _mapCountValue.Text = "—";
             _successRateValue.Text = "—";
             _successRateDetail.Text = "数据暂时不可用";
+        }
+        finally
+        {
+            _initialReady.TrySetResult();
         }
     }
 

@@ -48,8 +48,19 @@ public sealed partial class MapListPage
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         var addButton = new Button { Content = "添加并更新" };
         var updateButton = new Button { Content = "立即更新全部" };
+        var progressRing = new ProgressRing { IsActive = false, Width = 20, Height = 20 };
+        var isUpdating = false;
+        var refreshListAfterDialog = false;
+        var updateStartedAt = DateTimeOffset.MinValue;
+        var progressTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        progressTimer.Tick += (_, _) =>
+        {
+            if (isUpdating)
+                status.Text = $"正在检查并应用订阅更新……已等待 {(int)(DateTimeOffset.Now - updateStartedAt).TotalSeconds} 秒，请保持此窗口打开。";
+        };
         actions.Children.Add(addButton);
         actions.Children.Add(updateButton);
+        actions.Children.Add(progressRing);
         content.Children.Add(actions);
         content.Children.Add(status);
         content.Children.Add(new ScrollViewer
@@ -76,8 +87,12 @@ public sealed partial class MapListPage
                 row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
                 row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
                 var toggle = new ToggleSwitch { IsOn = record.Enabled, VerticalAlignment = VerticalAlignment.Center };
+                toggle.IsEnabled = !isUpdating;
                 toggle.Toggled += async (_, _) =>
-                    await _mapSubscriptionService.SetEnabledAsync(record.Id, toggle.IsOn);
+                {
+                    try { await _mapSubscriptionService.SetEnabledAsync(record.Id, toggle.IsOn); }
+                    catch (Exception exception) { status.Text = "修改订阅失败：" + exception.Message; }
+                };
                 row.Children.Add(toggle);
                 var publisherName = string.IsNullOrWhiteSpace(record.PublisherDisplayName)
                     ? "等待首次更新"
@@ -95,10 +110,15 @@ public sealed partial class MapListPage
                 Grid.SetColumn(details, 1);
                 row.Children.Add(details);
                 var remove = new Button { Content = "移除" };
+                remove.IsEnabled = !isUpdating;
                 remove.Click += async (_, _) =>
                 {
-                    await _mapSubscriptionService.RemoveAsync(record.Id);
-                    RenderRecords();
+                    try
+                    {
+                        await _mapSubscriptionService.RemoveAsync(record.Id);
+                        RenderRecords();
+                    }
+                    catch (Exception exception) { status.Text = "移除订阅失败：" + exception.Message; }
                 };
                 Grid.SetColumn(remove, 2);
                 row.Children.Add(remove);
@@ -108,17 +128,22 @@ public sealed partial class MapListPage
 
         async Task UpdateAsync()
         {
-            var refreshList = false;
+            if (isUpdating) return;
+            isUpdating = true;
+            updateStartedAt = DateTimeOffset.Now;
             addButton.IsEnabled = false;
             updateButton.IsEnabled = false;
+            RenderRecords();
             SetPackageOperationState(importButton, exportButton, true, "正在更新…");
             status.Text = "正在检查更新……";
+            progressRing.IsActive = true;
+            progressTimer.Start();
             try
             {
                 var result = await _mapSubscriptionService.CheckAndApplyAsync();
+                refreshListAfterDialog |= result.AppliedCount > 0;
                 if (result.AppliedCount > 0 && !App.IsSafeMode)
                     await App.Session.RefreshMapCacheAsync();
-                refreshList = result.AppliedCount > 0;
                 status.Text = result.FailedCount > 0
                     ? $"更新完成，{result.FailedCount} 个失败。"
                     : result.AppliedCount > 0
@@ -131,12 +156,13 @@ public sealed partial class MapListPage
             }
             finally
             {
+                progressTimer.Stop();
+                progressRing.IsActive = false;
+                isUpdating = false;
                 SetPackageOperationState(importButton, exportButton, false, null);
                 addButton.IsEnabled = true;
                 updateButton.IsEnabled = true;
                 RenderRecords();
-                if (refreshList)
-                    await ShowListAsync();
             }
         }
 
@@ -153,13 +179,24 @@ public sealed partial class MapListPage
         };
         updateButton.Click += async (_, _) => await UpdateAsync();
         RenderRecords();
-        await new ContentDialog
+        var dialog = new ContentDialog
         {
             XamlRoot = XamlRoot,
             Title = "地图订阅",
             Content = content,
             CloseButtonText = "完成"
-        }.ShowAsync();
+        };
+        dialog.Closing += (_, args) =>
+        {
+            if (isUpdating)
+            {
+                args.Cancel = true;
+                status.Text = "订阅仍在更新，请等待完成后再关闭。";
+            }
+        };
+        await dialog.ShowAsync();
+        if (refreshListAfterDialog)
+            await ShowListAsync();
     }
 
     private async Task<string?> PickPublicationFolderAsync()

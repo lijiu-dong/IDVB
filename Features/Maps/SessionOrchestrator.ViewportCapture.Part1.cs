@@ -205,6 +205,10 @@ public sealed partial class SessionOrchestrator
                                 current.GetOrCreateNativeObservedStructure();
                         }
                         structureTimer.Stop();
+                        if (autoFloor is not null)
+                        {
+                            autoFloor.LogSummaryResult(_currentFloorKey, MapFloorRules.GetPrimaryFloorKey(autoFloor.Map));
+                        }
                         _logCollector.Append(
                             MapLogCategory.ViewportCapture,
                             MapLogLevel.Info,
@@ -332,6 +336,14 @@ public sealed partial class SessionOrchestrator
             {
                 _lastStableCaptureFailureReason =
                     "地图对齐已被新的地图开关操作取消。";
+            }
+
+            if (autoFloor is not null)
+            {
+                autoFloor.LogSummaryResult(
+                    _currentFloorKey,
+                    MapFloorRules.GetPrimaryFloorKey(autoFloor.Map),
+                    captureTimedOut: !cancellationToken.IsCancellationRequested && (shouldContinue?.Invoke() ?? true));
             }
 
             _logCollector.Append(

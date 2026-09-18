@@ -1,4 +1,4 @@
-using IDVBuff.Features.Maps;
+﻿using IDVBuff.Features.Maps;
 using OpenCvSharp;
 using Windows.UI;
 using SD = System.Drawing;
@@ -216,6 +216,23 @@ public sealed partial class MapListPage : UserControl
     {
         if (anchor.Bounds?.IsValid is not true)
             return;
+        if (IsGateAnchor(anchor.Key))
+        {
+            var centerX = (float)((anchor.Bounds.X + anchor.Bounds.Width / 2d) * outWidth);
+            var centerY = (float)((anchor.Bounds.Y + anchor.Bounds.Height / 2d) * outHeight);
+            var size = (float)(64d * scale);
+            var circleRect = new SD.RectangleF(centerX - size / 2f, centerY - size / 2f, size, size);
+            var anchorColor = GetAnchorColor(anchor);
+            using var fillBrush = new SD.SolidBrush(SD.Color.FromArgb(92, anchorColor.R, anchorColor.G, anchorColor.B));
+            graphics.FillEllipse(fillBrush, circleRect);
+            using var gatePen = CreateModernPngPen(anchorColor, 3 * scale, dashed: false);
+            graphics.DrawEllipse(gatePen, circleRect);
+            var dotSize = (float)Math.Max(4d, 6d * scale);
+            using var dotBrush = new SD.SolidBrush(ToSystemDrawingColor(anchorColor));
+            graphics.FillEllipse(dotBrush, centerX - dotSize / 2f, centerY - dotSize / 2f, dotSize, dotSize);
+            return;
+        }
+
         var rect = new SD.RectangleF(
             (float)(anchor.Bounds.X * outWidth),
             (float)(anchor.Bounds.Y * outHeight),

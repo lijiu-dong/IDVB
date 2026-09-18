@@ -61,9 +61,10 @@ public sealed partial class MapStatusPage
         {
             return;
         }
-        var backgroundIndex = content.Children.IndexOf(_backgroundScanToggle);
+        var targetToggle = _backgroundScanToggle;
+        var insertIndex = content.Children.IndexOf(targetToggle);
         content.Children.Insert(
-            backgroundIndex >= 0 ? backgroundIndex + 1 : 0,
+            insertIndex >= 0 ? insertIndex + 1 : 0,
             BuildMapLearningPanel());
         _mapLearningProgressTimer.Tick += (_, _) =>
             UpdateMapLearningProgress(_runtime.MapLearningStatus);

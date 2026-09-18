@@ -252,6 +252,8 @@ public sealed partial class MapRepository
             using var source = DecodeImage(original);
             if (source.Empty())
                 throw new InvalidOperationException($"无法读取地图原图：{Path.GetFileName(original)}");
+            if (source.Channels() == 4)
+                MapBackgroundProcessor.NormalizeTransparentPixels(source);
             using var resized = new Mat();
             Cv2.Resize(
                 source,
@@ -260,6 +262,8 @@ public sealed partial class MapRepository
                 0,
                 0,
                 InterpolationFlags.Area);
+            if (resized.Channels() == 4)
+                MapBackgroundProcessor.NormalizeTransparentPixels(resized);
             if (!Cv2.ImWrite(destination, resized))
                 throw new InvalidOperationException($"无法保存地图降采样图片：{Path.GetFileName(original)}");
         }, cancellationToken);

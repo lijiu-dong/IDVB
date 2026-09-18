@@ -66,14 +66,13 @@ public sealed class MapSubscriptionUpdateEngine
         var communityMetadata = await GetCommunityMetadataAsync(link.FeedUri, publication.PublicationId, cancellationToken);
         record.PublisherDisplayName ??= communityMetadata.PublisherDisplayName;
         record.PackageName ??= communityMetadata.PackageName;
-        if (string.Equals(record.LastAppliedVersion, publication.Version, StringComparison.Ordinal))
-            return false;
         if (record.LastPublishedAtUtc is { } previous && publication.PublishedAtUtc < previous)
             throw new CryptographicException("订阅 feed 发生版本回退，已拒绝应用。");
-        if (string.Equals(
-            record.LastAppliedPlaintextSha256,
-            publication.PlaintextSha256,
-            StringComparison.OrdinalIgnoreCase))
+        if (record.InstalledMapIds.Count > 0
+            && string.Equals(
+                record.LastAppliedPlaintextSha256,
+                publication.PlaintextSha256,
+                StringComparison.OrdinalIgnoreCase))
             return false;
 
         var packageUri = ResolvePackageUri(link.FeedUri, publication.PackageUri);

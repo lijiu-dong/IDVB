@@ -36,6 +36,12 @@ public sealed partial class MapStatusPage : UserControl
         OffContent = "扫描后立即确认",
         OnContent = "仅识别，开图后确认"
     };
+    private readonly ToggleSwitch _selectMapByTagsToggle = new()
+    {
+        Header = "强制只用标签筛选候选地图",
+        OffContent = "关闭（正常识别）",
+        OnContent = "开启（仅标签候选）"
+    };
     private readonly ComboBox _presetSelector = new()
     {
         Header = "使用配置文件",
@@ -474,27 +480,9 @@ public sealed partial class MapStatusPage : UserControl
         OffContent = "关闭",
         OnContent = "同时执行新旧双路径，仅对比日志"
     };
-    private readonly NumberBox _featureRatioThreshold = CreatePercentageBox(
-        "特征比率筛选",
-        50,
-        95);
-    private readonly NumberBox _featureInlierTolerance = CreateDecimalBox(
-        "内点容差（px）",
-        1,
-        30,
-        0.5);
-    private readonly NumberBox _featureMaxCandidates = CreateDecimalBox(
-        "平移候选数上限",
-        2,
-        10,
-        1);
-    private readonly NumberBox _structureOccupancy = CreatePercentageBox(
-        "结构占用率阈值",
-        10,
-        98);
-    private readonly NumberBox _structurePartitions = CreateDecimalBox(
-        "最低一致分区数",
-        1,
-        4,
-        1);
+    private readonly NumberBox _featureRatioThreshold = CreatePercentageBox("特征比率筛选", 50, 95);
+    private readonly NumberBox _featureInlierTolerance = CreateDecimalBox("内点容差（px）", 1, 30, 0.5);
+    private readonly NumberBox _featureMaxCandidates = CreateDecimalBox("平移候选数上限", 2, 10, 1);
+    private readonly NumberBox _structureOccupancy = CreatePercentageBox("结构占用率阈值", 10, 98);
+    private readonly NumberBox _structurePartitions = CreateDecimalBox("最低一致分区数", 1, 4, 1);
 }

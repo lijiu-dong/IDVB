@@ -78,6 +78,40 @@ public sealed class RealCliSessionResult
     public RealCliModelStatusOutput? ModelStatus { get; init; }
     public List<string> ModelFallbackEvents { get; init; } = [];
 
+    /// <summary>预期地图（Ground Truth）。未指定时为 null。</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public RealCliExpectedMap? ExpectedMap { get; init; }
+
+    /// <summary>核对结论：Matched（准确匹配）/ Mismatched（误识别）/ Unrecognized（未识别）/ Skipped / FatalError。</summary>
+    public string VerificationResult { get; init; } = "Unknown";
+
+    /// <summary>核对是否判定为正确匹配（实际识别出的 Map 与 ExpectedMap 一致）。若无 ExpectedMap 则等同于 Succeeded。</summary>
+    public bool IsMatchCorrect { get; init; }
+
+    /// <summary>执行路径（关键代码与分支链）。</summary>
+    public List<string> CodeExecutionPath { get; init; } = [];
+
+    /// <summary>关键事件列表（门检测、几何排名、VPSG 3.0、因果链）。</summary>
+    public List<RealCliKeyEvent> KeyEvents { get; init; } = [];
+
+    /// <summary>全链路树状 Trace 输出（包含耗时层级）。</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public RealCliOperationTraceOutput? OperationTrace { get; init; }
+
+    /// <summary>VPSG 3.0 专属诊断结果。</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public RealCliVpsg3DiagnosticsOutput? Vpsg3Diagnostics { get; init; }
+
+    /// <summary>检测到的门特征列表（坐标、得分、尺度）。</summary>
+    public List<RealCliGateDetectionOutput> GateDetections { get; init; } = [];
+
+    /// <summary>几何候选排名打分列表。</summary>
+    public List<RealCliGeometryCandidateOutput> GeometryCandidates { get; init; } = [];
+
+    /// <summary>IdvbStatus 结构化故障因果链（如果有）。</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public RealCliIdvbStatusOutput? IdvbStatus { get; init; }
+
     /// <summary>日志条目摘要。</summary>
     public List<RealCliLogEntrySummary> LogEntries { get; init; } = new();
 
@@ -250,3 +284,132 @@ public sealed class RealCliBatchSummary
     public double AverageWallMs { get; init; }
     public List<RealCliSessionResult> Results { get; init; } = new();
 }
+
+public sealed class RealCliExpectedMap
+{
+    public string? MapId { get; set; }
+    public string? MapDisplayName { get; set; }
+    public string? Floor { get; set; }
+}
+
+public sealed class RealCliKeyEvent
+{
+    public double TimestampMs { get; init; }
+    public string Category { get; init; } = string.Empty;
+    public string Message { get; init; } = string.Empty;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Dictionary<string, object?>? Details { get; init; }
+}
+
+public sealed class RealCliOperationTraceOutput
+{
+    public string OperationType { get; init; } = string.Empty;
+    public double TotalWallMs { get; init; }
+    public string Timeline { get; init; } = string.Empty;
+    public List<RealCliTraceSpanOutput> Spans { get; init; } = [];
+}
+
+public sealed class RealCliTraceSpanOutput
+{
+    public string Name { get; init; } = string.Empty;
+    public double DurationMs { get; init; }
+    public double StartOffsetMs { get; init; }
+    public string WaitKind { get; init; } = string.Empty;
+    public string Status { get; init; } = string.Empty;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Route { get; init; }
+}
+
+public sealed class RealCliVpsg3DiagnosticsOutput
+{
+    public bool Attempted { get; init; }
+    public bool IsAccepted { get; init; }
+    public string IndexStatus { get; init; } = "Missing";
+    public double Scale { get; init; }
+    public double OffsetX { get; init; }
+    public double OffsetY { get; init; }
+    public double ApertureMargin { get; init; }
+    public double Confidence { get; init; }
+    public int SparsePointCount { get; init; }
+    public int HitsK5 { get; init; }
+    public int HitsK3 { get; init; }
+    public string? FallbackReason { get; init; }
+    public double DurationMs { get; init; }
+}
+
+public sealed class RealCliGateDetectionOutput
+{
+    public double X { get; init; }
+    public double Y { get; init; }
+    public double Width { get; init; }
+    public double Height { get; init; }
+    public double Score { get; init; }
+    public double Scale { get; init; }
+}
+
+public sealed class RealCliGeometryCandidateOutput
+{
+    public string MapId { get; init; } = string.Empty;
+    public string DisplayName { get; init; } = string.Empty;
+    public double Score { get; init; }
+    public double MarginToNext { get; init; }
+    public bool Selected { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RejectionReason { get; init; }
+}
+
+public sealed class RealCliIdvbStatusOutput
+{
+    public int HttpCode { get; init; }
+    public int SubCode { get; init; }
+    public string CodeName { get; init; } = string.Empty;
+    public string Stage { get; init; } = string.Empty;
+    public string Message { get; init; } = string.Empty;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? CausedBy { get; init; }
+}
+
+public sealed class RealCliBenchmarkReport
+{
+    public int TotalCases { get; init; }
+    public int MatchedCount { get; init; }
+    public int MismatchedCount { get; init; }
+    public int UnrecognizedCount { get; init; }
+    public double MatchAccuracy { get; init; }
+
+    public double AverageWallMs { get; init; }
+    public double MinWallMs { get; init; }
+    public double MaxWallMs { get; init; }
+    public double P50WallMs { get; init; }
+    public double P90WallMs { get; init; }
+
+    public int Vpsg3AttemptedCount { get; init; }
+    public int Vpsg3AcceptedCount { get; init; }
+    public double Vpsg3SuccessRate { get; init; }
+    public double Vpsg3AverageWallMs { get; init; }
+
+    public Dictionary<string, double> AveragePhaseTimings { get; init; } = new();
+    public List<RealCliBenchmarkCaseResult> Cases { get; init; } = new();
+    public List<RealCliBenchmarkCaseResult> FailedCases { get; init; } = new();
+}
+
+public sealed class RealCliBenchmarkCaseResult
+{
+    public int Index { get; init; }
+    public string ImagePath { get; init; } = string.Empty;
+    public string? ExpectedMap { get; init; }
+    public string? ExpectedFloor { get; init; }
+    public string? RecognizedMap { get; init; }
+    public string? RecognizedFloor { get; init; }
+    public double Confidence { get; init; }
+    public string VerificationResult { get; init; } = string.Empty; // Matched, Mismatched, Unrecognized
+    public bool IsMatchCorrect { get; init; }
+    public double TotalWallMs { get; init; }
+    public bool Vpsg3Attempted { get; init; }
+    public bool Vpsg3Accepted { get; init; }
+    public string? Vpsg3FallbackReason { get; init; }
+    public List<string> CodeExecutionPath { get; init; } = new();
+    public List<RealCliKeyEvent> KeyEvents { get; init; } = new();
+    public RealCliSessionResult SessionResult { get; init; } = new();
+}
+

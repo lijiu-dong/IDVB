@@ -281,11 +281,13 @@ public sealed partial class MapListPage : UserControl
     private RecognitionAnchor? GetActiveAnchor() =>
         _activeAnchorId is { } id ? GetActiveFloorProfile().FindAnchor(id) : null;
 
-    private string? GetActiveFloorImagePath() => _draft is null
+    private string? GetFloorImagePath(string floorKey) => _draft is null
         ? null
-        : _draft.FloorPaths.TryGetValue(_activeFloorKey, out var path)
+        : _draft.FloorPaths.TryGetValue(floorKey, out var path)
             ? path
-            : _activeFloorKey == "1f" ? _draft.FloorOnePath : _draft.FloorTwoPath;
+            : floorKey == "1f" ? _draft.FloorOnePath : _draft.FloorTwoPath;
+
+    private string? GetActiveFloorImagePath() => GetFloorImagePath(_activeFloorKey);
 
     private static void ClearFloorAnchors(MapDraft draft, string floorKey)
     {

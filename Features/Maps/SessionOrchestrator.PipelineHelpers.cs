@@ -88,6 +88,7 @@ public sealed partial class SessionOrchestrator
         CancelMapOpenAlignment();
         EndAdaptiveMapOpen(reason);
         CancelOrbTracking(reason);
+        CancelLivePlayerTracking(reason);
         MapOverlayPresentationBatch.Apply(_overlay, () =>
         {
             _overlayStatus.Clear();

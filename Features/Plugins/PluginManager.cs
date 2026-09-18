@@ -1,3 +1,4 @@
+using IDVBuff.Diagnostics;
 using IDVBuff.PluginContracts;
 using Microsoft.UI.Dispatching;
 
@@ -80,10 +81,13 @@ public sealed class PluginManager : IPluginHost, IPluginRegistry, IDisposable
         foreach (var plugin in _host.Plugins)
         {
             if (plugin is IPluginSettingsProvider provider)
-                _preferences.RestoreSettings(provider, plugin.Id);
+                using (StartupTimeline.Measure($"Built-in restore settings: {plugin.Id}"))
+                    _preferences.RestoreSettings(provider, plugin.Id);
         }
-        _host.Start();
-        _tickTimer.Start();
+        using (StartupTimeline.Measure("Built-in host Start (lifecycle callbacks)"))
+            _host.Start();
+        using (StartupTimeline.Measure("Built-in dispatcher timer Start"))
+            _tickTimer.Start();
     }
 
     public void Tick() => _host.Tick();

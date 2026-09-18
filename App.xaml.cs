@@ -3,6 +3,7 @@ using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml.Navigation;
 using Microsoft.UI.Composition.SystemBackdrops;
 using IDVBuff.Core.Contracts;
+using IDVBuff.Features.Feedback;
 using IDVBuff.Features.Maps;
 using IDVBuff.Features.Plugins;
 using IDVBuff.Features.QuickStart;
@@ -13,16 +14,12 @@ using IDVBuff.Cli;
 using System.Runtime.InteropServices;
 using IDVBuff.Lifecycle;
 using WinRT.Interop;
-// Windows App SDK 单文件发布要求：在程序入口前设置此环境变量，
-// 以便运行时能在单文件包内找到原生 DLL。
+
+// Windows App SDK 单文件发布要求：在程序入口前设置此环境变量，以便运行时能在单文件包内找到原生 DLL。
 static class SingleFileBootstrap
 {
-    static SingleFileBootstrap()
-    {
-        Environment.SetEnvironmentVariable(
-            "MICROSOFT_WINDOWSAPPRUNTIME_BASE_DIRECTORY",
-            AppContext.BaseDirectory);
-    }
+    static SingleFileBootstrap() =>
+        Environment.SetEnvironmentVariable("MICROSOFT_WINDOWSAPPRUNTIME_BASE_DIRECTORY", AppContext.BaseDirectory);
 }
 
 namespace IDVBuff
@@ -34,36 +31,6 @@ namespace IDVBuff
     {
         private Window? window;
         private bool startupElevationRequired;
-        private bool shutdownInProgress;
-        private bool shutdownComplete;
-        private bool applicationExitRequested;
-        private bool explicitExitRequested;
-        private bool mainWindowHasBeenShown;
-        private bool mainWindowIsCloaked;
-        private ServiceProvider? _serviceProvider;
-        private IdvbControlServer? _idvbControlServer;
-        private UpdateShutdownServer? _updateShutdownServer;
-        private PluginManager? _pluginManager;
-        private TeachingTipManager? _teachingTipManager;
-        private HostEventBridge? _hostEventBridge;
-        private ICaptureProtectionRegistration? _mainWindowCaptureProtection;
-        private TrayIconController? _trayIcon;
-
-        /// <summary>全局 DI 容器（供 Views 等非 DI 感知组件使用）。</summary>
-        public static ServiceProvider Services =>
-            (_currentApp?._serviceProvider)
-            ?? throw new InvalidOperationException("DI 容器尚未构建。");
-
-        /// <summary>快捷访问新架构入口（供 Views 使用）。</summary>
-        public static Features.Maps.SessionOrchestrator Session =>
-            Services.GetRequiredService<Features.Maps.SessionOrchestrator>();
-
-        /// <summary>快捷访问插件宿主（供插件管理页读取已注册插件）。</summary>
-        public static PluginManager? Plugins => _currentApp?._pluginManager;
-        /// <summary>快捷访问插件设置 TeachingTip 管理器（供插件管理页挂载/触发设置页）。</summary>
-        public static TeachingTipManager? TeachingTips => _currentApp?._teachingTipManager;
-
-        private static App? _currentApp;
         public Window MainWindow => window ?? throw new InvalidOperationException("主窗口尚未初始化。");
 
         /// <summary>
@@ -72,6 +39,7 @@ namespace IDVBuff
         /// </summary>
         public App()
         {
+            WriteStartupTrace("App constructor entered; output logging initialization begin.");
             _currentApp = this;
             var isCliLaunch = Array.Exists(
                 Environment.GetCommandLineArgs(),
@@ -82,8 +50,14 @@ namespace IDVBuff
             OutputLog.Initialize(
                 captureFirstChanceExceptions: !isCliLaunch
                     && (System.Diagnostics.Debugger.IsAttached || AppDataPaths.IsTestBuild));
+            WriteStartupTrace("Output logging initialized.");
+            OfficialFeedbackService.TokenProvider = () => Features.Accounts.AccountSession.PublishToken;
+            OfficialFeedbackService.ClientVersionProvider = () => BuildVersionInfo.BuildVersion;
             UnhandledException += App_UnhandledException;
+            WriteStartupTrace("App XAML InitializeComponent begin.");
             this.InitializeComponent();
+            WriteStartupTrace("App XAML InitializeComponent complete.");
+            StartupSplash.Complete(StartupSplash.Stage.Interface);
         }
 
         /// <summary>
@@ -95,6 +69,7 @@ namespace IDVBuff
         {
             try
             {
+                WriteStartupTrace("OnLaunched entered; parsing launch options.");
                 var cliOptions = CliLaunchOptions.Parse(Environment.GetCommandLineArgs());
                 if (cliOptions.IsCli)
                 {
@@ -103,10 +78,12 @@ namespace IDVBuff
                 }
 
                 WriteStartupTrace("Creating the main window.");
+                WriteStartupTrace("Preferences load begin.");
                 var preferences = MainProgramPreferences.Load(); IsSafeMode = preferences.SafeMode;
+                WriteStartupTrace($"Preferences loaded: safeMode={IsSafeMode}; startMinimized={preferences.StartMinimized}.");
                 PluginRandomDelayPolicy.AllowUnsafeMinimums = !IsSafeMode && preferences.AllowUnsafePluginRandomDelayMinimums; var startMinimized = preferences.StartMinimized;
-                var isIsolatedDevelopmentInstance = Environment.GetCommandLineArgs().Any(argument =>
-                    string.Equals(argument, "--isolated-dev-instance", StringComparison.OrdinalIgnoreCase));
+                var isIsolatedDevelopmentInstance = Environment.GetCommandLineArgs().Any(argument => string.Equals(argument, "--isolated-dev-instance", StringComparison.OrdinalIgnoreCase));
+                WriteStartupTrace("Window construction and backdrop begin.");
                 window = new Window
                 {
                     Title = isIsolatedDevelopmentInstance
@@ -115,28 +92,33 @@ namespace IDVBuff
                     ExtendsContentIntoTitleBar = false,
                     SystemBackdrop = FluentTheme.CreateWindowBackdrop(preferences.UseLegacyTheme)
                 };
+                WriteStartupTrace("Window constructed; icon setup begin.");
                 TrySetWindowIcon(window);
+                WriteStartupTrace("Window icon setup complete.");
+                window.Closed += (_, _) => StopStartupRenderObservation();
                 window.AppWindow.Closing += AppWindow_Closing;
                 window.AppWindow.Changed += AppWindow_Changed;
                 window.Closed += Window_Closed;
 
-                if (startMinimized)
-                {
-                    SetMainWindowCloaked(true);
-                }
+                // Initialize the visual tree without showing a large blank window.
+                SetMainWindowCloaked(true);
+                _startupPresentationPending = true;
 
                 if (window.AppWindow.Presenter is OverlappedPresenter presenter)
                     presenter.Maximize();
 
+                WriteStartupTrace("Window presentation configured; startup content construction begin.");
                 var rootFrame = new Frame { RequestedTheme = AppThemePreference.Resolve(preferences) };
+                _mainFrame = rootFrame;
                 rootFrame.NavigationFailed += OnNavigationFailed;
                 window.Content = rootFrame;
-                _ = rootFrame.Navigate(typeof(MainPage), e.Arguments);
+                if (!rootFrame.Navigate(typeof(Views.MainPage), e.Arguments))
+                    throw new InvalidOperationException("主界面导航失败。");
+                WriteStartupTrace("Main page navigated; Window.Activate begin.");
                 window.Activate();
                 if (!startMinimized)
                 {
-                    mainWindowHasBeenShown = true;
-                    WriteStartupTrace("Main window activated.");
+                    WriteStartupTrace("Main window activated while cloaked; native startup splash remains visible.");
                 }
                 else
                 {
@@ -154,15 +136,36 @@ namespace IDVBuff
                 _updateShutdownServer = new UpdateShutdownServer(() =>
                     dispatcher.TryEnqueue(RequestApplicationExit));
                 _updateShutdownServer.Start();
+                WriteStartupTrace("Window services started.");
+                StartupSplash.Complete(StartupSplash.Stage.Window);
+                WriteStartupTrace("Model improvement initialization begin.");
                 await InitializeModelImprovementAsync(preferences, startMinimized);
+                WriteStartupTrace("Model improvement initialization complete; safe-mode branch begin.");
                 if (await TryCompleteSafeModeLaunchAsync(startMinimized, preferences))
+                {
+                    if (!explicitExitRequested)
+                    {
+                        await CompleteStartupPresentationAsync(startMinimized);
+                    }
                     return;
-                // ═══ 构建 DI 容器 ═══
-                var services = new ServiceCollection();
-                services.AddIdvbServices(dispatcher);
-                services.AddSingleton<IPluginInputService, PluginInputService>();
-                _serviceProvider = services.BuildServiceProvider();
+                }
+                // ═══ 构建 DI 容器（在后台线程进行，避免大原生 DLL 首次冷加载阻塞 UI 渲染）═══
+                WriteStartupTrace("DI registration begin.");
+                StartupSplash.Report("正在加载运行组件…");
+                _serviceProvider = await Task.Run(() =>
+                {
+                    WriteStartupTrace("DI background worker started; AddIdvbServices begin.");
+                    var services = new ServiceCollection();
+                    services.AddIdvbServices(dispatcher);
+                    services.AddSingleton<IPluginInputService, PluginInputService>();
+                    WriteStartupTrace("DI: AddIdvbServices complete; BuildServiceProvider begin.");
+                    var sp = services.BuildServiceProvider();
+                    WriteStartupTrace("DI: BuildServiceProvider complete.");
+                    return sp;
+                });
+                _servicesReadyTcs.TrySetResult();
                 WriteStartupTrace("DI container built.");
+                StartupSplash.Complete(StartupSplash.Stage.Services);
 
                 _mainWindowCaptureProtection = _serviceProvider
                     .GetRequiredService<ICaptureProtectionService>()
@@ -171,13 +174,23 @@ namespace IDVBuff
                         CaptureProtectionWindowCategory.MainProgram,
                         "主程序窗口");
 
+                _serviceProvider.GetRequiredService<IOverlayNotificationService>();
+
+                WriteStartupTrace("Capture protection registered; yielding UI dispatcher.");
                 await Task.Yield();
+                WriteStartupTrace("UI dispatcher continuation resumed.");
+
                 WriteStartupTrace("Initializing map runtime.");
+                StartupSplash.Report("正在准备地图服务…");
 
                 // 新架构入口 — 唯一运行路径
                 var session = _serviceProvider.GetRequiredService<Features.Maps.SessionOrchestrator>();
+                WriteStartupTrace("Map session constructed.");
                 session.ElevationRequiredDetected += Runtime_ElevationRequiredDetected;
+                WriteStartupTrace("Map session InitializeAsync begin.");
                 await session.InitializeAsync();
+                WriteStartupTrace("Map session initialized.");
+                StartupSplash.Complete(StartupSplash.Stage.Maps);
 
                 // ═══ 插件 SDK 装配（仅 GUI 路径；RealCLI 走 RunCliAsync，绝不加载插件）═══
                 var pluginBus = new MessageBus();
@@ -206,12 +219,25 @@ namespace IDVBuff
                     _serviceProvider.GetRequiredService<IConfigProvider>(),
                     _serviceProvider.GetRequiredService<IResolutionProfileService>());
                 _hostEventBridge.Attach();
-                PluginRegistration.Register(_pluginManager);
-                _pluginManager.Start();
-
+                WriteStartupTrace("Plugin host assembled; built-in registration begin.");
+                StartupSplash.Report("正在加载扩展…");
+                WriteStartupTrace("Built-in worker queued.");
+                await Task.Run(() =>
+                {
+                    WriteStartupTrace("Built-in worker entered (before registration method JIT).");
+                    using (StartupTimeline.Measure("Built-in PluginRegistration.Register call"))
+                        PluginRegistration.Register(_pluginManager);
+                    using (StartupTimeline.Measure("Built-in PluginManager.Start call"))
+                        _pluginManager.Start();
+                    WriteStartupTrace("Built-in worker finished; awaiting UI continuation.");
+                });
+                WriteStartupTrace("Built-in UI continuation resumed.");
+                WriteStartupTrace("Built-in plugins registered and started.");
+                WriteStartupTrace("Third-party plugins initialization begin.");
                 await InitializeThirdPartyPluginsAsync(pluginBus);
+                WriteStartupTrace("Third-party plugins initialization complete.");
+                StartupSplash.Complete(StartupSplash.Stage.Extensions);
                 session.MatchPluginActivationChanged += SetMatchPluginActivationAsync;
-
                 if (!string.IsNullOrWhiteSpace(cliOptions.IdvbControlPipeName))
                 {
                     _idvbControlServer = new IdvbControlServer(
@@ -224,6 +250,9 @@ namespace IDVBuff
                 }
 
                 WriteStartupTrace("Map runtime initialized.");
+                StartupSplash.Report("正在完成准备…");
+                await PrepareMapListAsync(session);
+                await CompleteStartupPresentationAsync(startMinimized);
                 if (!startMinimized
                     && !startupElevationRequired
                     && UpdateLifecycleState.WasRestartedAfterUpdate)
@@ -248,6 +277,11 @@ namespace IDVBuff
             }
             catch (Exception exception)
             {
+                _startupPresentationPending = false;
+                StartupSplash.Close();
+                StartupTimeline.StopSampling();
+                if (window is not null) ShowMainWindow();
+                StopStartupRenderObservation();
                 WriteStartupTrace("Startup failed.", exception);
                 System.Diagnostics.Debug.WriteLine($"Application startup failed: {exception}");
                 if (ShowStartupFailurePage(exception))
@@ -358,31 +392,6 @@ namespace IDVBuff
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool AllocConsole();
 
-        private static void WriteStartupTrace(string message, Exception? exception = null)
-        {
-            OutputLog.Write(
-                exception is null ? "INFO" : "ERROR",
-                "STARTUP",
-                message,
-                exception);
-            try
-            {
-                var logDirectory = Path.Combine(AppDataPaths.RootDirectory, "Logs");
-                Directory.CreateDirectory(logDirectory);
-                var text = $"{DateTimeOffset.Now:O} {message}";
-                if (exception is not null)
-                    text += Environment.NewLine + exception;
-                File.AppendAllText(
-                    Path.Combine(logDirectory, "startup.log"),
-                    text + Environment.NewLine,
-                    System.Text.Encoding.UTF8);
-            }
-            catch
-            {
-                // Startup diagnostics must never make startup fail.
-            }
-        }
-
         private static void App_UnhandledException(
             object sender,
             Microsoft.UI.Xaml.UnhandledExceptionEventArgs args) =>
@@ -403,7 +412,7 @@ namespace IDVBuff
                     + "错误：" + exception.Message
                     + Environment.NewLine
                     + "诊断日志：" + logPath,
-                CloseButtonText = "知道了"
+                CloseButtonText = "关闭提示"
             };
             await dialog.ShowAsync();
         }
@@ -413,7 +422,8 @@ namespace IDVBuff
 #pragma warning disable CA1416
         private bool ShowStartupFailurePage(Exception exception)
         {
-            if (window?.Content is not Frame rootFrame || rootFrame.Content is not null)
+            if (_mainFrame is not { } rootFrame
+                || _startupPlaceholder is null)
                 return false;
 
             try
@@ -453,7 +463,10 @@ namespace IDVBuff
                 });
 
                 rootFrame.Content = content;
-                window.Activate();
+                if (_startupHost is { } host && _startupPlaceholder is { } placeholder)
+                    host.Children.Remove(placeholder);
+                _startupPlaceholder = null;
+                window?.Activate();
                 return true;
             }
             catch (Exception fallbackException)
@@ -463,37 +476,5 @@ namespace IDVBuff
             }
         }
 #pragma warning restore CA1416
-
-        private static void TrySetWindowIcon(Window targetWindow)
-        {
-            var iconPath = Path.Combine(
-                AppContext.BaseDirectory,
-                "Assets",
-                "Icons",
-                "IDVB_icon_multisize.ico");
-
-            if (!File.Exists(iconPath))
-                return;
-
-            try
-            {
-                targetWindow.AppWindow.SetIcon(iconPath);
-            }
-            catch (Exception exception)
-            {
-                System.Diagnostics.Debug.WriteLine(
-                    $"Unable to set IDVB icon: {exception.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Invoked when Navigation to a certain page fails
-        /// </summary>
-        /// <param name="sender">The Frame which failed navigation</param>
-        /// <param name="e">Details about the navigation failure</param>
-        void OnNavigationFailed(object sender, NavigationFailedEventArgs e)
-        {
-            throw new Exception("Failed to load Page " + e.SourcePageType.FullName);
-        }
     }
 }

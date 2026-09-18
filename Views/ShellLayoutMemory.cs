@@ -11,6 +11,7 @@ internal sealed class ShellLayoutMemory
 
     public bool NavigationCompact { get; set; }
     public bool SurveyProjectsCollapsed { get; set; } = true;
+    public string? LastSelectedMapTemplateId { get; set; }
 
     public static ShellLayoutMemory Load()
     {

@@ -33,10 +33,27 @@ public sealed partial class MapListPage : UserControl
         for (var index = profile.Anchors.Count - 1; index >= 0; index--)
         {
             var anchor = profile.Anchors[index];
-            if (anchor.Bounds?.IsValid is true
-                && IsModernItemVisible("special", ModernAnchorKey(anchor.Id))
-                && ModernRectangleContains(ToModernSourceBounds(anchor.Bounds), point, 5))
+            if (anchor.Bounds?.IsValid is not true
+                || !IsModernItemVisible("special", ModernAnchorKey(anchor.Id)))
+                continue;
+
+            if (IsGateAnchor(anchor.Key))
+            {
+                var sourceBounds = ToModernSourceBounds(anchor.Bounds);
+                var centerX = sourceBounds.X + sourceBounds.Width / 2d;
+                var centerY = sourceBounds.Y + sourceBounds.Height / 2d;
+                var width = _modernCanvas?.Width ?? 1d;
+                var height = _modernCanvas?.Height ?? 1d;
+                var brushRadius = _editorPreferenceState.ConcealDefaults.BrushSizePixels / 2d + 6d / ModernZoomFactor;
+                var dx = (point.X - centerX) * width;
+                var dy = (point.Y - centerY) * height;
+                if (dx * dx + dy * dy <= brushRadius * brushRadius || ModernRectangleContains(sourceBounds, point, 5))
+                    return new EditorSelection(EditorSelectionKind.Anchor, anchor.Id);
+            }
+            else if (ModernRectangleContains(ToModernSourceBounds(anchor.Bounds), point, 5))
+            {
                 return new EditorSelection(EditorSelectionKind.Anchor, anchor.Id);
+            }
         }
         for (var index = profile.BackgroundLayers.Count - 1; index >= 0; index--)
         {
@@ -68,6 +85,12 @@ public sealed partial class MapListPage : UserControl
     {
         if (_modernSelection is null || _modernCanvas is null)
             return null;
+        if (_modernSelection.Kind == EditorSelectionKind.Anchor
+            && FindModernSelectedAnchor() is { } anchor
+            && IsGateAnchor(anchor.Key))
+        {
+            return null;
+        }
         var radius = 10 / ModernZoomFactor;
         if (_modernSelection.Kind == EditorSelectionKind.Annotation
             && FindModernSelectedAnnotation() is { Type: MapAnnotationType.Line } line

@@ -14,7 +14,7 @@ public sealed class MainProgramPreferences
     public bool ModelImprovementConsentPromptCompleted { get; set; }
     public bool HelpImproveModels { get; set; }
     public bool StartMinimized { get; set; }
-    public bool MinimizeToTray { get; set; } = true;
+    public bool MinimizeToTray { get; set; }
     public bool UseLegacyTheme { get; set; }
     public bool FollowSystemTheme { get; set; } = true;
     public bool UseDarkTheme { get; set; }
@@ -22,6 +22,7 @@ public sealed class MainProgramPreferences
     public bool AllowSurveyMode { get; set; }
     public bool DeveloperMode { get; set; }
     public bool RealtimePerformanceOverlayEnabled { get; set; }
+    public bool EnhancedMiniMapEnabled { get; set; } = true;
 
     public static MainProgramPreferences Load()
     {

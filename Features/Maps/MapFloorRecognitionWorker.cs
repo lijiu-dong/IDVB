@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 
 namespace IDVBuff.Features.Maps;
@@ -202,7 +202,20 @@ public sealed class MapFloorRecognitionWorker : IDisposable
     {
         var workerStarted = Stopwatch.GetTimestamp();
         var queueMs = GetElapsedMilliseconds(request.EnqueuedTimestamp, workerStarted);
-        MapLogCollector.Instance.Append(MapLogCategory.FloorRecognition, MapLogLevel.Info, "开始楼层识别");
+        MapLogCollector.Instance.Append(
+            MapLogCategory.FloorRecognition,
+            MapLogLevel.Info,
+            $"开始楼层识别 · 区域=[X={request.Region.X:F4},Y={request.Region.Y:F4},W={request.Region.Width:F4},H={request.Region.Height:F4}] · minConfidence={request.Tuning.MinimumConfidence:F2}",
+            details: new()
+            {
+                ["region"] = $"X={request.Region.X:F4},Y={request.Region.Y:F4},W={request.Region.Width:F4},H={request.Region.Height:F4}",
+                ["queueMs"] = queueMs,
+                ["minConfidence"] = request.Tuning.MinimumConfidence,
+                ["minLocalizationConfidence"] = request.Tuning.MinimumLocalizationConfidence,
+                ["maxWindowMs"] = request.Tuning.MaximumRecognitionWindowMilliseconds,
+                ["firstFloorFrames"] = request.Tuning.FirstFloorConfirmationFrames,
+                ["secondFloorFrames"] = request.Tuning.SecondFloorConfirmationFrames
+            });
         var deadline = request.InputTimestamp
             + (long)Math.Floor(
                 Stopwatch.Frequency
@@ -277,7 +290,15 @@ public sealed class MapFloorRecognitionWorker : IDisposable
                 MapLogCollector.Instance.Append(MapLogCategory.FloorRecognition, MapLogLevel.Info,
                     $"楼层识别完成：{confirmedFloor.ToUpperInvariant()} · 置信度 {classification.Confidence:P0}",
                     elapsedMs: workerMs,
-                    details: new() { ["floor"] = confirmedFloor, ["confidence"] = classification.Confidence });
+                    details: new()
+                    {
+                        ["floor"] = confirmedFloor,
+                        ["confidence"] = classification.Confidence,
+                        ["localizationConfidence"] = classification.LocalizationConfidence,
+                        ["localizedRegion"] = classification.LocalizedRegion is not null ? $"X={classification.LocalizedRegion.X:F4},Y={classification.LocalizedRegion.Y:F4},W={classification.LocalizedRegion.Width:F4},H={classification.LocalizedRegion.Height:F4}" : null,
+                        ["attempts"] = attempts,
+                        ["workerMs"] = workerMs
+                    });
                 MapLogCollector.Instance.Append(MapLogCategory.FloorRecognition, MapLogLevel.Info,
                     $"识别拆解 · 队列{queueMs:F0}ms · Worker{workerMs:F0}ms · 截帧{captureMilliseconds:F0}ms · 匹配{analysisMilliseconds:F0}ms · 重试等待{retryWaitMs:F0}ms · {attempts}次尝试 · 开销{workerOverhead:F0}ms",
                     details: new()
@@ -337,7 +358,17 @@ public sealed class MapFloorRecognitionWorker : IDisposable
         var failureCompletedAt = Stopwatch.GetTimestamp();
         MapLogCollector.Instance.Append(MapLogCategory.FloorRecognition, MapLogLevel.Warning,
             $"楼层识别失败：{lastFailure}",
-            elapsedMs: GetElapsedMilliseconds(request.InputTimestamp, failureCompletedAt));
+            elapsedMs: GetElapsedMilliseconds(request.InputTimestamp, failureCompletedAt),
+            details: new()
+            {
+                ["failureReason"] = lastFailure,
+                ["region"] = $"X={request.Region.X:F4},Y={request.Region.Y:F4},W={request.Region.Width:F4},H={request.Region.Height:F4}",
+                ["attempts"] = attempts,
+                ["captureMs"] = captureMilliseconds,
+                ["analysisMs"] = analysisMilliseconds,
+                ["retryWaitMs"] = retryWaitMs,
+                ["minConfidenceThreshold"] = request.Tuning.MinimumConfidence
+            });
         return CreateFailure(
             request.InputTimestamp,
             request.EnqueuedTimestamp,

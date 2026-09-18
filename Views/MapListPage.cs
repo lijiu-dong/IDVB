@@ -1,4 +1,5 @@
 using IDVBuff.Features.Maps;
+using IDVBuff.Diagnostics;
 using IDVBuff.Survey.Domain;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
@@ -10,6 +11,7 @@ using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.UI.Xaml.Shapes;
 using Microsoft.Windows.Storage.Pickers;
 using System.Numerics;
+using System.Diagnostics;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.Foundation;
 using Windows.Graphics.Imaging;
@@ -281,9 +283,16 @@ public sealed partial class MapListPage : UserControl
     private async void MapListPage_Loaded(object sender, RoutedEventArgs e)
     {
         Loaded -= MapListPage_Loaded;
+        var startupTimer = Stopwatch.StartNew();
+        var prepared = App.TakeMapListStartupData();
+        if (prepared is not null
+            && prepared.Revision != _repository.GetCatalogRevision())
+            prepared = null;
+        await ShowListAsync(prepared);
+        OutputLog.Write("INFO", "STARTUP",
+            $"Map list first render: prepared={prepared is not null}, elapsedMs={startupTimer.Elapsed.TotalMilliseconds:F1}.");
         if (!App.IsSafeMode)
             _ = RepairMapMetadataInBackgroundAsync();
-        await ShowListAsync();
     }
 
     private async Task RepairMapMetadataInBackgroundAsync()
@@ -314,22 +323,29 @@ public sealed partial class MapListPage : UserControl
         }
     }
 
-    private async Task ShowListAsync()
+    private async Task ShowListAsync(MapListStartupData? prepared = null)
     {
         ResetMarkerEditorSession();
         ResetBatchOperation();
-        var snapshot = await _repository.GetCatalogSnapshotAsync();
+        var snapshot = prepared?.Catalog ?? await _repository.GetCatalogSnapshotAsync();
         _classes = snapshot.Classes;
         _classProperties = snapshot.ClassProperties;
         _loadedMaps = snapshot.Maps;
         _variantGroups = snapshot.VariantGroups;
-        _filterGroups = (await new MapTagStore().LoadAsync(snapshot.Maps, snapshot.Classes))
-            .Where(group => group.IsEnabled)
-            .ToArray();
-        _surveyProjects = App.IsSafeMode
-            ? []
-            : await App.Session.GetSurveyProjectsAsync();
+        _filterGroups = prepared?.FilterGroups
+            ?? (await new MapTagStore().LoadAsync(snapshot.Maps, snapshot.Classes))
+                .Where(group => group.IsEnabled)
+                .ToArray();
+        _surveyProjects = prepared?.SurveyProjects
+            ?? (App.IsSafeMode
+                ? []
+                : await App.Session.GetSurveyProjectsAsync());
         _previewImages.Clear();
+        if (prepared is not null)
+        {
+            foreach (var (path, bitmap) in prepared.PreviewImages)
+                _previewImages[path] = bitmap;
+        }
         if (!_hasInitializedClassSelection)
         {
             // The match control panel and this page intentionally share the
