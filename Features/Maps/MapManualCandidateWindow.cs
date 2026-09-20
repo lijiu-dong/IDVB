@@ -344,19 +344,23 @@ public sealed partial class MapManualCandidateWindow
         _window = new XamlWindow
         {
             Content = root,
-            ExtendsContentIntoTitleBar = true
+            ExtendsContentIntoTitleBar = false
         };
         _window.Closed += (_, _) => Complete(MapCandidateDecision.Cancel(), closeWindow: false);
         if (_window.AppWindow.Presenter is OverlappedPresenter presenter)
         {
             presenter.SetBorderAndTitleBar(false, false);
             presenter.IsAlwaysOnTop = true;
+            presenter.IsResizable = false;
+            presenter.IsMaximizable = false;
+            presenter.IsMinimizable = false;
         }
         _window.AppWindow.MoveAndResize(displayArea.OuterBounds);
         _window.Activate();
         RegisterCaptureProtection();
-        // 消除 WinUI 默认白色底色：将窗口设为分层半透明
         var hwnd = WindowNative.GetWindowHandle(_window);
+        BorderlessWindowHelper.Apply(hwnd);
+        // 消除 WinUI 默认白色底色：将窗口设为分层半透明
         const int GWL_EXSTYLE = -20;
         const int WS_EX_LAYERED = 0x80000;
         const int LWA_ALPHA = 0x2;

@@ -108,6 +108,17 @@ internal static partial class MapCvAlignmentService
                 ? session
                 : null;
 
+        var policyFloor = compatibleSession?.FloorKey ?? fingerprint.FloorKey;
+        if (!service.CanReuseScale(frame, selectedMapId, policyFloor))
+            return AlignStructureOnly(service, frame, selectedMapId, policyFloor,
+                MapFloorScaleSeedRules.CreateIndependentFloorSeed(fingerprint.Map, policyFloor),
+                alignmentMode, tuning, structureTuning, playerPrior, predictedViewportOrigin,
+                liveIgnoreRegions, candidateHistory: null, isTracking: false,
+                useProjectedBoundaryMask: false, allowPrimaryFloor: true,
+                scaleSearchPolicy: MapScaleSearchPolicy.Search,
+                identityPriorConfidence: compatibleSession?.SideEntranceScanPriorConfidence ?? 0d,
+                restrictTranslationToSeed: false);
+
         if (structureTuning.UsePrebuiltStructureLine && service.HasPrebuiltStructureLine(fingerprint.Map, fingerprint.FloorKey))
             return AlignPrebuiltStructureLine(
                 service, frame, selectedMapId, fingerprint, compatibleSession,
@@ -466,29 +477,12 @@ internal static partial class MapCvAlignmentService
                 + "，而结构配准只支持等比缩放；当前 XY 分别缩放模式已保留上次对齐。");
         }
         return AlignSelectedWithStructure(
-            service,
-            frame,
-            fingerprint,
-            session,
-            tuning,
-            structureTuning,
-            route,
-            searchCtx,
-            playerPrior,
-            predictedViewportOrigin,
-            liveIgnoreRegions,
-            candidateHistory,
-            gates,
-            gateResult,
-            diagnostics,
-            reference,
-            dynamicIgnoreRegions,
-            singleGateFallbackReason,
-            singleGateProposal,
-            freshAnchorTransform,
-            structureSeed,
-            stopwatch);
+            service, frame, fingerprint, session, tuning, structureTuning, route, searchCtx,
+            playerPrior, predictedViewportOrigin, liveIgnoreRegions, candidateHistory, gates,
+            gateResult, diagnostics, reference, dynamicIgnoreRegions, singleGateFallbackReason,
+            singleGateProposal, freshAnchorTransform, structureSeed, stopwatch);
     }
+
 
 }
 /*

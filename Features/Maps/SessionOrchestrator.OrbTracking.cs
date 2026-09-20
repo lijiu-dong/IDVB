@@ -1,3 +1,4 @@
+using IDVBuff.Core.Contracts;
 using IDVBuff.Core.Models;
 using OpenCvSharp;
 using System.Diagnostics;
@@ -15,6 +16,7 @@ public sealed partial class SessionOrchestrator
     private long _lastOrbRenderMetricsTimestamp;
     private int _orbCommitQueued;
     private int _orbCaptureExclusionWarningLogged;
+    private RuntimeMapRecognition? _pendingOrbTrackingRecognition;
 
     private sealed record OrbTrackingContext(
         long Generation,
@@ -32,11 +34,13 @@ public sealed partial class SessionOrchestrator
     {
         CancelOrbTracking("alignment replaced");
         await DrainOrbTrackingAsync();
-        if (_settings?.EnableContinuousAlignment != true)
+        var floorKey = recognition.Result.Floor;
+        var useVpsgTracking = _recognition.IsVpsg3Ready(recognition.Map, floorKey);
+        if (!useVpsgTracking && _settings?.EnableContinuousAlignment != true)
             return;
 
         var config = _config.Get<OrbTrackingConfig>("orb_tracking");
-        if ((!config.Enabled && !IsAdaptiveScaleEnabled)
+        if ((!useVpsgTracking && !config.Enabled && !IsAdaptiveScaleEnabled)
             || recognition.Result.OverlayTransform is not { } transform
             || !_gameMapToggleState.IsOpen
             || !_matchSession.Snapshot.IsStarted)
@@ -44,19 +48,10 @@ public sealed partial class SessionOrchestrator
             return;
         }
 
-        if (!_overlay.IsCaptureExclusionEnabled)
+        if (!EnsureOverlayCaptureExclusion(
+                "ORB tracking disabled because the overlay is not excluded from capture.",
+                "Capture exclusion is disabled or not requested."))
         {
-            if (Interlocked.Exchange(ref _orbCaptureExclusionWarningLogged, 1) == 0)
-            {
-                _logCollector.Append(
-                    MapLogCategory.OrbTracking,
-                    MapLogLevel.Warning,
-                    "ORB tracking disabled because the overlay is not excluded from capture.",
-                    details: new()
-                    {
-                        ["failureReason"] = "Capture exclusion is disabled or not requested."
-                    });
-            }
             return;
         }
 
@@ -67,41 +62,52 @@ public sealed partial class SessionOrchestrator
             new MapGameToggleTransition(true, _gameMapToggleState.Version),
             recognition.Map.Id,
             recognition.Map.UpdatedAt,
-            recognition.Result.Floor,
+            floorKey,
             CreateAdaptiveScaleKey(
                 seedFrame,
                 recognition.Map,
-                recognition.Result.Floor),
+                floorKey),
             (transform.ScaleX + transform.ScaleY) / 2d);
         var linked = CancellationTokenSource.CreateLinkedTokenSource(
             CurrentMatchCancellationToken,
             _lifetimeCts.Token);
-        var seed = config.Enabled ? seedFrame.Image.Clone() : null;
         var viewportBounds = seedFrame.ViewportBounds;
+        var seed = config.Enabled ? seedFrame.Image.Clone() : null;
         lock (_orbTrackingGate)
         {
             _orbTrackingCancellation = linked;
-            _orbTrackingTask = config.Enabled
+            _orbTrackingTask = useVpsgTracking
                 ? Task.Run(
-                    () => RunOrbTrackingLoopAsync(
+                    () => RunVpsg3_5TrackingLoopAsync(
                         context,
                         recognition,
-                        seed!,
-                        viewportBounds,
                         transform,
-                        config,
                         linked.Token))
-                : Task.Run(
-                    () => RunAdaptiveStructureTrackingLoopAsync(
-                        context,
-                        recognition,
-                        config,
-                        linked.Token));
+                : config.Enabled
+                    ? Task.Run(
+                        () => RunOrbTrackingLoopAsync(
+                            context,
+                            recognition,
+                            seed!,
+                            viewportBounds,
+                            transform,
+                            config,
+                            linked.Token))
+                    : Task.Run(
+                        () => RunAdaptiveStructureTrackingLoopAsync(
+                            context,
+                            recognition,
+                            config,
+                            linked.Token));
         }
         _logCollector.Append(
-            config.Enabled ? MapLogCategory.OrbTracking : MapLogCategory.StructureRegistration,
+            useVpsgTracking
+                ? MapLogCategory.StructureRegistration
+                : (config.Enabled ? MapLogCategory.OrbTracking : MapLogCategory.StructureRegistration),
             MapLogLevel.Info,
-            $"ORB tracking started · map={context.MapId} · floor={context.FloorKey} · generation={generation}");
+            useVpsgTracking
+                ? $"VPSG 3.5 tracking started · map={context.MapId} · floor={context.FloorKey} · generation={generation}"
+                : $"ORB tracking started · map={context.MapId} · floor={context.FloorKey} · generation={generation}");
     }
 
     private async Task RunOrbTrackingLoopAsync(
@@ -358,98 +364,82 @@ public sealed partial class SessionOrchestrator
         RuntimeMapRecognition recognition,
         double maximumBaselineScaleChangeRatio)
     {
-        if (Interlocked.Exchange(ref _orbCommitQueued, 1) != 0)
+        Volatile.Write(ref _pendingOrbTrackingRecognition, recognition);
+        if (Interlocked.CompareExchange(ref _orbCommitQueued, 1, 0) != 0)
             return;
-        if (_dispatcher.TryEnqueue(() =>
+
+        void DrainPendingCommits()
         {
             try
             {
-                if (!IsOrbTrackingContextCurrent(context)
-                    || recognition.Result.OverlayTransform is not { } transform
-                    || _lastAlignmentSession is not { } session)
+                while (Interlocked.Exchange(ref _pendingOrbTrackingRecognition, null) is { } pending)
                 {
-                    return;
+                    ApplyOrbTrackingCommit(context, pending, maximumBaselineScaleChangeRatio);
                 }
-                var effectiveScaleLimit = IsAdaptiveTransformConfirmed(context, transform)
-                    ? 0.50d
-                    : maximumBaselineScaleChangeRatio;
-                var advanced = session.Advance(
-                    recognition.Map,
-                    recognition.Result,
-                    effectiveScaleLimit);
-                _lastRecognition = recognition;
-                _mapLease.Bind(_matchSession.Snapshot, recognition.Map.Id);
-                _lastAlignmentSession = advanced;
-                if (CanUseAdaptiveReliableSession(advanced, context.AdaptiveKey))
-                {
-                    RememberPrimaryFloorSession(recognition, advanced);
-                }
-                _alignmentTrackingMode = recognition.Result.Source
-                    == MapRecognitionSource.OrbTracking
-                        ? MapAlignmentTrackingMode.OrbTracking
-                        : MapAlignmentTrackingMode.StructureMatched;
-                var renderTimer = Stopwatch.StartNew();
-                _overlay.UpdateMapTransform(transform, preservePlayer: true);
-                renderTimer.Stop();
-                var previousRenderLog = Volatile.Read(ref _lastOrbRenderMetricsTimestamp);
-                if (ElapsedMilliseconds(previousRenderLog) >= 5000)
-                {
-                    Volatile.Write(
-                        ref _lastOrbRenderMetricsTimestamp,
-                        Stopwatch.GetTimestamp());
-                    _logCollector.Append(
-                        MapLogCategory.OrbTracking,
-                        MapLogLevel.Info,
-                        "ORB tracking render sample",
-                        elapsedMs: renderTimer.Elapsed.TotalMilliseconds,
-                        details: new()
-                        {
-                            ["generation"] = context.Generation,
-                            ["renderMs"] = renderTimer.Elapsed.TotalMilliseconds,
-                            ["overlayVisible"] = _overlay.IsVisible
-                        });
-                }
-            }
-            catch (InvalidOperationException exception)
-            {
-                _logCollector.Append(
-                    MapLogCategory.OrbTracking,
-                    MapLogLevel.Warning,
-                    "A continuous tracking observation was rejected by the alignment session.",
-                    details: new()
-                    {
-                        ["generation"] = context.Generation,
-                        ["failureReason"] = exception.Message
-                    });
             }
             finally
             {
                 Volatile.Write(ref _orbCommitQueued, 0);
+                if (Volatile.Read(ref _pendingOrbTrackingRecognition) is not null
+                    && Interlocked.CompareExchange(ref _orbCommitQueued, 1, 0) == 0)
+                {
+                    _dispatcher.TryEnqueue(DrainPendingCommits);
+                }
             }
-        }))
-        {
-            return;
         }
-        Volatile.Write(ref _orbCommitQueued, 0);
+
+        if (!_dispatcher.TryEnqueue(DrainPendingCommits))
+        {
+            Volatile.Write(ref _orbCommitQueued, 0);
+        }
+    }
+
+    private void ApplyOrbTrackingCommit(
+        OrbTrackingContext context,
+        RuntimeMapRecognition recognition,
+        double maximumBaselineScaleChangeRatio)
+    {
+        try
+        {
+            if (!IsOrbTrackingContextCurrent(context) || recognition.Result.OverlayTransform is not { } transform || _lastAlignmentSession is not { } session)
+                return;
+            var effectiveScaleLimit = IsAdaptiveTransformConfirmed(context, transform) ? 0.50d : maximumBaselineScaleChangeRatio;
+            var advanced = session.Advance(recognition.Map, recognition.Result, effectiveScaleLimit);
+            _lastRecognition = recognition;
+            _mapLease.Bind(_matchSession.Snapshot, recognition.Map.Id);
+            _lastAlignmentSession = advanced;
+            if (CanUseAdaptiveReliableSession(advanced, context.AdaptiveKey))
+                RememberPrimaryFloorSession(recognition, advanced);
+            _alignmentTrackingMode = recognition.Result.Source switch
+            {
+                MapRecognitionSource.VpsgTracking => MapAlignmentTrackingMode.VpsgTracking,
+                MapRecognitionSource.OrbTracking => MapAlignmentTrackingMode.OrbTracking,
+                _ => MapAlignmentTrackingMode.StructureMatched
+            };
+            var renderTimer = Stopwatch.StartNew();
+            _overlay.UpdateMapTransform(transform, preservePlayer: true);
+            renderTimer.Stop();
+            var previousRenderLog = Volatile.Read(ref _lastOrbRenderMetricsTimestamp);
+            if (ElapsedMilliseconds(previousRenderLog) >= 5000)
+            {
+                Volatile.Write(ref _lastOrbRenderMetricsTimestamp, Stopwatch.GetTimestamp());
+                _logCollector.Append(MapLogCategory.OrbTracking, MapLogLevel.Info, "ORB tracking render sample",
+                    elapsedMs: renderTimer.Elapsed.TotalMilliseconds,
+                    details: new() { ["generation"] = context.Generation, ["renderMs"] = renderTimer.Elapsed.TotalMilliseconds, ["overlayVisible"] = _overlay.IsVisible });
+            }
+        }
+        catch (InvalidOperationException exception)
+        {
+            _logCollector.Append(MapLogCategory.OrbTracking, MapLogLevel.Warning,
+                "A continuous tracking observation was rejected by the alignment session.",
+                details: new() { ["generation"] = context.Generation, ["failureReason"] = exception.Message });
+        }
     }
 
     private bool IsOrbTrackingContextCurrent(OrbTrackingContext context)
     {
-        if (!_overlay.IsCaptureExclusionEnabled)
-        {
-            if (Interlocked.Exchange(ref _orbCaptureExclusionWarningLogged, 1) == 0)
-            {
-                _logCollector.Append(
-                    MapLogCategory.OrbTracking,
-                    MapLogLevel.Warning,
-                    "ORB tracking stopped because Overlay capture protection is no longer active.",
-                    details: new()
-                    {
-                        ["failureReason"] = "直播模式已关闭显示层保护。"
-                    });
-            }
+        if (!EnsureOverlayCaptureExclusion("ORB tracking stopped because Overlay capture protection is no longer active.", "直播模式已关闭显示层保护。"))
             return false;
-        }
         if (_disposed
             || context.Generation != Volatile.Read(ref _orbTrackingGeneration)
             || !IsCurrentMatchOperation(context.Match)
@@ -461,17 +451,36 @@ public sealed partial class SessionOrchestrator
         return recognition is not null
             && recognition.Map.Id == context.MapId
             && recognition.Map.UpdatedAt == context.MapUpdatedAt
-            && string.Equals(
-                recognition.Result.Floor,
-                context.FloorKey,
-                StringComparison.Ordinal);
+            && string.Equals(recognition.Result.Floor, context.FloorKey, StringComparison.Ordinal);
     }
 
+    private bool EnsureOverlayCaptureExclusion(string warningMessage, string defaultFailureReason)
+    {
+        // 仅当宿主请求了显示层保护（例如直播模式开启了隐藏显示层）时，才要求排除生效
+        if (_captureProtection is { IsPluginEnabled: true })
+        {
+            if (_captureProtection.IsProtectionRequested(CaptureProtectionWindowCategory.DisplayLayer))
+            {
+                if (_overlay.IsCaptureExclusionEnabled || _overlay.TrySetCaptureExclusion(true, out var reason))
+                {
+                    Interlocked.Exchange(ref _orbCaptureExclusionWarningLogged, 0);
+                    return true;
+                }
+
+                if (Interlocked.Exchange(ref _orbCaptureExclusionWarningLogged, 1) == 0)
+                {
+                    _logCollector.Append(MapLogCategory.OrbTracking, MapLogLevel.Warning, warningMessage,
+                        details: new() { ["failureReason"] = string.IsNullOrWhiteSpace(reason) ? defaultFailureReason : reason });
+                }
+                return false;
+            }
+
+            // 直播模式开启但用户明确关闭了“隐藏显示层”：允许捕获，不阻止跟踪
+            return true;
+        }
+
+        // 直播模式未启用（普通/录屏模式）：尊重全局捕获策略，不排除捕获，不阻止跟踪
+        return true;
+    }
 }
-/*
- * 文件职责：SessionOrchestrator.OrbTracking。
- * 所属模块：Features/Maps，主要负责地图识别、对齐、会话编排、缓存或覆盖层功能。
- * 设计说明：本文件承载一个相对独立的实现片段；它通过公开类型、方法或 partial 类型与同模块的其他文件协作，避免把完整地图流程集中在单个超大文件中。
- * 数据流：输入通常来自截图、识别结果、会话状态、配置或持久化缓存；输出应继续交给识别、对齐、渲染、日志或发布流程使用。调用方应遵守类型契约，并注意空值、超时、置信度和取消状态。
- * 维护约束：这里只补充说明，不改变业务逻辑。涉及楼层尺度时必须保持楼层之间完全独立；涉及 UI、窗口句柄或系统资源时应遵守生命周期与释放约定；调整算法时应同步检查相关规则、诊断和测试。
- */
+// SessionOrchestrator.OrbTracking: Features/Maps partial module for continuous alignment and tracking orchestration.

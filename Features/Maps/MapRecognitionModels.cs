@@ -202,7 +202,8 @@ public enum MapRecognitionSource
     StructureMatching,
     ReusedLastTransform,
     SideEntranceSelection,
-    OrbTracking
+    OrbTracking,
+    VpsgTracking
 }
 
 public enum MapAlignmentEvidenceKind
@@ -244,6 +245,7 @@ public enum MapAlignmentTrackingMode
     HoldingLastTransform,
     Lost,
     OrbTracking,
+    VpsgTracking,
     Uninitialized = None,
     AnchorCalibrated = GatePairLocked,
     OffsetOnlyUpdated = SingleGateTracking

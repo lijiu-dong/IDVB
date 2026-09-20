@@ -83,9 +83,11 @@ internal sealed partial class AdaptiveScaleCoordinator
         AdaptiveScaleKey currentKey,
         long openId)
     {
+        if (!_options.CanLockScale)
+            return false;
         if (!_options.Enabled)
             return true;
-        if (!_options.AutomaticScaleLockingEnabled)
+        if (!_options.CanLockScale)
             return false;
         lock (_stateGate)
             return _controllers.TryGetValue(currentKey, out var controller)
@@ -102,9 +104,11 @@ internal sealed partial class AdaptiveScaleCoordinator
         long openId,
         MapOverlayTransform transform)
     {
+        if (!_options.CanLockScale)
+            return false;
         if (!_options.Enabled)
             return true;
-        if (!_options.AutomaticScaleLockingEnabled)
+        if (!_options.CanLockScale)
             return false;
         lock (_stateGate)
             return TryGetOpenController(expectedKey, openId, out var controller)
@@ -116,7 +120,7 @@ internal sealed partial class AdaptiveScaleCoordinator
         long openId,
         double scale)
     {
-        if (!_options.Enabled)
+        if (!_options.Enabled || !_options.CanLockScale)
             return false;
         lock (_stateGate)
         {

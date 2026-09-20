@@ -6,6 +6,7 @@ public sealed partial class SessionOrchestrator
 {
     private AdaptiveScaleCoordinator _adaptiveScale = null!;
     private long _adaptiveFrameId;
+    private AdaptiveScaleOptions _scaleLockOptions = null!;
     private AdaptiveScaleKey? _lastReliableAdaptiveKey;
     private AdaptiveScaleKey? _primaryFloorAdaptiveKey;
     private readonly object _manualFloorScaleLockGate = new();
@@ -41,6 +42,9 @@ public sealed partial class SessionOrchestrator
     private void InitializeAdaptiveScale()
     {
         var options = _config.Get<AdaptiveScaleOptions>("adaptive_scale");
+        options.ScaleLockingEnabled = !Lifecycle.MainProgramPreferences.Load().DisableScaleLocking;
+        _scaleLockOptions = options;
+        _recognition.ScaleLockingAllowed = () => options.CanLockScale;
         _adaptiveScale = new AdaptiveScaleCoordinator(
             options,
             log: (message, details) => _logCollector.Append(
@@ -50,10 +54,16 @@ public sealed partial class SessionOrchestrator
                 details: details));
     }
 
+    public void SetScaleLockingEnabled(bool enabled)
+    {
+        if (_scaleLockOptions is not null)
+            _scaleLockOptions.ScaleLockingEnabled = enabled;
+    }
+
     private Task InitializeAdaptiveScaleAsync() =>
         _adaptiveScale.InitializeAsync(_lifetimeCts.Token);
 
-    private Task<AdaptiveAlignmentDecision> EvaluateAdaptiveInitialAsync(
+    private async Task<AdaptiveAlignmentDecision> EvaluateAdaptiveInitialAsync(
         RuntimeMapRecognition recognition,
         CapturedGameFrame frame,
         MapScanDiagnostics? diagnostics,
@@ -65,14 +75,25 @@ public sealed partial class SessionOrchestrator
         // every accepted alignment, including provisional/disabled adaptive
         // results that are intentionally excluded from automatic cache writes.
         RememberAlignmentCaptureContext(frame);
+        if (_recognition.DidChangeScaleOnRefresh(frame, recognition.Map, recognition.Result.Floor))
+        {
+            var refreshedKey = AdaptiveScaleKey.Create(recognition.Map, recognition.Result.Floor, frame.ClientBounds, frame.ViewportBounds);
+            await _adaptiveScale.ResetForScaleRecoveryAsync(refreshedKey);
+            ForgetReliableFloorAlignment(CreateAlignmentContextKey(
+                _matchSession.Snapshot, frame, recognition.Map, recognition.Result.Floor));
+            lock (_manualFloorScaleLockGate)
+                foreach (var key in _manualFloorScaleLocks.Keys.Where(k => k.MapId == refreshedKey.MapId && k.FloorKey == refreshedKey.FloorKey).ToArray())
+                    _manualFloorScaleLocks.Remove(key);
+        }
+        _recognition.ObserveAlignmentCoverage(frame, recognition);
         var source = explicitSource ?? ResolveLegacyScaleSource(recognition, frame);
         var evidence = CreateAdaptiveInitialEvidence(recognition, diagnostics);
-        return Task.FromResult(_adaptiveScale.EvaluateInitial(
+        return _adaptiveScale.EvaluateInitial(
             recognition,
             frame,
             source,
             evidence,
-            _gameMapToggleState.Version));
+            _gameMapToggleState.Version);
     }
 
     private AdaptiveScaleInitialEvidence CreateAdaptiveInitialEvidence(
@@ -241,7 +262,7 @@ public sealed partial class SessionOrchestrator
         double scale)
     {
         var match = _matchSession.Snapshot;
-        if (!match.IsStarted
+        if (!_scaleLockOptions.CanLockScale || !match.IsStarted
             || !double.IsFinite(scale)
             || scale <= 0d
             || _lastAlignmentResolution is not { } resolution)
@@ -266,7 +287,7 @@ public sealed partial class SessionOrchestrator
         string floorKey,
         out double scale)
     {
-        if (!match.IsStarted)
+        if (!_scaleLockOptions.CanLockScale || !match.IsStarted)
         {
             scale = 0d;
             return false;

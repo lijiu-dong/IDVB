@@ -16,6 +16,12 @@ public sealed class RecordingOverlayWindow : IOverlayWindow
 
     public bool IsVisible { get; private set; }
     public bool HasMap { get; private set; }
+    public bool IsCaptureExclusionEnabled => true;
+    public bool TrySetCaptureExclusion(bool enabled, out string failureReason)
+    {
+        failureReason = string.Empty;
+        return true;
+    }
 
     /// <summary>叠加窗口操作事件日志。</summary>
     public IReadOnlyList<string> Events => _events;

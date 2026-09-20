@@ -74,7 +74,9 @@ internal sealed class FloorIndicatorTemplateRegistry
     }
 
     public const double DefaultMinScore = 0.80d;
-    public const double DefaultMinMargin = 0.08d;
+    // Accept the highest-scoring floor once it passes the absolute score gate.
+    // Similar indicator states must not prevent switching away from a stale floor.
+    public const double DefaultMinMargin = 0d;
 
     public static string? Recognize(Group group, Mat image, out double score, out double margin,
         double? templateScale = null)

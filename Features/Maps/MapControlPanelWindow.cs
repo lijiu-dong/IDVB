@@ -285,7 +285,7 @@ public sealed partial class MapControlPanelWindow : IDisposable
             Padding = new Thickness(18),
             Child = BuildContent()
         };
-        _window = new XamlWindow { Content = root, ExtendsContentIntoTitleBar = true };
+        _window = new XamlWindow { Content = root, ExtendsContentIntoTitleBar = false };
         _window.Closed += (_, _) =>
         {
             _captureProtectionRegistration?.Dispose();
@@ -303,6 +303,9 @@ public sealed partial class MapControlPanelWindow : IDisposable
             presenter.IsMaximizable = false;
             presenter.IsMinimizable = false;
         }
+
+        var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(_window);
+        BorderlessWindowHelper.Apply(hwnd);
     }
 
     private UIElement BuildContent()

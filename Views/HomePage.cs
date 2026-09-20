@@ -1,4 +1,5 @@
 using IDVBuff.Features.Maps;
+using IDVBuff.Features.Announcements;
 using System.Diagnostics;
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
@@ -33,7 +34,10 @@ public sealed class HomePage : Page
         _gameStatusTimer.Tick += (_, _) => UpdateGameStatus();
         Content = CreateContent();
         Loaded += HomePage_Loaded;
-        Unloaded += (_, _) => _gameStatusTimer.Stop();
+        Unloaded += (_, _) =>
+        {
+            _gameStatusTimer.Stop();
+        };
     }
 
     private FrameworkElement CreateContent()
@@ -231,6 +235,27 @@ public sealed class HomePage : Page
         _mapCountValue.Text = "…";
         _successRateValue.Text = "…";
         _successRateDetail.Text = string.Empty;
+
+        // 公告仍在后台刷新，以便未读红点及时更新；但独立窗口必须等主界面完整呈现。
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                // 本地缓存只用于窗口的即时首帧；启动检查必须刷新远端，
+                // 否则首次成功拉取后会永久看不到后来发布的公告。
+                var important = await AnnouncementService.Instance.GetImportantUnreadAsync(forceRefresh: true);
+                if (important != null)
+                {
+                    await App.MainWindowPresentationCompleted;
+                    DispatcherQueue?.TryEnqueue(() => AnnouncementWindow.Show(important.Id));
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[HomePage] 公告后台初始化异常: {ex.Message}");
+            }
+        });
+
         try
         {
             var mapsTask = _mapRepository.GetMapsAsync();

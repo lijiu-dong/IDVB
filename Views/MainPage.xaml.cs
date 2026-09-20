@@ -54,8 +54,7 @@ public sealed partial class MainPage : Page
         PrepareDisplayPreviewMotion();
         FluentTheme.RegisterThemeRoot(this);
         RootSurface.Background = FluentTheme.WindowBrush();
-        foreach (var entry in NavigationEntry.CreateRoots(_navigationNodes))
-            NavigationItems.Add(entry);
+        foreach (var entry in NavigationEntry.CreateRoots(_navigationNodes)) NavigationItems.Add(entry);
         TutorialNavigationItem = CreateFooterNavigationEntry("教程", Symbol.Help, "help");
         MainSettingsNavigationItem = CreateFooterNavigationEntry("主设置", Symbol.Setting, "main-settings");
         AccountNavigationItem = CreateFooterNavigationEntry("账户", Symbol.Contact, "account");
@@ -64,6 +63,8 @@ public sealed partial class MainPage : Page
         _navigationCompactPreference = _layoutMemory.NavigationCompact;
         ApplyInitialNavigationCompactPreference();
         Loaded += MainPage_Loaded;
+        Loaded += (_, _) => InitializeNotifications();
+        Unloaded += (_, _) => CleanupNotifications();
     }
 
     public ObservableCollection<NavigationEntry> NavigationItems { get; } = [];
@@ -72,8 +73,7 @@ public sealed partial class MainPage : Page
     public NavigationEntry MainSettingsNavigationItem { get; }
     public NavigationEntry AccountNavigationItem { get; }
 
-    private static NavigationEntry CreateFooterNavigationEntry(string name, Symbol icon, string moduleId) =>
-        new(new NavigationNode(name, icon, moduleId), parent: null);
+    private static NavigationEntry CreateFooterNavigationEntry(string name, Symbol icon, string moduleId) => new(new NavigationNode(name, icon, moduleId), parent: null);
 
     private async void MainPage_Loaded(object sender, RoutedEventArgs e)
     {

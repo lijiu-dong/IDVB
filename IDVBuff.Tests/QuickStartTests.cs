@@ -53,7 +53,7 @@ public sealed class QuickStartTests
         Assert.Equal(MapRuntimeSettings.CurrentSchemaVersion, recommended.SchemaVersion);
         Assert.False(recommended.IsEnabled);
         Assert.Equal(FirstScanStrategy.SideEntrance, recommended.FirstScanStrategy);
-        Assert.True(recommended.BackgroundScanEnabled);
+        Assert.False(recommended.BackgroundScanEnabled);
         Assert.False(recommended.EnableContinuousAlignment);
         Assert.Null(recommended.SelectedResolutionPreset);
         Assert.False(recommended.AllowAutomaticMapCache);
@@ -98,6 +98,20 @@ public sealed class QuickStartTests
     {
         var preferences = new MainProgramPreferences();
         Assert.False(preferences.MinimizeToTray);
+    }
+
+    [Fact]
+    public void MainProgramPreferences_EnhancedMiniMapEnabled_DefaultsToFalse()
+    {
+        var preferences = new MainProgramPreferences();
+        Assert.False(preferences.EnhancedMiniMapEnabled);
+    }
+
+    [Fact]
+    public void MainProgramPreferences_DisableScaleLocking_DefaultsToFalse()
+    {
+        var preferences = new MainProgramPreferences();
+        Assert.False(preferences.DisableScaleLocking);
     }
 
     private static string CreateTemporaryDirectory()

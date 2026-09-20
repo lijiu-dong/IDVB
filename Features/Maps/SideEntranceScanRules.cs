@@ -36,7 +36,7 @@ public sealed class SideEntranceScanConfig
     /// <summary>跨地图扫描并行度；1 = 串行。</summary>
     public int ScanParallelism { get; set; } = 4;
     /// <summary>低于此相似度的结果只写诊断，不得展示为候选或参考线索。</summary>
-    public double MinimumReferenceSimilarity { get; set; } = 0.55d;
+    public double MinimumReferenceSimilarity { get; set; } = 0.45d;
     /// <summary>进入结构复核前所需的最低模板相似度。</summary>
     public double MinimumVerificationSimilarity { get; set; } = 0.68d;
     /// <summary>模板匹配第一名相对第二名的最低分离度。</summary>

@@ -6,6 +6,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.Storage;
+using System.Numerics;
 using IDVBuff.Lifecycle;
 
 namespace IDVBuff;
@@ -14,6 +15,15 @@ public partial class App
 {
     private bool _startupPresentationPending;
     private bool _startupTransitionComplete;
+    private readonly TaskCompletionSource _mainWindowPresentationCompleted =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>
+    /// Completes only after the startup splash transition has yielded a usable main window.
+    /// Secondary windows must wait for this instead of appearing over an incomplete shell.
+    /// </summary>
+    internal static Task MainWindowPresentationCompleted =>
+        _currentApp?._mainWindowPresentationCompleted.Task ?? Task.CompletedTask;
 
     private async Task CompleteStartupPresentationAsync(bool startMinimized)
     {
@@ -29,39 +39,67 @@ public partial class App
         StartupSplash.Report("准备就绪");
         if (!startMinimized && !explicitExitRequested)
         {
-            var animate = new Windows.UI.ViewManagement.UISettings().AnimationsEnabled;
             var visual = _mainFrame is null ? null
                 : Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.GetElementVisual(_mainFrame);
-            if (animate && visual is not null)
+            if (visual is not null && _mainFrame is not null)
             {
                 await StartupSplash.PrepareTransitionAsync();
                 if (explicitExitRequested || window is null) { StartupSplash.Close(); return; }
-                visual.Opacity = 0;
+
+                Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.SetIsTranslationEnabled(_mainFrame, true);
+                visual.StopAnimation("Opacity");
+                visual.StopAnimation("Translation");
+                visual.Opacity = 0f;
+                _mainFrame.Translation = new Vector3(0f, 16f, 0f);
+
                 try
                 {
                     _startupPresentationPending = false;
-                    ShowMainWindow();
-                    using var animation = visual.Compositor.CreateScalarKeyFrameAnimation();
-                    animation.InsertKeyFrame(0, 0);
-                    animation.InsertKeyFrame(1, 1);
-                    animation.Duration = TimeSpan.FromMilliseconds(300);
-                    visual.StartAnimation("Opacity", animation);
-                    await Task.WhenAll(StartupSplash.FadeOutAsync(), Task.Delay(300));
+                    ShowMainWindow(bringToForeground: false);
+
+                    var compositor = visual.Compositor;
+                    var ease = compositor.CreateCubicBezierEasingFunction(
+                        new Vector2(0.22f, 1f),
+                        new Vector2(0.36f, 1f));
+
+                    using var opacityAnim = compositor.CreateScalarKeyFrameAnimation();
+                    opacityAnim.InsertKeyFrame(0f, 0f);
+                    opacityAnim.InsertKeyFrame(1f, 1f, ease);
+                    opacityAnim.Duration = TimeSpan.FromMilliseconds(400);
+
+                    using var translationAnim = compositor.CreateVector3KeyFrameAnimation();
+                    translationAnim.InsertKeyFrame(0f, new Vector3(0f, 16f, 0f));
+                    translationAnim.InsertKeyFrame(1f, Vector3.Zero, ease);
+                    translationAnim.Duration = TimeSpan.FromMilliseconds(400);
+
+                    visual.StartAnimation("Opacity", opacityAnim);
+                    visual.StartAnimation("Translation", translationAnim);
+
+                    await Task.WhenAll(StartupSplash.FadeOutAsync(), Task.Delay(400));
                 }
                 finally
                 {
                     visual.StopAnimation("Opacity");
-                    visual.Opacity = 1;
+                    visual.StopAnimation("Translation");
+                    visual.Opacity = 1f;
+                    _mainFrame.Translation = Vector3.Zero;
                 }
             }
             else
             {
+                await StartupSplash.PrepareTransitionAsync();
                 _startupPresentationPending = false;
-                ShowMainWindow();
+                ShowMainWindow(bringToForeground: false);
+                await Task.WhenAll(StartupSplash.FadeOutAsync(), Task.Delay(380));
             }
         }
         _startupPresentationPending = false;
-        StartupSplash.Close();
+        await StartupSplash.CloseAsync();
+        if (!startMinimized && !explicitExitRequested)
+        {
+            ShowMainWindow(bringToForeground: true);
+        }
+        _mainWindowPresentationCompleted.TrySetResult();
         WriteStartupTrace("Startup presentation complete; main page ready.");
         StartupTimeline.StopSampling();
     }

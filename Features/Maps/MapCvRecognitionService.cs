@@ -76,6 +76,7 @@ public sealed partial class MapCvRecognitionService : IDisposable
     /// </summary>
     public void ResetMatchState()
     {
+        ResetScaleCoverage();
         using var perfScope = RealtimePerformanceTracker.TrackScope("ResetMatchState", forceLog: true);
         ObjectDisposedException.ThrowIf(_disposed, this);
         _gateDetector.ResetSuccessfulScale();

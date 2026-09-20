@@ -17,4 +17,20 @@ public sealed partial class MapCvRecognitionService
         return true;
     }
 
+    internal bool TryGetVpsg3FloorLease(
+        MapRecord map,
+        string floorKey,
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out Vpsg3FloorIndexLease? lease)
+    {
+        lease = null;
+        if (_disposed
+            || MapAlignmentChannelRegistry.Resolve(map, floorKey).Channel
+                == MapAlignmentChannel.LowStructure
+            || !TryGetVpsg3IndexKey(map, floorKey, out var key))
+        {
+            return false;
+        }
+
+        return _vpsg3Registry.TryGet(key, out lease);
+    }
 }

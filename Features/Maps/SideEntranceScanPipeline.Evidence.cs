@@ -2,7 +2,7 @@ namespace IDVBuff.Features.Maps;
 
 public sealed partial class SideEntranceScanPipeline
 {
-    private static void ClassifyTemplateEvidence(
+    internal static void ClassifyTemplateEvidence(
         SideEntranceScanCandidate candidate,
         GateDetection? detectedGate,
         MapScreenRect? viewportBounds)
@@ -45,7 +45,7 @@ public sealed partial class SideEntranceScanPipeline
         }
     }
 
-    private static double CalculateGateResidual(
+    internal static double CalculateGateResidual(
         SideEntranceScanCandidate candidate,
         GateDetection gate,
         MapScreenRect viewport)

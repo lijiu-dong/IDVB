@@ -104,6 +104,11 @@ namespace IDVBuff
                 SetMainWindowCloaked(true);
                 _startupPresentationPending = true;
 
+                if (!startMinimized)
+                {
+                    StartupSplash.SetTargetWindow(WindowNative.GetWindowHandle(window));
+                }
+
                 if (window.AppWindow.Presenter is OverlappedPresenter presenter)
                     presenter.Maximize();
 

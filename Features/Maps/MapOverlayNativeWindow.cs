@@ -99,10 +99,19 @@ internal sealed partial class MapOverlayNativeWindow : IDisposable
         Hide();
     }
 
-    internal bool IsCaptureExclusionEnabled =>
-        _captureProtectionRegistration is not null
-            ? _captureProtectionRegistration.IsProtectionApplied
-            : _captureExcluded;
+    internal bool IsCaptureExclusionEnabled
+    {
+        get
+        {
+            if (_captureProtection is not null)
+                return _captureProtectionRegistration?.IsProtectionApplied ?? false;
+
+            if (_handle != IntPtr.Zero && GetWindowDisplayAffinity(_handle, out var affinity))
+                return affinity == WdaExcludeFromCapture;
+
+            return _captureExcluded;
+        }
+    }
 
     internal bool TrySetCaptureExclusion(bool enabled, out string failureReason)
     {
@@ -111,6 +120,27 @@ internal sealed partial class MapOverlayNativeWindow : IDisposable
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             EnsureWindow();
+
+            if (_captureProtection is not null)
+            {
+                var requested = _captureProtection.IsProtectionRequested(CaptureProtectionWindowCategory.DisplayLayer);
+                if (enabled && !requested)
+                {
+                    failureReason = _captureProtection.IsPluginEnabled
+                        ? "直播模式已关闭显示层保护。"
+                        : "直播模式未启用，显示层保持可捕获。";
+                    return false;
+                }
+
+                if (!enabled && requested)
+                {
+                    failureReason = "直播模式已启用显示层保护，无法显式关闭。";
+                    return false;
+                }
+
+                return true;
+            }
+
             SetLastError(0);
             if (SetWindowDisplayAffinity(
                     _handle,
@@ -247,6 +277,10 @@ internal sealed partial class MapOverlayNativeWindow : IDisposable
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetWindowDisplayAffinity(IntPtr window, uint affinity);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetWindowDisplayAffinity(IntPtr hWnd, out uint pdwAffinity);
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr GetModuleHandle(string? moduleName);

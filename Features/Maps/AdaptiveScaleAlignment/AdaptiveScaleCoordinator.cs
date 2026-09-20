@@ -44,6 +44,16 @@ internal sealed partial class AdaptiveScaleCoordinator
         AdaptiveScaleInitialEvidence evidence,
         long openId = 0)
     {
+        if (!_options.ScaleLockingEnabled)
+            return LegacyDecision(recognition) with
+            {
+                Reliability = AdaptiveScaleReliability.Provisional,
+                AllowLegacyCacheWrite = false,
+                AllowReliableSession = false,
+                AllowHotStartMemory = false,
+                Status = "Provisional",
+                ReliabilityReason = AdaptiveScaleReliabilityReason.None
+            };
         if (!_options.Enabled || recognition.Result.OverlayTransform is not { } transform)
             return LegacyDecision(recognition);
 
@@ -54,7 +64,7 @@ internal sealed partial class AdaptiveScaleCoordinator
             frame.ViewportBounds);
         var scale = UniformScale(transform);
         var entry = _store.TryGet(key);
-        var persistedTrusted = _options.AutomaticScaleLockingEnabled
+        var persistedTrusted = _options.CanLockScale
             && AdaptiveScaleStore.IsTrusted(entry);
         var strongInitial = IsStrongStructure(recognition, evidence);
         var strongVpsg = IsStrongVpsg(evidence.Vpsg, transform);
@@ -77,7 +87,7 @@ internal sealed partial class AdaptiveScaleCoordinator
             if (streakResult.Changed)
                 QueueInitialStreakWrite(streakResult.Snapshot);
 
-            var trusted = _options.AutomaticScaleLockingEnabled
+            var trusted = _options.CanLockScale
                 && streak.IsReliable;
             var controller = GetController(key);
             _activeKey = key;
@@ -89,9 +99,9 @@ internal sealed partial class AdaptiveScaleCoordinator
                 trusted,
                 requiresRecovery: !strongInitial);
             AddInitialObservations(controller, recognition, transform, evidence);
-            if (strongVpsg && _options.AutomaticScaleLockingEnabled)
+            if (strongVpsg && _options.CanLockScale)
                 controller.LockCurrentScale(evidence.Vpsg!.Scale);
-            var reliable = _options.AutomaticScaleLockingEnabled
+            var reliable = _options.CanLockScale
                 && controller.IsReliable;
             var render = controller.HasReliableBaseline
                 && (resumed || strongVpsg)
@@ -160,6 +170,8 @@ internal sealed partial class AdaptiveScaleCoordinator
         double stepScale,
         DateTimeOffset observedAt)
     {
+        if (!_options.CanLockScale)
+            return new AdaptiveOrbDecision(candidate, false, false, AdaptiveScaleState.Provisional);
         lock (_stateGate)
         {
             if (!TryGetOpenController(expectedKey, openId, out var controller))
@@ -184,6 +196,8 @@ internal sealed partial class AdaptiveScaleCoordinator
         double requiredCandidateMargin,
         AdaptiveScaleObservationSource source = AdaptiveScaleObservationSource.Structure)
     {
+        if (!_options.CanLockScale)
+            return new AdaptiveStructureDecision(recognition, false, false, false, AdaptiveScaleState.Provisional);
         lock (_stateGate)
         {
             if (!TryGetOpenController(expectedKey, openId, out var controller)
@@ -236,7 +250,7 @@ internal sealed partial class AdaptiveScaleCoordinator
     {
         lock (_stateGate)
         {
-            if (!_options.AutomaticScaleLockingEnabled)
+            if (!_options.CanLockScale)
             {
                 return new AdaptiveStructureDecision(
                     recognition,
@@ -312,7 +326,7 @@ internal sealed partial class AdaptiveScaleCoordinator
         out AdaptiveScaleSeedDecision? seed)
     {
         seed = null;
-        if (!_options.Enabled || !_options.AutomaticScaleLockingEnabled)
+        if (!_options.Enabled || !_options.CanLockScale)
             return false;
         var entry = _store.TryGet(key);
         if (!AdaptiveScaleStore.IsTrusted(entry))
@@ -368,7 +382,7 @@ internal sealed partial class AdaptiveScaleCoordinator
         out AdaptiveScaleSeedDecision? seed)
     {
         seed = null;
-        if (!_options.Enabled)
+        if (!_options.Enabled || !_options.CanLockScale)
             return false;
         lock (_stateGate)
         {

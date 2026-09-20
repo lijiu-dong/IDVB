@@ -6,6 +6,31 @@ namespace IDVBuff.Tests;
 
 public sealed class FloorIndicatorTemplateRegistryTests
 {
+    [Fact]
+    public void CloseHighScoringCandidatesSelectBestInsteadOfKeepingPreviousFloor()
+    {
+        var group = FloorIndicatorTemplateRegistry.Get("hard")!;
+        using var first = Cv2.ImRead(Path.Combine(AppContext.BaseDirectory,
+            "Assets", "FloorIndicators", group.States["1f"]));
+        using var second = Cv2.ImRead(Path.Combine(AppContext.BaseDirectory,
+            "Assets", "FloorIndicators", group.States["2f"]));
+        using var header = new Mat(160, 1920, first.Type(), Scalar.All(25));
+        using (var target = new Mat(header, new Rect(100, 40, first.Width, first.Height)))
+            first.CopyTo(target);
+        using (var target = new Mat(header, new Rect(500, 40, second.Width, second.Height)))
+            second.CopyTo(target);
+
+        var previousPolicy = FloorIndicatorTemplateRegistry.RecognizeDetailed(
+            group, header, templateScale: 1, minMargin: 0.08);
+        Assert.Equal("MarginBelowThreshold", previousPolicy.RejectionReason);
+
+        var result = FloorIndicatorTemplateRegistry.RecognizeDetailed(group, header, templateScale: 1);
+        Assert.True(result.Succeeded);
+        Assert.Equal(result.BestFloor, result.DetectedFloor);
+        Assert.Equal(result.CandidateScores.Values.Max(), result.BestScore);
+        Assert.InRange(result.Margin, 0, 0.079999);
+    }
+
     [Theory]
     [InlineData("nightmare", "b1f")]
     [InlineData("nightmare", "1f")]

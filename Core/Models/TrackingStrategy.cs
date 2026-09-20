@@ -15,5 +15,6 @@ public enum TrackingStrategy
     WaitingForAnchor = 5,
     StructureMatched = 6,
     HoldingLastTransform = 7,
-    Lost = 8
+    Lost = 8,
+    VpsgTracking = 9
 }

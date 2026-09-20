@@ -62,10 +62,13 @@ namespace IDVBuff
             catch { }
             GuiInstanceCoordinator.ActivationRequested -= GuiInstance_ActivationRequested;
 
-            // Watchdog: If async disposal stalls or deadlocks, force terminate after 3 seconds.
-            _ = Task.Delay(TimeSpan.FromSeconds(3)).ContinueWith(_ =>
+            // Watchdog: If async disposal stalls or deadlocks, force terminate after 5 seconds.
+            _ = Task.Delay(TimeSpan.FromSeconds(5)).ContinueWith(_ =>
             {
-                CompleteApplicationExit();
+                try { CompleteApplicationExit(); }
+                catch { }
+                try { System.Diagnostics.Process.GetCurrentProcess().Kill(); }
+                catch { }
             }, TaskScheduler.Default);
 
             try
@@ -214,20 +217,24 @@ namespace IDVBuff
                 return;
 
             applicationExitRequested = true;
-            _trayIcon?.Dispose();
+            try { _trayIcon?.Dispose(); } catch { }
             _trayIcon = null;
             GuiInstanceCoordinator.ActivationRequested -= GuiInstance_ActivationRequested;
-            OutputLog.Shutdown();
+            try { OutputLog.Shutdown(); } catch { }
             if (ReferenceEquals(_currentApp, this))
                 _currentApp = null;
 
             // A WinUI desktop process can remain alive when another hidden
-            // XAML window or dispatcher is still registered.  Closing the main
+            // XAML window or dispatcher is still registered. Closing the main
             // HWND is therefore followed by an explicit application exit. If
             // WinUI only posts that request, terminate after all owned services
             // and logs have already completed their bounded cleanup above.
-            Exit();
-            Environment.Exit(Environment.ExitCode);
+            try { Exit(); }
+            catch { }
+            try { Environment.Exit(Environment.ExitCode); }
+            catch { }
+            try { System.Diagnostics.Process.GetCurrentProcess().Kill(); }
+            catch { }
         }
 
         private void GuiInstance_ActivationRequested(object? sender, EventArgs e)
@@ -243,27 +250,63 @@ namespace IDVBuff
                 HideMainWindow();
         }
 
-        private void ShowMainWindow()
+        private void ShowMainWindow() => ShowMainWindow(bringToForeground: true);
+
+        private void ShowMainWindow(bool bringToForeground)
         {
             if (_startupPresentationPending)
                 return;
             var currentWindow = window;
             if (currentWindow is null)
                 return;
+            var hWnd = WindowNative.GetWindowHandle(currentWindow);
             if (!mainWindowHasBeenShown)
             {
                 SetMainWindowCloaked(false);
-                ShowWindow(WindowNative.GetWindowHandle(currentWindow), 5);
-                currentWindow.Activate();
+                ShowWindow(hWnd, bringToForeground ? 5 : 4);
                 mainWindowHasBeenShown = true;
                 if (currentWindow.AppWindow.Presenter is OverlappedPresenter initialPresenter)
                     initialPresenter.Maximize();
+                if (bringToForeground)
+                {
+                    currentWindow.Activate();
+                    BringWindowToForeground(hWnd);
+                }
                 return;
             }
-            ShowWindow(WindowNative.GetWindowHandle(currentWindow), 5);
+            SetMainWindowCloaked(false);
+            ShowWindow(hWnd, bringToForeground ? 5 : 4);
             if (currentWindow.AppWindow.Presenter is OverlappedPresenter presenter)
-                presenter.Restore();
-            currentWindow.Activate();
+            {
+                if (presenter.State == OverlappedPresenterState.Minimized)
+                    presenter.Restore();
+            }
+            if (bringToForeground)
+            {
+                currentWindow.Activate();
+                BringWindowToForeground(hWnd);
+            }
+        }
+
+        private void BringWindowToForeground(IntPtr hWnd)
+        {
+            if (hWnd == IntPtr.Zero) return;
+            var foregroundHwnd = GetForegroundWindow();
+            if (foregroundHwnd == hWnd) return;
+
+            var foregroundThreadId = foregroundHwnd != IntPtr.Zero ? GetWindowThreadProcessId(foregroundHwnd, out _) : 0;
+            var currentThreadId = GetCurrentThreadId();
+            if (foregroundThreadId != 0 && foregroundThreadId != currentThreadId)
+            {
+                AttachThreadInput(currentThreadId, foregroundThreadId, true);
+                try { BringWindowToTop(hWnd); SetForegroundWindow(hWnd); }
+                finally { AttachThreadInput(currentThreadId, foregroundThreadId, false); }
+            }
+            else
+            {
+                BringWindowToTop(hWnd);
+                SetForegroundWindow(hWnd);
+            }
         }
 
         private void HideMainWindow()
@@ -291,15 +334,14 @@ namespace IDVBuff
             window?.Close();
         }
 
-        [DllImport("user32.dll")]
-        private static extern bool ShowWindow(IntPtr windowHandle, int command);
-
-        [DllImport("dwmapi.dll")]
-        private static extern int DwmSetWindowAttribute(
-            IntPtr windowHandle,
-            int attribute,
-            ref int attributeValue,
-            int attributeSize);
+        [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr windowHandle, int command);
+        [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
+        [DllImport("user32.dll")] private static extern bool BringWindowToTop(IntPtr hWnd);
+        [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+        [DllImport("user32.dll")] private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+        [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
+        [DllImport("dwmapi.dll")] private static extern int DwmSetWindowAttribute(IntPtr windowHandle, int attribute, ref int attributeValue, int attributeSize);
 
         private async Task ShowUpdatedSuccessfullyAsync()
         {

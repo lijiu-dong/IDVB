@@ -133,6 +133,11 @@ public sealed partial class SessionOrchestrator
         out string missReason)
     {
         EnsureReliableFloorAlignmentScope(match);
+        if (!_scaleLockOptions.CanLockScale)
+        {
+            missReason = "scale-locking-disabled";
+            return null;
+        }
         var key = CreateAlignmentContextKey(
             match,
             clientBounds,
@@ -304,6 +309,8 @@ public sealed partial class SessionOrchestrator
         RuntimeMapRecognition recognition,
         double scale)
     {
+        if (!_scaleLockOptions.CanLockScale)
+            return;
         var match = _matchSession.Snapshot;
         if (!match.IsStarted || !double.IsFinite(scale) || scale <= 0d)
             return;

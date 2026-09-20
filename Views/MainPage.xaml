@@ -187,6 +187,36 @@
                         <TextBlock Text="反馈问题" FontSize="13" VerticalAlignment="Center" Foreground="{ThemeResource FeedbackButtonForegroundBrush}" />
                     </StackPanel>
                 </Button>
+                <Button x:Name="NotificationButton"
+                        Style="{StaticResource SubtleButtonStyle}"
+                        ToolTipService.ToolTip="消息通知"
+                        AutomationProperties.Name="消息通知"
+                        Click="NotificationButton_Click"
+                        Padding="0"
+                        Width="36"
+                        Height="32">
+                    <Grid Width="28" Height="28">
+                        <FontIcon Glyph="&#xE91C;" FontSize="16" FontFamily="{StaticResource SymbolThemeFontFamily}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        <Border x:Name="NotificationBadge"
+                                MinWidth="15" Height="15"
+                                Padding="3,0"
+                                CornerRadius="7"
+                                Background="#FFEF4444"
+                                HorizontalAlignment="Right"
+                                VerticalAlignment="Top"
+                                Margin="0,0,-3,0"
+                                Visibility="Collapsed">
+                            <TextBlock x:Name="NotificationBadgeText"
+                                       Text=""
+                                       FontSize="9"
+                                       FontWeight="Bold"
+                                       Foreground="#FFFFFFFF"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"
+                                       TextAlignment="Center" />
+                        </Border>
+                    </Grid>
+                </Button>
                 <Button Style="{StaticResource SubtleButtonStyle}" ToolTipService.ToolTip="关于" Click="Settings_Click"><FontIcon Glyph="&#xF427;" FontFamily="{StaticResource SymbolThemeFontFamily}" /></Button>
             </StackPanel>
         </Grid>

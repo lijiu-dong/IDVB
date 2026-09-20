@@ -23,8 +23,8 @@ internal sealed class AdaptiveScaleController
     public bool HasRuntimeZoom => _runtime.HasRuntimeZoom;
     public bool IsOpen { get; private set; }
     public long OpenId { get; private set; }
-    public bool HasReliableBaseline => _hasReliableScale;
-    public bool IsReliable => State == AdaptiveScaleState.Stable && _hasReliableScale;
+    public bool HasReliableBaseline => _options.CanLockScale && _hasReliableScale;
+    public bool IsReliable => _options.CanLockScale && State == AdaptiveScaleState.Stable && _hasReliableScale;
     public int ProbeIntervalMilliseconds => State == AdaptiveScaleState.Stable
         ? _options.StableProbeMilliseconds
         : _options.ActiveProbeMilliseconds;
@@ -44,6 +44,7 @@ internal sealed class AdaptiveScaleController
         _window.Clear();
         _fixedScaleFailures = 0;
         _challengeStartedAt = null;
+        trusted &= _options.CanLockScale;
         _hasReliableScale = trusted;
         State = trusted
             ? AdaptiveScaleState.Stable
@@ -134,7 +135,7 @@ internal sealed class AdaptiveScaleController
 
     public void CommitConsensus(AdaptiveScaleConsensus consensus)
     {
-        if (!IsOpen)
+        if (!_options.CanLockScale || !IsOpen)
             return;
         var changed = RelativeDifference(consensus.Scale, RuntimeScale) > _options.Deadband;
         _runtime.SetRuntime(consensus.Scale, _hasReliableScale && changed);
@@ -146,7 +147,7 @@ internal sealed class AdaptiveScaleController
 
     public bool LockCurrentScale(double scale)
     {
-        if (!IsOpen || !double.IsFinite(scale) || scale <= 0d)
+        if (!_options.CanLockScale || !IsOpen || !double.IsFinite(scale) || scale <= 0d)
             return false;
         _runtime.SetRuntime(scale, isRuntimeZoom: false);
         _hasReliableScale = true;

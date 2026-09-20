@@ -147,6 +147,15 @@ public sealed partial class MainSettingsPage : Page
         if (_preferences.DeveloperMode)
         {
             content.Children.Add(CreateToggleCard(
+                "禁止缩放值锁定",
+                "默认关闭。开启后禁止任何接口锁定缩放值，每次对齐均重新独立估算缩放",
+                _preferences.DisableScaleLocking,
+                value => SavePreferenceAsync(() =>
+                {
+                    _preferences.DisableScaleLocking = value;
+                    App.CurrentSession?.SetScaleLockingEnabled(!value);
+                })));
+            content.Children.Add(CreateToggleCard(
                 "实时性能监控（顶部横条）",
                 "在游戏顶部以彩色小横条实时显示 RAM、GC 堆、增量及当前关键资源函数，并同步记录性能日志",
                 _preferences.RealtimePerformanceOverlayEnabled,

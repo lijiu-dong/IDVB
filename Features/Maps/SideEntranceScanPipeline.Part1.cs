@@ -104,7 +104,8 @@ public sealed partial class SideEntranceScanPipeline
                     pointsToTest,
                     observation.ValidMask,
                     gx,
-                    gy);
+                    gy,
+                    viewportBounds);
 
                 candidateResults[i] = candidate;
                 progress?.Invoke(0.9d * Interlocked.Increment(ref completedCount) / valid.Count);

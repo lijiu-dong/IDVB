@@ -130,11 +130,16 @@ internal static class SideEntranceCandidateEvidence
             ?? 0d;
         candidate.StructureCandidateMargin = structure?.CandidateMargin ?? 0d;
 
+        var spaceRatio = best?.SpaceRatio is > 1.000001d and < 10.0d
+            ? best.SpaceRatio
+            : 1.0d;
+        var effectiveChamferLimit = StrictInitialIdentityChamferLimit * spaceRatio;
+
         var rawChamferAccepted = double.IsFinite(candidate.RawChamferPixels)
-            && candidate.RawChamferPixels <= StrictInitialIdentityChamferLimit;
+            && candidate.RawChamferPixels <= effectiveChamferLimit;
         var fastAccepted = structure?.UsedFastStrategy == true
             && attempt.StructureAccepted
-            && (!double.IsFinite(candidate.RawChamferPixels) || candidate.RawChamferPixels <= StrictInitialIdentityChamferLimit);
+            && (!double.IsFinite(candidate.RawChamferPixels) || candidate.RawChamferPixels <= effectiveChamferLimit);
         if (attempt.StructureAccepted
             && attempt.Recognition is not null
             && (rawChamferAccepted || fastAccepted))
@@ -151,7 +156,7 @@ internal static class SideEntranceCandidateEvidence
         {
             candidate.RejectionDetail =
                 $"结构 Chamfer {candidate.RawChamferPixels:F2}px 超过 "
-                + $"{StrictInitialIdentityChamferLimit:F1}px 严格上限。";
+                + $"{effectiveChamferLimit:F1}px 严格上限。";
             return false;
         }
         candidate.RejectionDetail = string.IsNullOrWhiteSpace(

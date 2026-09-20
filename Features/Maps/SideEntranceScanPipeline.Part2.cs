@@ -10,14 +10,15 @@ namespace IDVBuff.Features.Maps;
 /// </summary>
 public sealed partial class SideEntranceScanPipeline
 {
-    private static SideEntranceScanCandidate? EvaluateStructuralCandidate(
+    internal static SideEntranceScanCandidate? EvaluateStructuralCandidate(
         MapRecord map,
         string floorKey,
         Mat template,
         IReadOnlyList<Point> sparsePoints,
         Mat validMask,
         double gx,
-        double gy)
+        double gy,
+        MapScreenRect? viewportBounds = null)
     {
         if (template.Empty() || sparsePoints.Count == 0)
             return null;
@@ -59,9 +60,14 @@ public sealed partial class SideEntranceScanPipeline
         var maxScale = SideEntranceScanRules.MaximumScale;
         var coarseStep = SideEntranceScanRules.CoarseScaleStep;
 
-        // 仅保留实机门附近的边缘点，排除远端（如大门附近）无关点
-        var maxExtentX = Math.Max(32d, (tplWidth / 2d) * maxScale);
-        var maxExtentY = Math.Max(32d, (tplHeight / 2d) * maxScale);
+        var vpWidth = viewportBounds?.Width > 0 ? viewportBounds.Value.Width : 1300d;
+        var nominalScale = Math.Clamp(vpWidth / profile.RecognitionPixelWidth, minScale, maxScale);
+
+        // 仅保留实机门附近的边缘点，在实机屏幕尺度下约束范围，避免不同底图分辨率导致分母爆炸
+        var screenHalfW = (tplWidth / 2d) * nominalScale;
+        var screenHalfH = (tplHeight / 2d) * nominalScale;
+        var maxExtentX = Math.Max(32d, Math.Min(350d, screenHalfW * 1.25d));
+        var maxExtentY = Math.Max(32d, Math.Min(350d, screenHalfH * 1.25d));
         var localPoints = new List<(double rx, double ry)>(sparsePoints.Count);
         for (var i = 0; i < sparsePoints.Count; i++)
         {
@@ -86,32 +92,52 @@ public sealed partial class SideEntranceScanPipeline
             relY[i] = localPoints[i].ry;
         }
 
-        // 多级膨胀构建距离衰减核（Cone Filter）：
-        // 5x5 膨胀 (±2px) 基础捕获层，3x3 膨胀 (±1px) 梯度层，原始模板 (0px) 峰值层
-        using var k3 = Cv2.GetStructuringElement(MorphShapes.Rect, new Size(3, 3));
-        using var dilated3 = new Mat();
-        Cv2.Dilate(template, dilated3, k3);
+        // 多级膨胀构建屏幕空间一致的距离衰减核（Cone Filter）：
+        // 梯度层在屏幕约 2.5px，基础捕获层在屏幕约 5.5px；依据 nominalScale 换算为模板空间半径，
+        // 保证滋酥居、展十、爱吃醋、困难等不同底图分辨率在实机屏幕上具有完全一致的几何容差。
+        var rPeak = Math.Max(0, (int)Math.Round(0.8d / nominalScale) - 1);
+        var rGrad = Math.Max(rPeak + 1, (int)Math.Round(2.5d / nominalScale));
+        var rCap = Math.Max(rGrad + 1, (int)Math.Round(5.5d / nominalScale));
 
-        using var dilated5 = new Mat();
-        Cv2.Dilate(dilated3, dilated5, k3);
+        using var kGrad = Cv2.GetStructuringElement(MorphShapes.Rect, new Size(2 * rGrad + 1, 2 * rGrad + 1));
+        using var dilatedGrad = new Mat();
+        Cv2.Dilate(template, dilatedGrad, kGrad);
+
+        using var kCap = Cv2.GetStructuringElement(MorphShapes.Rect, new Size(2 * rCap + 1, 2 * rCap + 1));
+        using var dilatedCap = new Mat();
+        Cv2.Dilate(template, dilatedCap, kCap);
+
+        using var dilatedPeak = rPeak > 0 ? new Mat() : null;
+        if (rPeak > 0)
+        {
+            using var kPeak = Cv2.GetStructuringElement(MorphShapes.Rect, new Size(2 * rPeak + 1, 2 * rPeak + 1));
+            Cv2.Dilate(template, dilatedPeak!, kPeak);
+        }
+        var peakSource = dilatedPeak ?? template;
 
         var step = (int)template.Step();
         var rawBytes = new byte[tplHeight * step];
         var d3Bytes = new byte[tplHeight * step];
         var d5Bytes = new byte[tplHeight * step];
-        Marshal.Copy(template.Data, rawBytes, 0, rawBytes.Length);
-        Marshal.Copy(dilated3.Data, d3Bytes, 0, d3Bytes.Length);
-        Marshal.Copy(dilated5.Data, d5Bytes, 0, d5Bytes.Length);
+        Marshal.Copy(peakSource.Data, rawBytes, 0, rawBytes.Length);
+        Marshal.Copy(dilatedGrad.Data, d3Bytes, 0, d3Bytes.Length);
+        Marshal.Copy(dilatedCap.Data, d5Bytes, 0, d5Bytes.Length);
 
-        // 以 1.0d 为中心对齐网格，避免粗网格因浮点累积误差跨越 1.000 基准
-        var scaleGrid = new List<double>(25);
+        // 以 1.0d 为中心对齐网格，同时纳入 nominalScale 及其邻域，消除鞍点死区
+        var scaleGrid = new List<double>(35);
         for (var s = 1.0d; s <= maxScale; s *= 1d + coarseStep)
             scaleGrid.Add(s);
         for (var s = 1.0d / (1d + coarseStep); s >= minScale; s /= 1d + coarseStep)
             scaleGrid.Add(s);
+        if (nominalScale >= minScale && nominalScale <= maxScale)
+        {
+            scaleGrid.Add(nominalScale);
+            scaleGrid.Add(nominalScale * (1d + coarseStep * 0.5d));
+            scaleGrid.Add(nominalScale / (1d + coarseStep * 0.5d));
+        }
         scaleGrid.Sort();
 
-        // 阶段一：粗尺度与整数残差搜索（覆盖门检测中心 [-3, 3] 像素内的所有整数偏移）
+        // 阶段一：粗尺度与整数残差搜索（覆盖门检测中心 [-8, 8] 像素内的搜索范围，步长 2）
         for (var scaleIdx = 0; scaleIdx < scaleGrid.Count; scaleIdx++)
         {
             var scale = scaleGrid[scaleIdx];
@@ -119,10 +145,10 @@ public sealed partial class SideEntranceScanPipeline
             var baseTx = (tplWidth / 2d) + deltaAnchorRefX;
             var baseTy = (tplHeight / 2d) + deltaAnchorRefY;
 
-            for (var dx = -3; dx <= 3; dx++)
+            for (var dx = -8; dx <= 8; dx += 2)
             {
                 var shiftTx = baseTx - (dx * invS);
-                for (var dy = -3; dy <= 3; dy++)
+                for (var dy = -8; dy <= 8; dy += 2)
                 {
                     var shiftTy = baseTy - (dy * invS);
 

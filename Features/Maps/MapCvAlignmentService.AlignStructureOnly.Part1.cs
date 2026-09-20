@@ -7,6 +7,12 @@ internal static partial class MapCvAlignmentService
 {
     internal static MapRecognitionAttempt AlignStructureOnly(MapCvRecognitionService service, CapturedGameFrame frame, Guid selectedMapId, string floorKey, MapOverlayTransform scaleSeed, MapOverlayAlignmentMode alignmentMode, MapRecognitionTuning tuning, MapStructureRegistrationTuning? structureTuning, MapReferencePoint? playerPrior, MapViewportOrigin? predictedViewportOrigin, IReadOnlyList<NormalizedRectangle>? liveIgnoreRegions, IReadOnlyList<MapSimilarityTransform>? candidateHistory, bool isTracking, bool useProjectedBoundaryMask, bool allowPrimaryFloor, MapScaleSearchPolicy scaleSearchPolicy, double identityPriorConfidence, bool restrictTranslationToSeed, LowStructureAlignmentPlan? lowStructurePlan = null)
     {
+        if (!service.CanReuseScale(frame, selectedMapId, floorKey) && structureTuning?.Mode != MapStructureRegistrationMode.ScanVerification)
+        {
+            scaleSearchPolicy = MapScaleSearchPolicy.Search;
+            restrictTranslationToSeed = false;
+            lowStructurePlan = null;
+        }
         ObjectDisposedException.ThrowIf(service.IsDisposed, service); tuning = MapCvRecognitionHelpers.NormalizedCopy(tuning); tuning.ForceBestRecognitionResult = false; alignmentMode = MapOverlayAlignmentMode.Uniform; structureTuning ??= new MapStructureRegistrationTuning(); structureTuning = structureTuning.Clone(); structureTuning.Normalize();
         // 中性种子是占位符，不是尺度证据：调用方写死的 Fixed 必须在这里降级为
         // 真正的全尺度搜索，否则只会围绕错误尺度造出唯一一个假设

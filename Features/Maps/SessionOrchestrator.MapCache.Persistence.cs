@@ -345,6 +345,8 @@ public sealed partial class SessionOrchestrator
         string? failure = null;
         if (_settings is null)
             failure = "地图运行时尚未初始化。";
+        else if (!_scaleLockOptions.CanLockScale)
+            failure = "缩放锁定已关闭，当前楼层将继续独立估算缩放。";
         else if (_lastRecognition is not { } recognition
             || recognition.Result.OverlayTransform is not { } transform)
             failure = "已锁定地图尚无可用的临时缩放，请先完成一次对齐。";

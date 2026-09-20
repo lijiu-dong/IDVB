@@ -165,6 +165,7 @@ public sealed class MapAlignmentSession
                 MapRecognitionSource.AuxiliaryAnchorTracking => MapAlignmentTrackingMode.AuxiliaryAnchorTracking,
                 MapRecognitionSource.StructureMatching => MapAlignmentTrackingMode.StructureMatched,
                 MapRecognitionSource.OrbTracking => MapAlignmentTrackingMode.OrbTracking,
+                MapRecognitionSource.VpsgTracking => MapAlignmentTrackingMode.VpsgTracking,
                 _ => MapAlignmentTrackingMode.GatePairLocked
             }
         };
@@ -175,6 +176,12 @@ public sealed class MapAlignmentSession
         MapRecord map,
         MapRecognitionResult result)
     {
+        if (result.OverlayTransform is null)
+        {
+            if (previous is not null)
+                return previous;
+            throw new InvalidOperationException("识别结果没有可用的地图对齐变换。");
+        }
         var rebuilt = FromRecognition(map, result);
         if (previous is null
             || previous.SideEntranceScanPriorConfidence <= 0d
@@ -246,7 +253,8 @@ public sealed class MapAlignmentSession
                 MapRecognitionSource.SingleGateTracking
                 or MapRecognitionSource.AuxiliaryAnchorTracking
                 or MapRecognitionSource.StructureMatching
-                or MapRecognitionSource.OrbTracking))
+                or MapRecognitionSource.OrbTracking
+                or MapRecognitionSource.VpsgTracking))
         {
             throw new InvalidOperationException(
                 "Only tracking observations can advance an existing alignment lock.");
@@ -318,6 +326,8 @@ public sealed class MapAlignmentSession
                     MapAlignmentTrackingMode.StructureMatched,
                 MapRecognitionSource.OrbTracking =>
                     MapAlignmentTrackingMode.OrbTracking,
+                MapRecognitionSource.VpsgTracking =>
+                    MapAlignmentTrackingMode.VpsgTracking,
                 _ => MapAlignmentTrackingMode.AuxiliaryAnchorTracking
             }
         };
