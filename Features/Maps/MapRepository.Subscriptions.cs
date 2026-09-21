@@ -74,6 +74,80 @@ public sealed partial class MapRepository
                     item.ImportedClassName, map.Class, StringComparison.OrdinalIgnoreCase)))
                 .Select(map => map.Id)
                 .ToHashSet();
+            var oldMaps = catalog.Maps.Where(map => oldMapIds.Contains(map.Id)).ToArray();
+            var newMaps = catalog.Maps.Where(map => newMapIds.Contains(map.Id)).ToArray();
+            if (oldMaps.Length != oldMapIds.Count
+                || oldMaps.Any(map => !previousBindings.Values.Contains(
+                    map.Class, StringComparer.OrdinalIgnoreCase)))
+                throw new InvalidOperationException("原订阅地图或地图类映射不完整，无法安全替换。");
+            foreach (var imported in importedClasses)
+            {
+                var replacementMaps = newMaps.Where(map => string.Equals(
+                    map.Class, imported.ImportedClassName, StringComparison.OrdinalIgnoreCase)).ToArray();
+                var previousMaps = previousBindings.TryGetValue(imported.SourceName, out var previousClass)
+                    ? oldMaps.Where(map => string.Equals(
+                        map.Class, previousClass, StringComparison.OrdinalIgnoreCase)).ToArray()
+                    : [];
+                var previouslyScannableFloors = previousMaps
+                    .SelectMany(map => MapFloorRules.GetOrderedFloors(map)
+                        .Where(floor => MapScanFloorRules.HasRequiredScanMarkers(map, floor.Key))
+                        .Select(floor => MapScanFloorRules.NormalizeFloorIdentity(floor.Key)!))
+                    .ToHashSet(StringComparer.Ordinal);
+                foreach (var map in replacementMaps)
+                {
+                    var scanFloorKey = MapScanFloorRules.ResolveScanFloorKey(map);
+                    foreach (var floor in MapFloorRules.GetOrderedFloors(map))
+                    {
+                        if (!HasPrebuiltStructureLine(map, floor.Key))
+                            throw new InvalidOperationException(
+                                $"订阅地图 {map.DisplayName} 楼层 {floor.Key} 的预制结构图不完整。");
+                        var prebuilt = floor.PrebuiltStructureLine!;
+                        var algorithmPath = GetPrebuiltStructureAlgorithmPath(map, floor.Key);
+                        if (!File.Exists(algorithmPath))
+                            throw new InvalidOperationException(
+                                $"订阅地图 {map.DisplayName} 楼层 {floor.Key} 缺少预制结构算法。");
+                        if (!string.Equals(ComputeFileSha256(GetPrebuiltStructureLinePath(map, floor.Key)),
+                                prebuilt.Sha256, StringComparison.OrdinalIgnoreCase)
+                            || !string.Equals(ComputeFileSha256(algorithmPath),
+                                prebuilt.AlgorithmSha256, StringComparison.OrdinalIgnoreCase))
+                            throw new InvalidOperationException(
+                                $"订阅地图 {map.DisplayName} 楼层 {floor.Key} 的预制结构图哈希不匹配。");
+
+                        if (!string.Equals(floor.Key, scanFloorKey,
+                                StringComparison.OrdinalIgnoreCase))
+                            continue;
+                        if (!MapScanFloorRules.HasRequiredScanMarkers(map, floor.Key))
+                            throw new InvalidOperationException(
+                                $"订阅地图 {map.DisplayName} 楼层 {floor.Key} 缺少扫描门锚点。");
+                        if (!TryGetValidSideEntranceFeaturePath(map, floor.Key, out _, out var reason))
+                            throw new InvalidOperationException(
+                                $"订阅地图 {map.DisplayName} 楼层 {floor.Key} 的侧门特征无效：{reason}");
+                    }
+                    foreach (var floorIdentity in previouslyScannableFloors)
+                        if (MapScanFloorRules.ResolveFloorKey(map, floorIdentity) is null)
+                            throw new InvalidOperationException(
+                                $"订阅地图 {map.DisplayName} 缺少原有可扫描楼层 {floorIdentity}。");
+                }
+            }
+            // The runtime cache reads each feature as grayscale. Verify that
+            // final read here before replacing the old subscription maps.
+            foreach (var map in newMaps)
+            {
+                var scanFloorKey = MapScanFloorRules.ResolveScanFloorKey(map);
+                foreach (var floor in MapFloorRules.GetOrderedFloors(map))
+                {
+                    if (!string.Equals(floor.Key, scanFloorKey,
+                            StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    if (!TryGetValidSideEntranceFeaturePath(map, floor.Key, out var path, out var reason))
+                        throw new InvalidOperationException(
+                            $"订阅地图 {map.DisplayName} 楼层 {floor.Key} 无法进入侧门缓存：{reason}");
+                    using var feature = OpenCvSharp.Cv2.ImRead(path, OpenCvSharp.ImreadModes.Grayscale);
+                    if (feature.Empty())
+                        throw new InvalidOperationException(
+                            $"订阅地图 {map.DisplayName} 楼层 {floor.Key} 的侧门特征无法解码。");
+                }
+            }
             oldMapIds.ExceptWith(newMapIds);
             catalog.Maps.RemoveAll(map => oldMapIds.Contains(map.Id));
             catalog.VariantGroups.RemoveAll(group => group.MapIds.Any(oldMapIds.Contains));
@@ -110,7 +184,15 @@ public sealed partial class MapRepository
                     group.Class, importedCanonical, StringComparison.OrdinalIgnoreCase)))
                     group.Class = desiredClass;
                 if (catalog.ClassProperties.TryGetValue(importedCanonical, out var importedProperties))
-                    catalog.ClassProperties[desiredClass] = importedProperties;
+                {
+                    var merged = importedProperties.Clone();
+                    if (catalog.ClassProperties.TryGetValue(desiredClass, out var localProperties))
+                    {
+                        merged.ImageDownsampleFactor = localProperties.ImageDownsampleFactor;
+                        merged.BackgroundRemovalIntensity = localProperties.BackgroundRemovalIntensity;
+                    }
+                    catalog.ClassProperties[desiredClass] = merged;
+                }
                 catalog.ClassProperties.Remove(importedCanonical);
                 catalog.Classes.Remove(importedCanonical);
             }

@@ -7,9 +7,25 @@ public sealed partial class MapRuntimeSettings
 
     public void Normalize()
     {
+        if (!Enum.IsDefined(ScanPerformanceMode)) ScanPerformanceMode = ScanPerformanceMode.Balanced;
+        if (!Enum.IsDefined(ScanUncertainAction)) ScanUncertainAction = ScanUncertainAction.ShowCandidates;
         var previousSchema = SchemaVersion;
         SchemaVersion = CurrentSchemaVersion;
+        // These are deliberately product-owned choices, rather than user
+        // preferences. Normalize after every deserialization/save so imported,
+        // migrated, and quick-start settings cannot re-enable retired paths.
+        FirstScanStrategy = FirstScanStrategy.SideEntrance;
+        BackgroundScanEnabled = false;
+        SilentScanEnabled = false;
+        AllowAutomaticMapCache = false;
+        SelectedResolutionPreset = null;
         EnableContinuousAlignment = false;
+        ShowOverlayStatus = true;
+        ReverseAlternateDisplay = false;
+        AllowMapExtendBeyondBounds = true;
+        PersistentMiniMapEnabled = true;
+        PlayerTrackingEnabled = false;
+        OverlayAlignmentMode = MapOverlayAlignmentMode.Uniform;
         // 标签候选曾被强制开启；升级后仅一次性恢复为关闭，后续尊重用户选择。
         if (previousSchema < 17)
             SelectMapByTagsEnabled = false;
@@ -18,11 +34,6 @@ public sealed partial class MapRuntimeSettings
         LastSelectedMapClass = string.IsNullOrWhiteSpace(LastSelectedMapClass)
             ? null
             : LastSelectedMapClass.Trim();
-        SelectedResolutionPreset = string.IsNullOrWhiteSpace(SelectedResolutionPreset)
-            ? null
-            : SelectedResolutionPreset.Trim();
-        if (!Enum.IsDefined(FirstScanStrategy))
-            FirstScanStrategy = FirstScanStrategy.DoubleGate;
         if (!Enum.IsDefined(CandidateDecisionMode))
             CandidateDecisionMode = MapCandidateDecisionMode.Traditional;
         QuickScanBinding ??= new MapInputBinding();
@@ -113,6 +124,8 @@ public sealed partial class MapRuntimeSettings
             RestMapDisplayBinding = new MapInputBinding();
         }
         RecognitionTuning.Normalize();
+        RecognitionTuning.ForceBestRecognitionResult = false;
+        RecognitionTuning.PlayerDecidesScale = false;
         StructureRegistrationTuning.Normalize();
         SessionTuning.Normalize();
         FloorRecognitionTuning ??= new MapFloorRecognitionTuning();

@@ -20,6 +20,44 @@ public sealed record PrebuiltStructureBatchResult(
 
 public sealed partial class MapRepository
 {
+    public async Task HealMissingPrebuiltStructureLinesAsync(
+        CancellationToken cancellationToken = default, bool onlyOutdated = false)
+    {
+        var snapshot = await GetCatalogSnapshotAsync();
+        foreach (var mapClass in snapshot.Classes)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var maps = snapshot.Maps.Where(map => string.Equals(
+                map.Class, mapClass, StringComparison.OrdinalIgnoreCase)).ToArray();
+            if (onlyOutdated && !maps.SelectMany(MapFloorRules.GetOrderedFloors)
+                .Any(floor => floor.PrebuiltStructureLine is { IsComplete: true, IsCurrent: false }))
+                continue;
+            if (maps.Length == 0 || maps.All(map => HasCompletePrebuiltStructureLines(map)
+                && MapFloorRules.GetOrderedFloors(map).All(floor => floor.PrebuiltStructureLine!.IsCurrent)))
+                continue;
+
+            string? algorithmPath = null;
+            foreach (var map in maps)
+            {
+                var floor = MapFloorRules.GetOrderedFloors(map)
+                    .FirstOrDefault(candidate => candidate.PrebuiltStructureLine?.IsComplete is true);
+                if (floor is null)
+                    continue;
+                var candidatePath = GetPrebuiltStructureAlgorithmPath(map, floor.Key);
+                if (File.Exists(candidatePath))
+                {
+                    algorithmPath = candidatePath;
+                    break;
+                }
+            }
+            if (algorithmPath is null)
+                continue;
+
+            await GeneratePrebuiltStructureLinesAsync(
+                mapClass, algorithmPath, cancellationToken: cancellationToken);
+        }
+    }
+
     public async Task<PrebuiltStructureBatchResult> GeneratePrebuiltStructureLinesAsync(
         string className,
         string algorithmPath,
@@ -219,7 +257,8 @@ public sealed partial class MapRepository
                     AlgorithmId = algorithm.AlgorithmId,
                     AlgorithmFileName = algorithmFileName,
                     AlgorithmSha256 = algorithm.Sha256,
-                    AlgorithmSchemaVersion = algorithm.SchemaVersion
+                    AlgorithmSchemaVersion = algorithm.SchemaVersion,
+                    EngineRevision = IdvaStructureLineEngine.CurrentRevision
                 };
                 var profile = MapFloorRules.GetFloorProfile(map, floor.Key);
                 if (profile is not null)
@@ -264,8 +303,7 @@ public sealed partial class MapRepository
         var lineSha = await ComputeFileSha256Async(lineSource, CancellationToken.None);
         if (!string.Equals(algorithm.AlgorithmId, asset.AlgorithmId, StringComparison.Ordinal)
             || !string.Equals(algorithm.Sha256, asset.AlgorithmSha256, StringComparison.OrdinalIgnoreCase)
-            || !string.Equals(lineSha, asset.Sha256, StringComparison.OrdinalIgnoreCase)
-            || !string.Equals(floor.RecognitionSha256, asset.SourceSha256, StringComparison.OrdinalIgnoreCase))
+            || !string.Equals(lineSha, asset.Sha256, StringComparison.OrdinalIgnoreCase))
         {
             floor.PrebuiltStructureLine = null;
             return;
@@ -278,19 +316,40 @@ public sealed partial class MapRepository
             floor.PrebuiltStructureLine = null;
             return;
         }
+        var sourceMatches = string.Equals(floor.RecognitionSha256, asset.SourceSha256,
+            StringComparison.OrdinalIgnoreCase);
+        var outputSource = lineSource;
+        if (!sourceMatches || !asset.IsCurrent)
+        {
+            // Recognition PNG bytes can change during import. Rebuild from the
+            // current recognition image so the line and source hash stay bound.
+            outputSource = Path.Combine(stagingDirectory, $"prebuilt-{floorKey}-rebuilt.png");
+            var recognitionPath = Path.Combine(stagingDirectory, GetFloorRecognitionFileName(floorKey));
+            engine.Execute(algorithm, recognitionPath, outputSource);
+            using var rebuilt = OpenCvSharp.Cv2.ImRead(outputSource, OpenCvSharp.ImreadModes.Grayscale);
+            if (rebuilt.Empty() || rebuilt.Width != floor.RecognitionWidth
+                || rebuilt.Height != floor.RecognitionHeight)
+            {
+                floor.PrebuiltStructureLine = null;
+                return;
+            }
+            asset.SourceSha256 = floor.RecognitionSha256;
+            asset.Sha256 = await ComputeFileSha256Async(outputSource, CancellationToken.None);
+            asset.EngineRevision = IdvaStructureLineEngine.CurrentRevision;
+        }
         const string algorithmFileName = "prebuilt-structure.idva";
         var lineFileName = $"prebuilt-{floorKey}.png";
         await File.WriteAllBytesAsync(
             Path.Combine(stagingDirectory, algorithmFileName),
             algorithm.PackageBytes);
-        await using (var input = File.OpenRead(lineSource))
+        await using (var input = File.OpenRead(outputSource))
         await using (var output = File.Create(Path.Combine(stagingDirectory, lineFileName)))
             await input.CopyToAsync(output);
         asset.FileName = lineFileName;
         asset.AlgorithmFileName = algorithmFileName;
         asset.Width = line.Width;
         asset.Height = line.Height;
-        asset.FileLength = new FileInfo(lineSource).Length;
+        asset.FileLength = new FileInfo(outputSource).Length;
     }
 
     private static async Task ReplaceFileAsync(

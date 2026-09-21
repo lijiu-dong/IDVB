@@ -2,24 +2,6 @@ namespace IDVBuff.Features.Maps;
 
 public sealed partial class SessionOrchestrator
 {
-    private static MapAlignmentSession CreateIndependentCandidateStructureSeed(
-        SideEntranceScanCandidate candidate)
-    {
-        var transform = MapFloorScaleSeedRules.CreateIndependentFloorSeed(
-            candidate.Map, candidate.FloorKey);
-        return new MapAlignmentSession
-        {
-            MapId = candidate.Map.Id,
-            MapUpdatedAt = candidate.Map.UpdatedAt,
-            FloorKey = candidate.FloorKey,
-            LockedTransform = transform,
-            BaselineGateScale = transform.ScaleX,
-            HasGatePairLock = false,
-            Mode = MapAlignmentTrackingMode.StructureMatched,
-            SideEntranceScanPriorConfidence = candidate.MatchScore
-        };
-    }
-
     private List<MapRecognitionChoice> BuildScanVerificationChoices(
         IReadOnlyList<(
             SideEntranceScanCandidate Candidate,
@@ -46,23 +28,14 @@ public sealed partial class SessionOrchestrator
                 IsReferenceOnly = false,
                 PreferredOrder = index,
                 EvidenceLabel =
-                    $"结构已验证 · Chamfer {rawChamfer} · "
+                    $"身份未确定 · 结构已验证 · 平均距离 {rawChamfer} · "
                     + $"边缘覆盖 {item.Candidate.StructureEdgeCoverage:P0} · "
-                    + $"模板相似度 {item.Candidate.MatchScore:P0}"
+                    + $"轮廓召回分 {item.Candidate.MatchScore:P0}"
             });
         }
 
-        referenceCandidates = candidates
-            .Where(candidate => candidate.Disposition !=
-                SideEntranceCandidateDisposition.Reliable)
-            .OrderBy(candidate => candidate.RejectionReason ==
-                SideEntranceRejectionReason.StructureRejected ? 1 : 0)
-            .ThenBy(candidate => double.IsFinite(candidate.GateSpatialResidualPixels)
-                ? candidate.GateSpatialResidualPixels
-                : 999d)
-            .ThenByDescending(candidate => candidate.MatchScore)
-            .Take(SideEntranceScanRules.MaximumReferenceCandidates)
-            .ToArray();
+        referenceCandidates = MapCandidatePresentationRules.SelectScanReferences(
+            candidates, SideEntranceScanRules.MaximumReferenceCandidates);
         for (var index = 0; index < referenceCandidates.Length; index++)
         {
             var candidate = referenceCandidates[index];
@@ -80,12 +53,10 @@ public sealed partial class SessionOrchestrator
                     EvidenceScore = candidate.MatchScore,
                     IsReferenceOnly = true,
                     PreferredOrder = index,
-                    EvidenceLabel = (candidate.RejectionReason == SideEntranceRejectionReason.StructureRejected
-                            ? "结构验证未通过 · "
-                            : requireStrictStructureRegistration
-                            ? "未验证（优先候选） · "
-                            : "扫描阶段未验证 · ")
-                        + $"模板相似度 {candidate.MatchScore:P0} · "
+                    EvidenceLabel = (candidate.IdentityEvidence.State == ScanIdentityState.Excluded
+                            ? "身份未确定 · 当前变换存在结构冲突 · "
+                            : "身份未确定 · 尚未完成验证 · ")
+                        + $"轮廓召回分 {candidate.MatchScore:P0} · "
                         + candidate.RejectionDetail
                 });
             }
@@ -148,31 +119,6 @@ public sealed partial class SessionOrchestrator
                 ["floor"] = candidate.FloorKey,
                 ["score"] = candidate.MatchScore,
                 ["index"] = candidateIndex
-            });
-    }
-
-    private void LogScanVerificationSeedCreated(
-        SideEntranceScanCandidate candidate,
-        int candidateIndex,
-        bool success,
-        MapAlignmentSession? seed,
-        string seedReason)
-    {
-        _logCollector.Append(
-            MapLogCategory.StructureRegistration,
-            success ? MapLogLevel.Info : MapLogLevel.Warning,
-            success
-                ? "扫描验证种子已创建"
-                : "扫描验证种子创建失败",
-            details: new()
-            {
-                ["scan_seed_created"] = success,
-                ["map"] = candidate.Map.DisplayName,
-                ["mapId"] = candidate.Map.Id,
-                ["floor"] = candidate.FloorKey,
-                ["index"] = candidateIndex,
-                ["scale"] = seed?.LockedTransform.ScaleX,
-                ["failureReason"] = success ? null : seedReason
             });
     }
 
