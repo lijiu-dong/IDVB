@@ -55,7 +55,6 @@ public sealed partial class MapStatusPage : UserControl
                 (int)Math.Round(frame.ClientBounds.Width),
                 (int)Math.Round(frame.ClientBounds.Height),
                 DwrGameWindowCaptureService.GetWindowDpi(frame.WindowHandle));
-            MapViewportCalibrationCompletedCount++;
         }
         Refresh();
     }
@@ -148,6 +147,10 @@ public sealed partial class MapStatusPage : UserControl
                 Content = exception.Message,
                 CloseButtonText = "知道了"
             }.ShowAsync();
+        }
+        finally
+        {
+            Refresh();
         }
     }
 

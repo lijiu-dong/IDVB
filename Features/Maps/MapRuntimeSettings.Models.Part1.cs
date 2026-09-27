@@ -4,6 +4,22 @@ namespace IDVBuff.Features.Maps;
 /// <summary>Persisted runtime configuration for the 解锁地图 status module.</summary>
 public sealed partial class MapRuntimeSettings
 {
+    public void ValidateInputBindings()
+    {
+        MapInputBinding[] bindings =
+        [
+            QuickScanBinding, OverlayToggleBinding, ManualRecognitionBinding,
+            GameMapToggleBinding, ControlPanelToggleBinding, SwitchFloorBinding,
+            SaveMapCacheBinding, RestMapDisplayBinding, MatchStateToggleBinding
+        ];
+        for (var i = 0; i < bindings.Length; i++)
+        {
+            if (bindings[i] is not { IsConfigured: true }) continue;
+            for (var j = i + 1; j < bindings.Length; j++)
+                if (bindings[i].Equals(bindings[j]))
+                    throw new InvalidOperationException($"全局操作不能重复使用 {bindings[i].DisplayName}。");
+        }
+    }
 
     public void Normalize()
     {
@@ -53,6 +69,7 @@ public sealed partial class MapRuntimeSettings
         };
         SaveMapCacheBinding ??= new MapInputBinding();
         RestMapDisplayBinding ??= new MapInputBinding();
+        MatchStateToggleBinding ??= new MapInputBinding();
         RecognitionTuning ??= new MapRecognitionTuning();
         StructureRegistrationTuning ??= new MapStructureRegistrationTuning();
         SessionTuning ??= new MapSessionTuning();
@@ -67,6 +84,7 @@ public sealed partial class MapRuntimeSettings
         NormalizeBinding(TraditionalWindowSwitchFloorBinding);
         NormalizeBinding(SaveMapCacheBinding);
         NormalizeBinding(RestMapDisplayBinding);
+        NormalizeBinding(MatchStateToggleBinding);
         if (QuickScanBinding.IsConfigured
             && QuickScanBinding.Equals(OverlayToggleBinding))
         {
@@ -122,6 +140,18 @@ public sealed partial class MapRuntimeSettings
                 || RestMapDisplayBinding.Equals(SaveMapCacheBinding)))
         {
             RestMapDisplayBinding = new MapInputBinding();
+        }
+        if (MatchStateToggleBinding.IsConfigured
+            && (MatchStateToggleBinding.Equals(QuickScanBinding)
+                || MatchStateToggleBinding.Equals(OverlayToggleBinding)
+                || MatchStateToggleBinding.Equals(ManualRecognitionBinding)
+                || MatchStateToggleBinding.Equals(GameMapToggleBinding)
+                || MatchStateToggleBinding.Equals(ControlPanelToggleBinding)
+                || MatchStateToggleBinding.Equals(SwitchFloorBinding)
+                || MatchStateToggleBinding.Equals(SaveMapCacheBinding)
+                || MatchStateToggleBinding.Equals(RestMapDisplayBinding)))
+        {
+            MatchStateToggleBinding = new MapInputBinding();
         }
         RecognitionTuning.Normalize();
         RecognitionTuning.ForceBestRecognitionResult = false;

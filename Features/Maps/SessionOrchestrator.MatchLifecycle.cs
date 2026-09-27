@@ -87,6 +87,7 @@ public sealed partial class SessionOrchestrator
 
     private void CancelMatchOperations()
     {
+        CancelMapObservation();
         EndAdaptiveMapOpen("match lifecycle changed");
         CancelOrbTracking("match lifecycle changed");
         InvalidateActiveMapOpenOperation("match lifecycle changed");
@@ -138,6 +139,7 @@ public sealed partial class SessionOrchestrator
 
     private async Task DrainMatchOperationsAsync()
     {
+        await _observationTask;
         await _nativeMiniMapCaptureTask;
         await DrainOrbTrackingAsync();
         await _scanGate.WaitAsync();
@@ -152,6 +154,11 @@ public sealed partial class SessionOrchestrator
     /// </summary>
     private void UnlockMapForRescan()
     {
+        _hasCompletedQuickScanAlignment = false;
+        CancelMapObservation(clearPreview: true);
+        _overlay.ClearMap();
+        _overlayStatus.Clear();
+        RefreshMiniMapForCurrentFloor();
         // 再次快捷扫描是显式请求重新识别：作废尚未消费的后台扫描结果。
         ClearPendingBackgroundScan();
         _lowStructureRecoveryCursor.Reset();
@@ -208,6 +215,7 @@ public sealed partial class SessionOrchestrator
 
     private void ResetMatchTransientState(bool resetAutomaticCacheSamples)
     {
+        CancelMapObservation(clearPreview: true);
         // 对局结束：作废尚未消费的后台扫描结果，下一局重新开始。
         ClearPendingBackgroundScan();
         ClearOptimisticPresentation();
@@ -297,8 +305,9 @@ public sealed partial class SessionOrchestrator
                 $"进入对局 · version={match.Version} · class={match.MapClass}");
             StateChanged?.Invoke(this, EventArgs.Empty);
 
-            // 在进入对局时静默预热捕获会话，避免首次开图或扫描时冷启动 D3D11/WGC
-            _ = Task.Run(() => _captureSvc.PrepareViewportCapture());
+            // Native capture is acquired by its actual consumers. Starting a WGC
+            // session here records every game frame even when heading is disabled
+            // and recognition is using GDI, until the match is reset.
         }
         finally
         {

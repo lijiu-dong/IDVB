@@ -1,6 +1,7 @@
 // IDVB Remaster — Session Orchestrator（新架构唯一入口）
 using IDVBuff.Core.Contracts;
 using IDVBuff.Core.Models;
+using IDVBuff.Features.Notifications;
 using IDVBuff.Pipeline;
 using Microsoft.UI.Dispatching;
 using OpenCvSharp;
@@ -112,11 +113,15 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
         _gameMapToggleState.SetOpenForExternalController(isOpen);
         if (!isOpen)
         {
+            CancelMapObservation();
+            CancelQuickScan();
             EndAdaptiveMapOpen("external game map closed");
             CancelOrbTracking("external game map closed");
             _overlay.ClearMap();
             RefreshMiniMapForCurrentFloor();
         }
+        else if (CanObserveMap)
+            StartMapObservation();
         StateChanged?.Invoke(this, EventArgs.Empty);
     }
 
@@ -265,33 +270,105 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
             });
     }
 
-    public void ToggleControlPanel()
+    private bool _controlPanelToggleInProgress;
+
+    public void ToggleControlPanel() => _ = ObserveControlPanelToggleAsync();
+
+    private async Task ObserveControlPanelToggleAsync()
     {
-        if (_disposed || !_settings!.IsEnabled || _controlPanel is null) return;
+        const string action = "control-panel-toggle";
+        LogInputHandlerOutcome(action, "handler-started");
+        if (_controlPanelToggleInProgress)
+        {
+            LogInputHandlerOutcome(action, "handler-rejected:operation-in-progress");
+            return;
+        }
+        _controlPanelToggleInProgress = true;
+        try
+        {
+            var outcome = await ToggleControlPanelAsync();
+            LogInputHandlerOutcome(action, outcome);
+        }
+        catch (Exception exception)
+        {
+            _statusMessage = $"外置控件层显示失败：{exception.Message}";
+            LogInputHandlerOutcome(action, "handler-failed", exception);
+        }
+        finally
+        {
+            _controlPanelToggleInProgress = false;
+        }
+    }
+
+    private async Task<string> ToggleControlPanelAsync()
+    {
+        if (_disposed) return "handler-rejected:disposed";
+        if (_settings is not { IsEnabled: true }) return "handler-rejected:disabled";
+        if (_controlPanel is null) return "handler-rejected:panel-unavailable";
         if (_controlPanel.IsVisible)
         {
             _controlPanel.Hide();
             _statusMessage = "外置控件层已隐藏。";
             StateChanged?.Invoke(this, EventArgs.Empty);
-            return;
+            return "handler-completed:hidden";
         }
-        if (_manualSelectionActive) return;
-        _ = ToggleControlPanelAsync();
+        if (_manualSelectionActive) return "handler-rejected:map-selection-active";
+        if (!_captureSvc.TryGetForegroundClientBounds(
+            out var clientBoundsObj, out var hwnd, out var reason))
+            return $"handler-rejected:foreground-unavailable:{reason}";
+        if (clientBoundsObj is not MapScreenRect gameBounds)
+            return "handler-rejected:invalid-client-bounds";
+        await _controlPanel.ShowAsync(gameBounds, hwnd, _matchSession.Snapshot);
+        if (_disposed || _settings is not { IsEnabled: true } || _manualSelectionActive)
+        {
+            _controlPanel.Hide();
+            return "handler-rejected:runtime-changed-during-show";
+        }
+        return _controlPanel.IsVisible
+            ? "handler-completed:shown"
+            : "handler-rejected:panel-not-visible";
     }
 
-    private async Task ToggleControlPanelAsync()
+    public async Task ToggleMatchStateAsync()
     {
-        if (_controlPanel is null) return;
-        try
+        if (_disposed || !_settings!.IsEnabled || _manualSelectionActive) return;
+        if (_captureSvc.TryGetForegroundClientBounds(out var clientBoundsObj, out _, out _) &&
+            clientBoundsObj is MapScreenRect gameBounds)
         {
-            if (!_captureSvc.TryGetForegroundClientBounds(
-                out var clientBoundsObj, out var hwnd, out _))
-                return;
-            if (clientBoundsObj is not MapScreenRect gameBounds)
-                return;
-            await _controlPanel.ShowAsync(gameBounds, hwnd, _matchSession.Snapshot);
+            OverlayNotificationCenter.UpdateGameBounds(gameBounds);
         }
-        catch { /* 控制面板显示失败不阻塞 */ }
+        if (_matchSession.Snapshot.IsStarted)
+        {
+            if (_controlPanel?.IsVisible == true)
+                _controlPanel.Hide();
+            await EndMatchAsync(saveAutomaticMapCache: false);
+            if (!_headless)
+            {
+                OverlayNotificationCenter.Warning("已结束对局");
+            }
+        }
+        else
+        {
+            if (_controlPanel?.IsVisible == true)
+                _controlPanel.Hide();
+            var classes = await GetMapClassesAsync();
+            var mapClass = MapRuntimeSettingsRules.ResolveMapClass(classes, _settings.LastSelectedMapClass);
+            if (string.IsNullOrWhiteSpace(mapClass))
+            {
+                _statusMessage = "地图库中还没有可用的地图模式。";
+                StateChanged?.Invoke(this, EventArgs.Empty);
+                return;
+            }
+            if (!string.Equals(_settings.LastSelectedMapClass, mapClass, StringComparison.Ordinal))
+            {
+                await SetLastSelectedMapClassAsync(mapClass);
+            }
+            await BeginMatchAsync(mapClass);
+            if (!_headless)
+            {
+                OverlayNotificationCenter.Notice(!string.IsNullOrWhiteSpace(mapClass) ? $"已进入对局 · {mapClass}" : "已进入对局");
+            }
+        }
     }
 
     public bool TryCaptureCalibrationFrame(

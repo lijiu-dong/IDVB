@@ -42,7 +42,6 @@ public sealed partial class MapGlobalInputService : IDisposable
     private static readonly IntPtr ReleaseInputMarker =
         new(InputInjectionMarkers.HostGeneratedInput);
     private const int KeyboardPollIntervalMilliseconds = 15;
-    private const long DuplicateKeyDownSuppressionMilliseconds = 120;
     private const uint CapsLockVirtualKey = 0x14;
 
     private readonly DispatcherQueue _dispatcher;
@@ -50,8 +49,7 @@ public sealed partial class MapGlobalInputService : IDisposable
     private readonly LowLevelMouseProc _mouseProc;
     private readonly object _keyboardStateLock = new();
     private readonly object _hookLifecycleLock = new();
-    private readonly HashSet<uint> _pressedKeys = [];
-    private readonly Dictionary<uint, long> _lastKeyDownAt = [];
+    private readonly KeyboardInputEdges _keyboardEdges = new();
     private IntPtr _keyboardHook;
     private IntPtr _mouseHook;
     private Thread? _hookThread;
@@ -67,6 +65,7 @@ public sealed partial class MapGlobalInputService : IDisposable
     private MapInputBinding _switchFloor = new();
     private MapInputBinding _saveMapCache = new();
     private MapInputBinding _restMapDisplay = new();
+    private MapInputBinding _matchStateToggle = new();
     private readonly Dictionary<string, Dictionary<string, MapInputBinding>> _pluginBindings =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly object _mouseWheelDispatchLock = new();
@@ -89,6 +88,7 @@ public sealed partial class MapGlobalInputService : IDisposable
     public event EventHandler<MapInputInvokedEventArgs>? SwitchFloorInvoked;
     public event EventHandler<MapInputInvokedEventArgs>? SaveMapCacheInvoked;
     public event EventHandler<MapInputInvokedEventArgs>? RestMapDisplayInvoked;
+    public event EventHandler<MapInputInvokedEventArgs>? MatchStateToggleInvoked;
     public event EventHandler<MouseWheelInputEventArgs>? MouseWheelScrolled;
     public event EventHandler<PluginInputInvokedEventArgs>? PluginInputInvoked;
 
@@ -100,9 +100,11 @@ public sealed partial class MapGlobalInputService : IDisposable
         MapInputBinding controlPanelToggle,
         MapInputBinding switchFloor,
         MapInputBinding saveMapCache,
-        MapInputBinding restMapDisplay)
+        MapInputBinding restMapDisplay,
+        MapInputBinding? matchStateToggle = null)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        var safeMatchStateToggle = matchStateToggle ?? new MapInputBinding();
         EnsureDistinctBindings(
             quickScan,
             overlayToggle,
@@ -111,7 +113,8 @@ public sealed partial class MapGlobalInputService : IDisposable
             controlPanelToggle,
             switchFloor,
             saveMapCache,
-            restMapDisplay);
+            restMapDisplay,
+            safeMatchStateToggle);
         UnregisterBindings();
         _quickScan = quickScan.Clone();
         _overlayToggle = overlayToggle.Clone();
@@ -121,6 +124,7 @@ public sealed partial class MapGlobalInputService : IDisposable
         _switchFloor = switchFloor.Clone();
         _saveMapCache = saveMapCache.Clone();
         _restMapDisplay = restMapDisplay.Clone();
+        _matchStateToggle = safeMatchStateToggle.Clone();
         try
         {
             var needsKeyboardHook = true;
@@ -149,6 +153,7 @@ public sealed partial class MapGlobalInputService : IDisposable
         _switchFloor = new MapInputBinding();
         _saveMapCache = new MapInputBinding();
         _restMapDisplay = new MapInputBinding();
+        _matchStateToggle = new MapInputBinding();
         RestartMonitoringIfNeeded();
     }
 
@@ -156,6 +161,8 @@ public sealed partial class MapGlobalInputService : IDisposable
     {
         if (code >= 0)
         {
+            var started = Stopwatch.GetTimestamp();
+            var arrival = unchecked((uint)Environment.TickCount);
             var keyboard = Marshal.PtrToStructure<KbdLlHookStruct>(lParam);
             // ReleaseAllPressedInputs uses SendInput. Do not let those synthetic
             // key-up messages clear the physical key state: the physical key may
@@ -169,6 +176,13 @@ public sealed partial class MapGlobalInputService : IDisposable
                 else if (message is WmKeyUp or WmSysKeyUp)
                     HandleKeyboardState(keyboard.VirtualKey, isDown: false);
             }
+            else if ((uint)wParam.ToInt64() is WmKeyUp or WmSysKeyUp)
+            {
+                lock (_keyboardStateLock)
+                    _keyboardEdges.IgnoreHostRelease(keyboard.VirtualKey);
+            }
+            if ((keyboard.Flags & LlkhfInjected) == 0)
+                _keyboardLatency.Record(keyboard.Time, arrival, Stopwatch.GetTimestamp() - started);
         }
         return CallNextHookEx(_keyboardHook, code, wParam, lParam);
     }
@@ -236,6 +250,7 @@ public sealed partial class MapGlobalInputService : IDisposable
             InitializePressedKey(_switchFloor);
             InitializePressedKey(_saveMapCache);
             InitializePressedKey(_restMapDisplay);
+            InitializePressedKey(_matchStateToggle);
             foreach (var binding in _pluginBindings.Values.SelectMany(bindings => bindings.Values))
                 InitializePressedKey(binding);
             var generation = ++_keyboardPollGeneration;
@@ -252,7 +267,7 @@ public sealed partial class MapGlobalInputService : IDisposable
         if (binding.Kind == MapInputBindingKind.Keyboard
             && IsKeyDown(binding.VirtualKey))
         {
-            _pressedKeys.Add(binding.VirtualKey);
+            _keyboardEdges.InitializePressed(binding.VirtualKey);
         }
     }
 
@@ -279,7 +294,8 @@ public sealed partial class MapGlobalInputService : IDisposable
                 _controlPanelToggle,
                 _switchFloor,
                 _saveMapCache,
-                _restMapDisplay
+                _restMapDisplay,
+                _matchStateToggle
             }
             .Concat(_pluginBindings.Values.SelectMany(bindings => bindings.Values))
             .Where(binding => binding.Kind == MapInputBindingKind.Keyboard)
@@ -290,7 +306,7 @@ public sealed partial class MapGlobalInputService : IDisposable
         }
 
         foreach (var key in keys)
-            HandleKeyboardState(key, IsKeyDown(key), generation);
+            HandleKeyboardState(key, isDown: false, expectedGeneration: generation);
     }
 
     private void HandleKeyboardState(uint key, bool isDown, int? expectedGeneration = null)
@@ -303,6 +319,7 @@ public sealed partial class MapGlobalInputService : IDisposable
         var invokeSwitchFloor = false;
         var invokeSaveMapCache = false;
         var invokeRestMapDisplay = false;
+        var invokeMatchStateToggle = false;
         var invokeAlt = false;
         List<(string PluginId, string BindingKey, MapInputBinding Binding)>? pluginMatches = null;
         lock (_keyboardStateLock)
@@ -312,9 +329,14 @@ public sealed partial class MapGlobalInputService : IDisposable
             {
                 return;
             }
+            // Sample under the same lock as hook transitions. A snapshot read
+            // before waiting for this lock must not overwrite a newer edge.
+            if (expectedGeneration.HasValue)
+                isDown = IsKeyDown(key);
+            if (!_keyboardEdges.Observe(key, isDown, expectedGeneration.HasValue, Environment.TickCount64))
+                return;
             if (!isDown)
             {
-                _pressedKeys.Remove(key);
                 foreach (var (pluginId, bindings) in _pluginBindings)
                 {
                     foreach (var (bindingKey, binding) in bindings)
@@ -328,16 +350,6 @@ public sealed partial class MapGlobalInputService : IDisposable
                 }
                 goto Dispatch;
             }
-            if (!_pressedKeys.Add(key))
-                return;
-
-            var now = Environment.TickCount64;
-            if (_lastKeyDownAt.TryGetValue(key, out var last)
-                && now - last < DuplicateKeyDownSuppressionMilliseconds)
-            {
-                return;
-            }
-            _lastKeyDownAt[key] = now;
             invokeQuickScan = _quickScan.Kind == MapInputBindingKind.Keyboard
                 && _quickScan.VirtualKey == key
                 && IsKeyboardBindingActive(_quickScan);
@@ -363,6 +375,9 @@ public sealed partial class MapGlobalInputService : IDisposable
             invokeRestMapDisplay = _restMapDisplay.Kind == MapInputBindingKind.Keyboard
                 && _restMapDisplay.VirtualKey == key
                 && IsKeyboardBindingActive(_restMapDisplay);
+            invokeMatchStateToggle = _matchStateToggle.Kind == MapInputBindingKind.Keyboard
+                && _matchStateToggle.VirtualKey == key
+                && IsKeyboardBindingActive(_matchStateToggle);
             invokeAlt = key is 0x12 or 0xA4 or 0xA5;
 
             foreach (var (pluginId, bindings) in _pluginBindings)
@@ -408,6 +423,9 @@ public sealed partial class MapGlobalInputService : IDisposable
         if (invokeRestMapDisplay)
             DispatchInput(invoked, "keyboard", _restMapDisplay.DisplayName,
                 "rest-map-display", () => RestMapDisplayInvoked?.Invoke(this, invoked));
+        if (invokeMatchStateToggle)
+            DispatchInput(invoked, "keyboard", _matchStateToggle.DisplayName,
+                "match-state-toggle", () => MatchStateToggleInvoked?.Invoke(this, invoked));
         if (invokeAlt)
             DispatchInput(invoked, "keyboard", "Alt", "alt",
                 () => AltInvoked?.Invoke(this, invoked));

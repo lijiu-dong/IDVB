@@ -26,6 +26,8 @@ public sealed partial class SessionOrchestrator
             return;
         }
 
+        CancelMapObservation(clearPreview: true);
+
         var scanGeneration = Interlocked.Increment(ref _scanRequestGeneration);
         var scanScope = BeginQuickScanCancellationScope();
         var scanCancellation = scanScope.Token;
@@ -85,10 +87,14 @@ public sealed partial class SessionOrchestrator
                 _overlay.Hide();
             try
             {
+                _hasCompletedQuickScanAlignment = false;
                 await RunRecognitionPipelineAsync();
-                scanCompleted = backgroundScan
-                    ? IsBackgroundScanCompleted
-                    : _hasCompletedQuickScanAlignment;
+                scanCompleted = !scanCancellation.IsCancellationRequested
+                    && IsCurrentMatchOperation(operationMatch)
+                    && (backgroundScan
+                    ? _backgroundScanStatus == BackgroundScanStatus.CompletedIdentified
+                    : _hasCompletedQuickScanAlignment
+                        && _lastRecognition?.Result.OverlayTransform is not null);
             }
             finally
             {
@@ -113,7 +119,10 @@ public sealed partial class SessionOrchestrator
                 scanExecution.Dispose();
                 FinishScanExecution(scanExecution);
             }
-            finally { CompleteQuickScanCancellationScope(scanScope); }
+            finally
+            {
+                CompleteQuickScanCancellationScope(scanScope);
+            }
         }
     }
 

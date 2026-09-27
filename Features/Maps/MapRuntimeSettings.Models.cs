@@ -10,6 +10,8 @@ public sealed partial class MapRuntimeSettings
 
     public int SchemaVersion { get; set; } = CurrentSchemaVersion;
     public bool IsEnabled { get; set; }
+    /// <summary>Repeatedly observe an open map until its identity is confirmed; opt-in only.</summary>
+    public bool ContinuousObservationEnabled { get; set; }
     public ScanPerformanceMode ScanPerformanceMode { get; set; } = ScanPerformanceMode.Balanced;
     public ScanUncertainAction ScanUncertainAction { get; set; } = ScanUncertainAction.ShowCandidates;
     /// <summary>首次扫描策略：默认双门对齐，可切换为侧门扫描。</summary>
@@ -97,6 +99,7 @@ public sealed partial class MapRuntimeSettings
     };
     public MapInputBinding SaveMapCacheBinding { get; set; } = new();
     public MapInputBinding RestMapDisplayBinding { get; set; } = new();
+    public MapInputBinding MatchStateToggleBinding { get; set; } = new();
     public MapRecognitionTuning RecognitionTuning { get; set; } = new();
     public MapStructureRegistrationTuning StructureRegistrationTuning { get; set; } = new();
     public MapSessionTuning SessionTuning { get; set; } = new();
@@ -127,6 +130,7 @@ public sealed partial class MapRuntimeSettings
     public static MapRuntimeSettings CreateDefault() => new()
     {
         IsEnabled = false,
+        ContinuousObservationEnabled = false,
         FirstScanStrategy = FirstScanStrategy.SideEntrance,
         BackgroundScanEnabled = false,
         SilentScanEnabled = false,
@@ -180,6 +184,7 @@ public sealed partial class MapRuntimeSettings
         },
         SaveMapCacheBinding = new MapInputBinding(),
         RestMapDisplayBinding = new MapInputBinding(),
+        MatchStateToggleBinding = new MapInputBinding(),
         RecognitionTuning = new MapRecognitionTuning
         {
             GateTemplateThreshold = 0.72d,
@@ -306,6 +311,7 @@ public sealed partial class MapRuntimeSettings
     {
         SchemaVersion = SchemaVersion,
         IsEnabled = IsEnabled,
+        ContinuousObservationEnabled = ContinuousObservationEnabled,
         ScanPerformanceMode = ScanPerformanceMode,
         ScanUncertainAction = ScanUncertainAction,
         FirstScanStrategy = FirstScanStrategy,
@@ -342,6 +348,7 @@ public sealed partial class MapRuntimeSettings
             },
         SaveMapCacheBinding = SaveMapCacheBinding?.Clone() ?? new MapInputBinding(),
         RestMapDisplayBinding = RestMapDisplayBinding?.Clone() ?? new MapInputBinding(),
+        MatchStateToggleBinding = MatchStateToggleBinding?.Clone() ?? new MapInputBinding(),
         AllowAutomaticMapCache = AllowAutomaticMapCache,
         RecognitionTuning = RecognitionTuning?.Clone() ?? new MapRecognitionTuning(),
         StructureRegistrationTuning =

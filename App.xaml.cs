@@ -50,6 +50,7 @@ namespace IDVBuff
             OutputLog.Initialize(
                 captureFirstChanceExceptions: !isCliLaunch
                     && (System.Diagnostics.Debugger.IsAttached || AppDataPaths.IsTestBuild));
+            SavedDiagnosticDataRetention.Start();
             WriteStartupTrace("Output logging initialized.");
             OfficialFeedbackService.TokenProvider = () => Features.Accounts.AccountSession.PublishToken;
             OfficialFeedbackService.ClientVersionProvider = () => BuildVersionInfo.BuildVersion;
@@ -410,7 +411,9 @@ namespace IDVBuff
             }
 
             OutputLog.Write("ERROR", "WINUI", "Unhandled UI exception.", args.Exception);
-            args.Handled = true;
+            // No recovery has taken place. Let WinUI terminate rather than
+            // continuing with detached input hooks and inconsistent UI state.
+            args.Handled = false;
         }
 
         private async Task ShowStartupFailureAsync(Exception exception)
@@ -418,7 +421,7 @@ namespace IDVBuff
             if (window?.Content is not FrameworkElement root || root.XamlRoot is null)
                 return;
 
-            var logPath = Path.Combine(AppDataPaths.RootDirectory, "Logs", "startup.log");
+            var logPath = StartupLogPath;
             var dialog = new ContentDialog
             {
                 XamlRoot = root.XamlRoot,
@@ -444,7 +447,7 @@ namespace IDVBuff
 
             try
             {
-                var logPath = Path.Combine(AppDataPaths.RootDirectory, "Logs", "startup.log");
+                var logPath = StartupLogPath;
                 var content = new StackPanel
                 {
                     MaxWidth = 760,

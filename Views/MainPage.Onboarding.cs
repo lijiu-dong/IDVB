@@ -1,5 +1,6 @@
 using IDVBuff.Features.Maps;
 using IDVBuff.Helps;
+using IDVBuff.Modules;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.System;
 
@@ -72,22 +73,43 @@ public sealed partial class MainPage
     /// <summary>Runs after the user accepts the first-run recommended configuration.</summary>
     public async Task ShowRecommendedConfigurationGuideAsync()
     {
-        NavigateTo("map-status", NavigationItems.FirstOrDefault(entry => entry.ModuleId == "map-status"));
-        await Task.Delay(50);
-        if (ModuleContentHost.Content is not MapStatusPage statusPage)
-            return;
+        _onboardingNavigationLocked = true;
+        SetNavigationCompact(false);
+        foreach (var entry in NavigationItems)
+            ExpandOnboardingNavigation(entry);
 
-        var guide = new EmphasisGuide(EmphasisGuideHost);
-        await guide.ShowAsync(
-        [
-            CreateBindingStep("绑定游戏地图开关", "请先检查你游戏内打开地图的按键是哪个，然后在这里绑定一样的按键。千万不要按 ESC 或者用鼠标关闭地图，必须通过这个按键来关闭地图。", statusPage, MapRuntimeBindingTarget.GameMapToggle, "游戏地图开关", "game-map-toggle.png"),
-            CreateBindingStep("绑定外置控件层", "在进入战局后，按下此按键打开控件菜单。请在选择好本局使用的地图后，点击进入对局。\n\n在结束对局后，同样需要按下此按键打开控件菜单，点击结束对局。", statusPage, MapRuntimeBindingTarget.ControlPanelToggle, "外置控件层", "control-panel-start.png", "control-panel-end.png"),
-            new EmphasisGuideStep("绑定快捷扫描", string.Empty, statusPage.GetBindingControl(MapRuntimeBindingTarget.QuickScan), CheckAsync: _ => RequireBindingAsync(MapRuntimeBindingTarget.QuickScan, "快捷扫描"), DescriptionSegmentsFactory: CreateQuickScanGuideDescription, ImageUris: GuideImages("quick-scan-start.png", "quick-scan-complete.png", "quick-scan-select-map.png", "quick-scan-map-open.png")),
-            CreateBindingStep("绑定切换楼层", "当你进入其他楼层后，通过此按键切换目标楼层。这同时也会切换小地图显示的楼层。", statusPage, MapRuntimeBindingTarget.SwitchFloor, "切换楼层", "switch-floor.png"),
-            CreateBindingStep("绑定保存地图缓存", "当你认为对齐结果表现得非常好时，按下此按键可以复用，这也许能减少后续对齐需要消耗的时间。", statusPage, MapRuntimeBindingTarget.SaveMapCache, "保存地图缓存", "save-map-cache.png"),
-            CreateBindingStep("绑定重置按钮", "出现以下情况的时候按下此键。\n\n• 已经关闭地图，但是覆盖层仍然显示\n• 成功对齐后，连续多次失败\n• 对齐效果不理想 / 有重影 / 存在偏移\n• 已经进入对局状态且通过扫描锁定了地图，但是打开游戏内地图不触发对齐\n\n按下此键之前，请先关闭游戏内的地图。", statusPage, MapRuntimeBindingTarget.RestMapDisplay, "重置对齐", "reset-alignment.png")
-        ]);
-        await ShowMapImportAndActivationGuideAsync();
+        try
+        {
+            NavigateTo("map-status", NavigationItems.FirstOrDefault(entry => entry.ModuleId == "map-status"));
+            await Task.Delay(50);
+            if (ModuleContentHost.Content is not MapStatusPage statusPage)
+                return;
+
+            var guide = new EmphasisGuide(EmphasisGuideHost);
+            await guide.ShowAsync(
+            [
+                CreateBindingStep("绑定游戏地图开关", "请先检查你游戏内打开地图的按键是哪个，然后在这里绑定一样的按键。千万不要按 ESC 或者用鼠标关闭地图，必须通过这个按键来关闭地图。", statusPage, MapRuntimeBindingTarget.GameMapToggle, "游戏地图开关", "game-map-toggle.png"),
+                CreateBindingStep("绑定外置控件层", "在进入战局后，按下此按键打开控件菜单。请在选择好本局使用的地图后，点击进入对局。\n\n在结束对局后，同样需要按下此按键打开控件菜单，点击结束对局。", statusPage, MapRuntimeBindingTarget.ControlPanelToggle, "外置控件层", "control-panel-start.png", "control-panel-end.png"),
+                new EmphasisGuideStep("绑定快捷扫描", string.Empty, statusPage.GetBindingControl(MapRuntimeBindingTarget.QuickScan), CheckAsync: _ => RequireBindingAsync(MapRuntimeBindingTarget.QuickScan, "快捷扫描"), DescriptionSegmentsFactory: CreateQuickScanGuideDescription, ImageUris: GuideImages("quick-scan-start.png", "quick-scan-complete.png", "quick-scan-select-map.png", "quick-scan-map-open.png")),
+            ]);
+            await ShowMapImportAndActivationGuideAsync();
+        }
+        finally
+        {
+            _onboardingNavigationLocked = false;
+        }
+    }
+
+    private void ExpandOnboardingNavigation(NavigationEntry entry)
+    {
+        if (entry.Children.Count > 0 && !entry.Node.IsExpanded)
+        {
+            entry.Node.ToggleExpanded();
+            AnimateNavigationExpansion(entry);
+        }
+
+        foreach (var child in entry.Children)
+            ExpandOnboardingNavigation(child);
     }
 
     private async Task ShowMapImportAndActivationGuideAsync()
@@ -129,7 +151,6 @@ public sealed partial class MainPage
 
     private async Task ShowPreMatchVideoGuidesAsync(MapStatusPage statusPage)
     {
-        var calibrationCountBeforeGuide = statusPage.MapViewportCalibrationCompletedCount;
         var calibrationVideoOpened = false;
         var startMatchVideoOpened = false;
         var inGameVideoOpened = false;
@@ -139,11 +160,9 @@ public sealed partial class MainPage
         [
             new EmphasisGuideStep(
                 "校准显示区域",
-                "请点击“校准地图区域”，按照视频教程完成一次完整地图画布的框选。完成校准后，点击“观看视频教程”，再点击检查。",
+                "请点击“校准地图区域”，完成一次完整地图画布的框选；如果已经校准并保存，可以直接继续。点击“观看视频教程”后，再点击检查。",
                 statusPage.GetMapViewportCalibrationControl(),
                 CheckAsync: _ => RequireCalibrationAndVideoAsync(
-                    statusPage,
-                    calibrationCountBeforeGuide,
                     calibrationVideoOpened),
                 EnterAsync: _ => BringCalibrationControlIntoViewAsync(statusPage),
                 TutorialVideoUri: TutorialVideoUri("vid1.mp4"),
@@ -218,16 +237,14 @@ public sealed partial class MainPage
             : EmphasisGuideCheckResult.TryAgain("请先点击“观看视频教程”并打开教程，再点击检查。"));
 
     private static Task<EmphasisGuideCheckResult> RequireCalibrationAndVideoAsync(
-        MapStatusPage page,
-        long calibrationCountBeforeGuide,
         bool videoWasOpened)
     {
         if (!videoWasOpened)
             return Task.FromResult(EmphasisGuideCheckResult.TryAgain("请先点击“观看视频教程”并打开教程。"));
 
-        return Task.FromResult(page.MapViewportCalibrationCompletedCount > calibrationCountBeforeGuide
+        return Task.FromResult(App.Session.Settings.IsMapViewportCalibrated
             ? EmphasisGuideCheckResult.Passed
-            : EmphasisGuideCheckResult.TryAgain("请在本次引导中完成一次“校准地图区域”后再检查。"));
+            : EmphasisGuideCheckResult.TryAgain("请先完成并保存“校准地图区域”，再点击检查。"));
     }
 
     private static async Task BringCalibrationControlIntoViewAsync(MapStatusPage page)

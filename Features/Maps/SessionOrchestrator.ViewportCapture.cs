@@ -49,7 +49,9 @@ public sealed partial class SessionOrchestrator
         int lowStructureReadinessFrameCount = 3,
         bool prepareNativeStructure = false,
         bool prepareVpsg3Structure = false,
-        AutoFloorCapture? autoFloor = null)
+        AutoFloorCapture? autoFloor = null,
+        bool allowPartialMap = false,
+        Func<NormalizedRectangle, IDisposable>? suspendOverlayForCapture = null)
     {
         var sessionTuning = _settings!.SessionTuning;
         if (_captureSvc.TryGetForegroundClientBounds(
@@ -125,6 +127,7 @@ public sealed partial class SessionOrchestrator
         {
             while (!_disposed
                 && !cancellationToken.IsCancellationRequested
+                && (shouldContinue?.Invoke() ?? true)
                 && ScanExecutionContext.Current is not { CanCompute: false }
                 && stopwatch.ElapsedMilliseconds <= timeout)
             {
@@ -138,10 +141,26 @@ public sealed partial class SessionOrchestrator
                     attemptIndex: attempts);
                 try
                 {
-                    captured = _captureSvc.TryCaptureViewport(
-                        viewport,
-                        out frameObj,
-                        out failureReason);
+                    // Restore before stability analysis or the next inter-frame wait.
+                    using var captureVisibility = suspendOverlayForCapture?.Invoke(viewport);
+                    if (suspendOverlayForCapture is not null)
+                    {
+                        // Observation must not block input dispatch on desktop capture.
+                        // Await the owner even after cancellation so no frame or GDI
+                        // surface outlives this capture lease.
+                        var capture = await Task.Run(() =>
+                        {
+                            var ok = _captureSvc.TryCaptureViewport(viewport,
+                                out var image, out var error);
+                            return (ok, image, error);
+                        }, cancellationToken);
+                        captured = capture.ok;
+                        frameObj = capture.image;
+                        failureReason = capture.error;
+                    }
+                    else
+                        captured = _captureSvc.TryCaptureViewport(
+                            viewport, out frameObj, out failureReason);
                 }
                 finally
                 {
@@ -150,6 +169,12 @@ public sealed partial class SessionOrchestrator
                 if (captured
                     && frameObj is CapturedGameFrame current)
                 {
+                    if (cancellationToken.IsCancellationRequested
+                        || !(shouldContinue?.Invoke() ?? true))
+                    {
+                        current.Dispose();
+                        return null;
+                    }
                     successfulCaptures++;
                     var stable = tracker.Observe(
                         current.Image,
@@ -169,6 +194,11 @@ public sealed partial class SessionOrchestrator
                             lastPresence = MapViewportPresenceDetector.Evaluate(
                                 current.Image,
                                 GetCurrentMapViewportPresenceReference());
+                            if (!lastPresence.IsPresent && allowPartialMap
+                                && ScanExecutionContext.Current is { CanCompute: true }
+                                && ScanObservationRules.HasVisibleStructure(current.Image))
+                                lastPresence = new MapViewportPresenceResult(true,
+                                    "partial-structure-pending-verification", 0d, lastPresence.BlueGrayFraction);
                         }
                         finally
                         {

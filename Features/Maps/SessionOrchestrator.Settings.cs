@@ -49,27 +49,13 @@ public sealed partial class SessionOrchestrator
         await SaveSettingsAsync();
     }
 
-    public async Task SetEnabledAsync(bool v)
-    {
-        if (v && !TryValidateEnablePrerequisites(out var failureMessage))
-        {
-            _settings!.IsEnabled = false;
-            await SaveSettingsAsync();
-            ApplyBindings();
-            throw new InvalidOperationException(failureMessage);
-        }
-        _settings!.IsEnabled = v;
-        await SaveSettingsAsync();
-        ApplyBindings();
-    }
-
     public bool TryValidateEnablePrerequisites(out string failureMessage)
     {
         var missing = new List<string>();
         if (App.IsSafeMode)
             missing.Add("关闭安全模式并重新启动 IDVB");
         if (_settings is null || !HasRequiredInputBindings(_settings))
-            missing.Add("完成全部按键绑定");
+            missing.Add("完成游戏地图开关、外置控件层和快捷扫描的按键绑定");
         if (_recognition.TotalMapCount < 1)
             missing.Add("至少添加一张地图");
 
@@ -86,31 +72,7 @@ public sealed partial class SessionOrchestrator
     private static bool HasRequiredInputBindings(MapRuntimeSettings settings) =>
         settings.GameMapToggleBinding.IsConfigured
         && settings.ControlPanelToggleBinding.IsConfigured
-        && settings.QuickScanBinding.IsConfigured
-        && settings.SwitchFloorBinding.IsConfigured
-        && settings.SaveMapCacheBinding.IsConfigured
-        && settings.RestMapDisplayBinding.IsConfigured;
-
-    /// <summary>
-    /// Applies the first-run recommended profile to the active runtime and
-    /// persists it. Values not specified by the recommendation remain at the
-    /// normal runtime defaults.
-    /// </summary>
-    public async Task ApplyQuickStartRecommendedSettingsAsync()
-    {
-        if (_settings is null)
-            throw new InvalidOperationException("SessionOrchestrator has not been initialized.");
-
-        var recommended = QuickStartRecommendedSettings.CreateRecommendation1();
-        recommended.Normalize();
-        await _researchCollector.SetEnabledAsync(recommended.CollectAlignmentResearchData);
-        _settings = recommended;
-        _logCollector.IsEnabled = recommended.CollectLogs;
-        ApplyBindings();
-        ApplyDisplaySettingsToOverlay();
-        await SaveSettingsAsync();
-        StateChanged?.Invoke(this, EventArgs.Empty);
-    }
+        && settings.QuickScanBinding.IsConfigured;
 
     public async Task SetOverlayStatusVisibleAsync(bool v) { _settings!.ShowOverlayStatus = true; await SaveSettingsAsync(); _overlay.SetStatusVisible(true); await SaveOverlayConfigToPresetAsync(); }
     public async Task SetReverseAlternateDisplayAsync(bool v) { _settings!.ReverseAlternateDisplay = false; await SaveSettingsAsync(); _overlay.SetReverseAlternateDisplay(false); await SaveOverlayConfigToPresetAsync(); }
@@ -264,6 +226,13 @@ public sealed partial class SessionOrchestrator
 
     public async Task SetBindingAsync(MapRuntimeBindingTarget target, MapInputBinding binding)
     {
+        await _inputSettingsGate.WaitAsync();
+        try { await SetBindingCoreAsync(target, binding); }
+        finally { _inputSettingsGate.Release(); }
+    }
+
+    private async Task SetBindingCoreAsync(MapRuntimeBindingTarget target, MapInputBinding binding)
+    {
         if (_settings is null)
             throw new InvalidOperationException("SessionOrchestrator has not been initialized.");
 
@@ -272,19 +241,39 @@ public sealed partial class SessionOrchestrator
         SetBinding(target, newBinding);
         try
         {
-            ApplyBindings(throwOnFailure: true);
-            await SaveSettingsAsync();
+            _settings.ValidateInputBindings();
         }
         catch
+        {
+            // No listener was touched; rejecting a conflicting selection must
+            // not stop and reinstall otherwise healthy input monitoring.
+            SetBinding(target, previousBinding);
+            throw;
+        }
+        try
+        {
+            ApplyBindings();
+            await SaveSettingsAsync();
+        }
+        catch (Exception failure)
         {
             SetBinding(target, previousBinding);
             try
             {
-                ApplyBindings(throwOnFailure: true);
-            }
-            catch
-            {
                 ApplyBindings();
+            }
+            catch (Exception rollbackFailure)
+            {
+                _settings.IsEnabled = false;
+                CancelMapObservation(clearPreview: true);
+                _statusMessage = $"恢复原按键失败：{rollbackFailure.Message}";
+                var failures = new List<Exception> { failure, rollbackFailure };
+                try { _input.ClearBindings(); }
+                catch (Exception cleanupFailure) { failures.Add(cleanupFailure); }
+                try { await SaveSettingsAsync(); }
+                catch (Exception saveFailure) { failures.Add(saveFailure); }
+                StateChanged?.Invoke(this, EventArgs.Empty);
+                throw new AggregateException("按键设置失败，运行层已关闭。", failures);
             }
             throw;
         }
@@ -302,6 +291,7 @@ public sealed partial class SessionOrchestrator
             _settings!.TraditionalWindowSwitchFloorBinding,
         MapRuntimeBindingTarget.SaveMapCache => _settings!.SaveMapCacheBinding,
         MapRuntimeBindingTarget.RestMapDisplay => _settings!.RestMapDisplayBinding,
+        MapRuntimeBindingTarget.MatchStateToggle => _settings!.MatchStateToggleBinding,
         _ => throw new ArgumentOutOfRangeException(nameof(target), target, null)
     };
 
@@ -320,21 +310,22 @@ public sealed partial class SessionOrchestrator
                 break;
             case MapRuntimeBindingTarget.SaveMapCache: _settings!.SaveMapCacheBinding = binding; break;
             case MapRuntimeBindingTarget.RestMapDisplay: _settings!.RestMapDisplayBinding = binding; break;
+            case MapRuntimeBindingTarget.MatchStateToggle: _settings!.MatchStateToggleBinding = binding; break;
             default: throw new ArgumentOutOfRangeException(nameof(target), target, null);
         }
     }
 
-    private void ApplyBindings(bool throwOnFailure = false)
+    private void ApplyBindings()
     {
         if (_settings is not { IsEnabled: true })
         {
+            CancelMapObservation(clearPreview: true);
             _input.ClearBindings();
             return;
         }
 
-        try
-        {
-            _input.ApplyBindings(
+        _settings.ValidateInputBindings();
+        _input.ApplyBindings(
                 _settings.QuickScanBinding,
                 _settings.OverlayToggleBinding,
                 _settings.ManualRecognitionBinding,
@@ -342,15 +333,8 @@ public sealed partial class SessionOrchestrator
                 _settings.ControlPanelToggleBinding,
                 _settings.SwitchFloorBinding,
                 _settings.SaveMapCacheBinding,
-                _settings.RestMapDisplayBinding);
-        }
-        catch (Exception ex)
-        {
-            if (throwOnFailure)
-                throw;
-            _settings.IsEnabled = false;
-            _statusMessage = $"热键注册失败：{ex.Message}";
-        }
+                _settings.RestMapDisplayBinding,
+                _settings.MatchStateToggleBinding);
     }
 
     /// <summary>将当前显示设置批量推送到叠加层窗口。</summary>

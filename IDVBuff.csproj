@@ -30,11 +30,11 @@
         <Product>Identity Vision Bridge</Product>
         <Company>Identity Vision Bridge</Company>
         <!-- Canonical SemVer product identity. The UI adds the conventional v prefix. -->
-        <IDVBProductVersion>1.6.3-hotfix</IDVBProductVersion>
+        <IDVBProductVersion>1.6.4-stable</IDVBProductVersion>
         <IDVBReleaseLine>b01.6</IDVBReleaseLine>
         <Version>$(IDVBProductVersion)</Version>
-        <AssemblyVersion>1.6.3.0</AssemblyVersion>
-        <FileVersion>1.6.3.0</FileVersion>
+        <AssemblyVersion>1.6.4.0</AssemblyVersion>
+        <FileVersion>1.6.4.0</FileVersion>
         <InformationalVersion>$(IDVBProductVersion)</InformationalVersion>
         <UseSystemDrawing>true</UseSystemDrawing>
         <Configurations>Debug;Release;Test</Configurations>
@@ -52,7 +52,7 @@
         <ErrorOnDuplicatePublishOutputFiles>false</ErrorOnDuplicatePublishOutputFiles>
         <RuntimeIdentifiers Condition="$([MSBuild]::GetTargetFrameworkVersion('$(TargetFramework)')) >= 8">win-x86;win-x64;win-arm64</RuntimeIdentifiers>
         <RuntimeIdentifiers Condition="$([MSBuild]::GetTargetFrameworkVersion('$(TargetFramework)')) &lt; 8">win10-x86;win10-x64;win10-arm64</RuntimeIdentifiers>
-        <DefaultItemExcludes>$(DefaultItemExcludes);Tools\**</DefaultItemExcludes>
+        <DefaultItemExcludes>$(DefaultItemExcludes);Tools\**;**\obj\**;**\bin\**</DefaultItemExcludes>
     </PropertyGroup>
 
     <PropertyGroup Condition="'$(Configuration)' == 'Test'">
