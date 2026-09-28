@@ -14,6 +14,10 @@ public sealed partial class MapLogCollector : IDisposable, IAsyncDisposable
     private const int MaxBufferedEntries = 500;
     private static readonly TimeSpan FlushInterval = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan FinalFlushTimeout = TimeSpan.FromSeconds(5);
+    private static readonly System.Text.Json.JsonSerializerOptions DetailJsonOptions = new()
+    {
+        NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowNamedFloatingPointLiterals
+    };
 
     private readonly object _stateGate = new();
     private readonly MapLogRepository _repository;
@@ -118,6 +122,15 @@ public sealed partial class MapLogCollector : IDisposable, IAsyncDisposable
         double? elapsedMs = null,
         Dictionary<string, object?>? details = null)
     {
+        if (ScanExecutionContext.Current is { } scan)
+        {
+            details = details is null ? new() : new(details);
+            details["scanId"] = scan.ScanId;
+            details["scanElapsedMs"] = scan.ElapsedMilliseconds;
+            details["scanRemainingMs"] = scan.RemainingMilliseconds;
+            details["scanCancelled"] = scan.CancellationToken.IsCancellationRequested;
+            details["scanSuperseded"] = scan.IsSuperseded;
+        }
         WritePlainTextOutput(category, level, message, elapsedMs, details);
         lock (_stateGate)
         {
@@ -171,7 +184,7 @@ public sealed partial class MapLogCollector : IDisposable, IAsyncDisposable
             Debug.WriteLine($"[MapLogCollector] cleanup wait failed: {exception}");
         }
 
-        _repository.ClearData();
+        ThrowIfCleanupFailed(_repository.ClearData());
     }
 
     /// <summary>
@@ -259,37 +272,6 @@ public sealed partial class MapLogCollector : IDisposable, IAsyncDisposable
 
         if (shouldFlush)
             RequestFlush(session);
-    }
-
-    private static void WritePlainTextOutput(
-        MapLogCategory category,
-        MapLogLevel level,
-        string message,
-        double? elapsedMs,
-        Dictionary<string, object?>? details)
-    {
-        try
-        {
-            var outputMessage = message;
-            if (elapsedMs is not null)
-            {
-                outputMessage += $" | elapsedMs="
-                    + elapsedMs.Value.ToString("0.###", CultureInfo.InvariantCulture);
-            }
-            if (details is not null)
-            {
-                foreach (var detail in details)
-                {
-                    outputMessage += $" | {detail.Key}="
-                        + (Convert.ToString(detail.Value, CultureInfo.InvariantCulture) ?? "null");
-                }
-            }
-            OutputLog.Write(level.ToString(), $"MAP/{category}", outputMessage);
-        }
-        catch
-        {
-            // The plain-text logging side channel must never affect map recognition.
-        }
     }
 
     private void OnFlushTimer(Session session)

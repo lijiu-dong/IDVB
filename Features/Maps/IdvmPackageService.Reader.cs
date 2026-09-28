@@ -82,7 +82,7 @@ public sealed partial class IdvmPackageService
         var minor = BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(6, 2));
         if (!bytes.AsSpan(0, 4).SequenceEqual("IDVM"u8)
             || major != 1
-            || minor is not (0 or 1 or 2 or 3)
+            || minor is not (0 or 1 or 2 or 3 or 4)
             || BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(8, 2)) != HeaderSize
             || BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(10, 2)) != 0
             || bytes.AsSpan(68, 12).IndexOfAnyExcept((byte)0) >= 0)
@@ -179,6 +179,9 @@ public sealed partial class IdvmPackageService
             item => new MapClassProperties
             {
                 RemoveBackground = item.Properties?.RemoveBackground is true,
+                ContainsVectorRoutes = manifest.FormatVersion == "1.4"
+                    ? item.Properties?.ContainsVectorRoutes is true
+                    : null,
                 ScanFloorKey = MapScanFloorRules.NormalizeFloorIdentity(
                     item.Properties?.ScanFloorKey)
             });
@@ -197,8 +200,8 @@ public sealed partial class IdvmPackageService
                 metadata,
                 gatesDocument,
                 anchorsDocument,
-                manifest.FormatVersion is "1.2" or "1.3",
-                manifest.FormatVersion == "1.3");
+                manifest.FormatVersion is "1.2" or "1.3" or "1.4",
+                manifest.FormatVersion is "1.3" or "1.4");
 
             var floorDefinitions = new List<FloorDefinition>();
             var floorPaths = new Dictionary<string, string>(StringComparer.Ordinal);

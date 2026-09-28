@@ -27,12 +27,23 @@ public sealed partial class SessionOrchestrator
         }
 
         CancelMapObservation(clearPreview: true);
+        // Rescanning supersedes the old map's alignment before waiting for its
+        // gate. Otherwise recovery of a wrong manual choice consumes this scan.
+        Interlocked.Increment(ref _continuousAlignmentGeneration);
+        InvalidateActiveMapOpenOperation("quick scan requested");
 
         var scanGeneration = Interlocked.Increment(ref _scanRequestGeneration);
         var scanScope = BeginQuickScanCancellationScope();
         var scanCancellation = scanScope.Token;
         using var scanExecution = ScanExecutionContext.Enter(_settings.ScanPerformanceMode, scanCancellation,
             () => scanGeneration == Volatile.Read(ref _scanRequestGeneration), scanStartedAt);
+        _logCollector.Append(MapLogCategory.ScanLifecycle, MapLogLevel.Info,
+            "扫描请求已创建", details: new()
+            {
+                ["generation"] = scanGeneration, ["matchVersion"] = _matchSession.Snapshot.Version,
+                ["activeScans"] = _activeScanOperations,
+                ["gateAvailable"] = _scanGate.CurrentCount, ["mapOpen"] = _gameMapToggleState.IsOpen
+            });
         try
         {
             // A not-yet-started match intentionally has a cancelled match token. Report

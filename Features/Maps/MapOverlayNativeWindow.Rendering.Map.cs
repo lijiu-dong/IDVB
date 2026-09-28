@@ -9,6 +9,14 @@ namespace IDVBuff.Features.Maps;
 
 internal static partial class MapOverlayBitmapRenderer
 {
+    internal static float RouteLineThicknessMultiplier(int level) => Math.Clamp(level, 0, 3) switch
+    {
+        0 => 1f,
+        1 => 1.5f,
+        2 => 2f,
+        _ => 3f
+    };
+
     internal static Bitmap RenderMapLayer(
         MapOverlayRenderMap map,
         uint dpi,
@@ -120,7 +128,7 @@ internal static partial class MapOverlayBitmapRenderer
         bool showBoxAnnotations,
         bool showLineAnnotations)
     {
-        var key = $"{Path.GetFullPath(map.ImagePath)}|dpi={dpiScale:F2}|op={mapOpacity:F2}|gm={showGateMarkers}|aa={showAuxiliaryAnchors}|ta={showTextAnnotations}|ba={showBoxAnnotations}|la={showLineAnnotations}|anc={map.Anchors.Count}|ann={map.Annotations?.Count ?? 0}";
+        var key = $"{Path.GetFullPath(map.ImagePath)}|dpi={dpiScale:F2}|op={mapOpacity:F2}|gm={showGateMarkers}|aa={showAuxiliaryAnchors}|ta={showTextAnnotations}|ba={showBoxAnnotations}|la={showLineAnnotations}|anc={map.Anchors.Count}|lw={map.RouteLineThickness}|ann={System.Text.Json.JsonSerializer.Serialize(map.Annotations)}";
         lock (ImageCacheLock)
         {
             if (MapLayerCache.TryGetValue(key, out var cached))
@@ -236,7 +244,45 @@ internal static partial class MapOverlayBitmapRenderer
             StringFormat.GenericTypographic);
     }
 
+    // Saved annotations use source coordinates, unlike recognition-relative anchors.
     private static void DrawAnnotations(
+        Graphics graphics, MapOverlayRenderMap map, float dpiScale,
+        bool showTextAnnotations, bool showBoxAnnotations, bool showLineAnnotations,
+        float originX = 0f, float originY = 0f)
+    {
+        foreach (var annotation in map.Annotations ?? [])
+        {
+            var region = annotation.SourceRegion is { IsValid: true } crop
+                ? crop : new NormalizedRectangle { Width = 1, Height = 1 };
+            var sourceWidth = (float)(map.Width / region.Width);
+            var sourceHeight = (float)(map.Height / region.Height);
+            var sourceX = originX - (float)region.X * sourceWidth;
+            var sourceY = originY - (float)region.Y * sourceHeight;
+            var state = graphics.Save();
+            try
+            {
+                graphics.SetClip(new RectangleF(originX, originY, map.Width, map.Height), CombineMode.Intersect);
+                if (annotation.FreeCropPoints is { Count: >= 3 } points)
+                {
+                    using var polygon = new GraphicsPath();
+                    polygon.AddPolygon(points.Select(point => new PointF(
+                        sourceX + (float)point.X * sourceWidth,
+                        sourceY + (float)point.Y * sourceHeight)).ToArray());
+                    graphics.SetClip(polygon, CombineMode.Intersect);
+                }
+                DrawSourceAnnotations(graphics,
+                    map with { Width = sourceWidth, Height = sourceHeight, Annotations = [annotation] },
+                    dpiScale, showTextAnnotations, showBoxAnnotations, showLineAnnotations,
+                    sourceX, sourceY);
+            }
+            finally
+            {
+                graphics.Restore(state);
+            }
+        }
+    }
+
+    private static void DrawSourceAnnotations(
         Graphics graphics,
         MapOverlayRenderMap map,
         float dpiScale,
@@ -261,7 +307,7 @@ internal static partial class MapOverlayBitmapRenderer
                 {
                     continue;
                 }
-                using var linePen = new Pen(color, strokeWidth)
+                using var linePen = new Pen(color, strokeWidth * RouteLineThicknessMultiplier(map.RouteLineThickness))
                 {
                     StartCap = LineCap.Round,
                     EndCap = LineCap.Round
@@ -300,7 +346,7 @@ internal static partial class MapOverlayBitmapRenderer
             {
                 if (!showBoxAnnotations)
                     continue;
-                using var pen = new Pen(color, strokeWidth);
+                using var pen = new Pen(color, strokeWidth * RouteLineThicknessMultiplier(map.RouteLineThickness));
                 graphics.DrawRectangle(pen, rect.X, rect.Y, rect.Width, rect.Height);
             }
         }

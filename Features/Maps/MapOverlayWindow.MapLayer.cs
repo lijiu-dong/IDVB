@@ -16,6 +16,21 @@ public sealed partial class MapOverlayWindow
     internal long MapLayerBitmapBuildCount => Interlocked.Read(ref _mapLayerBitmapBuildCount);
     internal long MapLayerTransformMoveCount => Interlocked.Read(ref _mapLayerTransformMoveCount);
 
+    public void SetMapContentVisible(bool visible)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_showMapContent == visible)
+            return;
+        _showMapContent = visible;
+        if (!visible)
+        {
+            if (_mapNativeWindow.IsVisible)
+                _mapNativeWindow.Hide();
+        }
+        if (IsVisible)
+            Present();
+    }
+
     public bool TrySetCaptureExclusion(bool enabled, out string failureReason)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -32,9 +47,11 @@ public sealed partial class MapOverlayWindow
 
     private void PresentMapLayerOnly()
     {
+        if (!_showMapContent)
+            return;
         if (_map is not null && _showMainContent)
             PresentMapLayer(_map, ResolveOverlayDpi());
-        else
+        else if (_mapNativeWindow.IsVisible)
             _mapNativeWindow.Hide();
     }
 
@@ -55,13 +72,13 @@ public sealed partial class MapOverlayWindow
             || _mapLayerPixelHeight != height)
         {
             using var bitmap = MapOverlayBitmapRenderer.RenderMapLayer(
-                map,
+                map with { RouteLineThickness = _routeLineThickness },
                 dpi,
-                _showGateMarkers,
-                _showAuxiliaryAnchors,
-                _showTextAnnotations,
-                _showBoxAnnotations,
-                _showLineAnnotations,
+                _showGateMarkers && map.SupportsVectorRoutes,
+                false,
+                _showTextAnnotations && map.SupportsVectorRoutes,
+                _showBoxAnnotations && map.SupportsVectorRoutes,
+                _showLineAnnotations && map.SupportsVectorRoutes,
                 _mapOpacity);
             _mapNativeWindow.Present(
                 bitmap,
@@ -84,9 +101,12 @@ public sealed partial class MapOverlayWindow
 
     private void MoveMapLayerOnly()
     {
+        if (!_showMapContent)
+            return;
         if (_map is null || !_showMainContent)
         {
-            _mapNativeWindow.Hide();
+            if (_mapNativeWindow.IsVisible)
+                _mapNativeWindow.Hide();
             return;
         }
 

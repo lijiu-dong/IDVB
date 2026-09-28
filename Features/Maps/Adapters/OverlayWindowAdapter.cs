@@ -69,6 +69,7 @@ public sealed class OverlayWindowAdapter : IOverlayWindow
     public IDisposable DeferPresent() => _window.DeferPresent();
     public int PresentCount => _window.PresentCount;
     public void SetMainContentVisible(bool visible) => _window.SetMainContentVisible(visible);
+    public void SetMapContentVisible(bool visible) => _window.SetMapContentVisible(visible);
     public void Toggle() => _window.Toggle();
     public void Clear() => _window.Clear();
     public void ClearMap() => _window.ClearMap();
@@ -86,7 +87,8 @@ public sealed class OverlayWindowAdapter : IOverlayWindow
 
     public void SetPersistentMiniMapState(string imagePath, object transform, object gameBounds,
         IntPtr gameWindowHandle, double miniMapScale, object? anchors = null,
-        object? annotations = null, string? floorLabel = null)
+        object? annotations = null, string? floorLabel = null,
+        bool supportsVectorRoutes = false)
         => _window.SetPersistentMiniMapState(
             imagePath,
             (MapOverlayTransform)transform,
@@ -95,7 +97,8 @@ public sealed class OverlayWindowAdapter : IOverlayWindow
             miniMapScale,
             (IReadOnlyList<MapOverlayRenderAnchor>?)anchors,
             (IReadOnlyList<MapOverlayRenderAnnotation>?)annotations,
-            floorLabel);
+            floorLabel,
+            supportsVectorRoutes);
 
     public void ClearPersistentMiniMap() => _window.ClearPersistentMiniMap();
     public void UpdateMiniMapPlayers(object players)
@@ -111,6 +114,8 @@ public sealed class OverlayWindowAdapter : IOverlayWindow
     public void SetReverseAlternateDisplay(bool enabled) => _window.SetReverseAlternateDisplay(enabled);
     public void SetAllowExtend(bool allow) => _window.SetAllowExtend(allow);
     public void SetMapOpacity(double opacity) => _window.SetMapOpacity(opacity);
+    public void SetRouteLineThickness(int level) => _window.SetRouteLineThickness(level);
+    public void SetHideMiniMap(bool hide) => _window.SetHideMiniMap(hide);
     public void SetShowGateMarkers(bool show) => _window.SetShowGateMarkers(show);
     public void SetShowAuxiliaryAnchors(bool show) => _window.SetShowAuxiliaryAnchors(show);
     public void SetShowTextAnnotations(bool show) => _window.SetShowTextAnnotations(show);

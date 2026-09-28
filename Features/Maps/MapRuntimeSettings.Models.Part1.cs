@@ -10,7 +10,8 @@ public sealed partial class MapRuntimeSettings
         [
             QuickScanBinding, OverlayToggleBinding, ManualRecognitionBinding,
             GameMapToggleBinding, ControlPanelToggleBinding, SwitchFloorBinding,
-            SaveMapCacheBinding, RestMapDisplayBinding, MatchStateToggleBinding
+            SaveMapCacheBinding, RestMapDisplayBinding, MatchStateToggleBinding,
+            HideAlignmentResultBinding
         ];
         for (var i = 0; i < bindings.Length; i++)
         {
@@ -23,6 +24,7 @@ public sealed partial class MapRuntimeSettings
 
     public void Normalize()
     {
+        RouteLineThickness = Math.Clamp(RouteLineThickness, 0, 3);
         if (!Enum.IsDefined(ScanPerformanceMode)) ScanPerformanceMode = ScanPerformanceMode.Balanced;
         if (!Enum.IsDefined(ScanUncertainAction)) ScanUncertainAction = ScanUncertainAction.ShowCandidates;
         var previousSchema = SchemaVersion;
@@ -70,6 +72,7 @@ public sealed partial class MapRuntimeSettings
         SaveMapCacheBinding ??= new MapInputBinding();
         RestMapDisplayBinding ??= new MapInputBinding();
         MatchStateToggleBinding ??= new MapInputBinding();
+        HideAlignmentResultBinding ??= new MapInputBinding();
         RecognitionTuning ??= new MapRecognitionTuning();
         StructureRegistrationTuning ??= new MapStructureRegistrationTuning();
         SessionTuning ??= new MapSessionTuning();
@@ -85,6 +88,7 @@ public sealed partial class MapRuntimeSettings
         NormalizeBinding(SaveMapCacheBinding);
         NormalizeBinding(RestMapDisplayBinding);
         NormalizeBinding(MatchStateToggleBinding);
+        NormalizeBinding(HideAlignmentResultBinding);
         if (QuickScanBinding.IsConfigured
             && QuickScanBinding.Equals(OverlayToggleBinding))
         {
@@ -153,9 +157,35 @@ public sealed partial class MapRuntimeSettings
         {
             MatchStateToggleBinding = new MapInputBinding();
         }
+        if (HideAlignmentResultBinding.IsConfigured
+            && (HideAlignmentResultBinding.Equals(QuickScanBinding)
+                || HideAlignmentResultBinding.Equals(OverlayToggleBinding)
+                || HideAlignmentResultBinding.Equals(ManualRecognitionBinding)
+                || HideAlignmentResultBinding.Equals(GameMapToggleBinding)
+                || HideAlignmentResultBinding.Equals(ControlPanelToggleBinding)
+                || HideAlignmentResultBinding.Equals(SwitchFloorBinding)
+                || HideAlignmentResultBinding.Equals(SaveMapCacheBinding)
+                || HideAlignmentResultBinding.Equals(RestMapDisplayBinding)
+                || HideAlignmentResultBinding.Equals(MatchStateToggleBinding)))
+        {
+            HideAlignmentResultBinding = new MapInputBinding();
+        }
         RecognitionTuning.Normalize();
         RecognitionTuning.ForceBestRecognitionResult = false;
+        RecognitionTuning.ForceCandidateSelection = false;
         RecognitionTuning.PlayerDecidesScale = false;
+        // The retired per-overlay switches remain serialized only so older
+        // files can be read. Route visibility is now one product-owned group.
+        ShowGateMarkers = ShowRoutes;
+        ShowAuxiliaryAnchors = false;
+        ShowTextAnnotations = ShowRoutes;
+        ShowBoxAnnotations = ShowRoutes;
+        ShowLineAnnotations = ShowRoutes;
+        ShowGateMarkersOnMiniMap = false;
+        ShowAuxiliaryAnchorsOnMiniMap = false;
+        ShowTextAnnotationsOnMiniMap = ShowRoutes;
+        ShowBoxAnnotationsOnMiniMap = ShowRoutes;
+        ShowLineAnnotationsOnMiniMap = ShowRoutes;
         StructureRegistrationTuning.Normalize();
         SessionTuning.Normalize();
         FloorRecognitionTuning ??= new MapFloorRecognitionTuning();

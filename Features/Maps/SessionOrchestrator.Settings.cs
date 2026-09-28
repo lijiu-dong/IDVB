@@ -77,6 +77,21 @@ public sealed partial class SessionOrchestrator
     public async Task SetOverlayStatusVisibleAsync(bool v) { _settings!.ShowOverlayStatus = true; await SaveSettingsAsync(); _overlay.SetStatusVisible(true); await SaveOverlayConfigToPresetAsync(); }
     public async Task SetReverseAlternateDisplayAsync(bool v) { _settings!.ReverseAlternateDisplay = false; await SaveSettingsAsync(); _overlay.SetReverseAlternateDisplay(false); await SaveOverlayConfigToPresetAsync(); }
     public async Task SetMapOpacityAsync(double v) { _settings!.MapOpacity = v; await SaveSettingsAsync(); _overlay.SetMapOpacity(v); await SaveOverlayConfigToPresetAsync(); }
+    public async Task SetRouteLineThicknessAsync(int level)
+    {
+        _settings!.RouteLineThickness = Math.Clamp(level, 0, 3);
+        _overlay.SetRouteLineThickness(_settings.RouteLineThickness);
+        await SaveSettingsAsync();
+        await SaveOverlayConfigToPresetAsync();
+    }
+    public async Task SetShowRoutesAsync(bool v)
+    {
+        _settings!.ShowRoutes = v;
+        _settings.Normalize();
+        await SaveSettingsAsync();
+        ApplyRouteVisibilityToOverlay(v);
+        await SaveOverlayConfigToPresetAsync();
+    }
     public async Task SetShowGateMarkersAsync(bool v) { _settings!.ShowGateMarkers = v; await SaveSettingsAsync(); _overlay.SetShowGateMarkers(v); await SaveOverlayConfigToPresetAsync(); }
     public async Task SetShowAuxiliaryAnchorsAsync(bool v) { _settings!.ShowAuxiliaryAnchors = v; await SaveSettingsAsync(); _overlay.SetShowAuxiliaryAnchors(v); await SaveOverlayConfigToPresetAsync(); }
     public async Task SetShowTextAnnotationsAsync(bool v) { _settings!.ShowTextAnnotations = v; await SaveSettingsAsync(); _overlay.SetShowTextAnnotations(v); await SaveOverlayConfigToPresetAsync(); }
@@ -96,16 +111,6 @@ public sealed partial class SessionOrchestrator
     public async Task SetStatusScaleAsync(double v) { _settings!.StatusScale = v; await SaveSettingsAsync(); _overlay.SetStatusScale(v); await SaveOverlayConfigToPresetAsync(); }
     public async Task SetStatusOffsetXAsync(double v) { _settings!.StatusOffsetX = v; await SaveSettingsAsync(); _overlay.SetStatusOffsetX(v); await SaveOverlayConfigToPresetAsync(); }
     public async Task SetStatusOffsetYAsync(double v) { _settings!.StatusOffsetY = v; await SaveSettingsAsync(); _overlay.SetStatusOffsetY(v); await SaveOverlayConfigToPresetAsync(); }
-    public async Task SetCollectLogsAsync(bool v)
-    {
-        _settings!.CollectLogs = v;
-        if (v)
-            _logCollector.IsEnabled = true;
-        else
-            await _logCollector.ClearDataAsync();
-        await SaveSettingsAsync();
-    }
-
     /// <summary>
     /// Changes the remembered map Class for the current headless session only.
     /// Replay and diagnostic callers must not persist their per-case fixture.
@@ -292,6 +297,8 @@ public sealed partial class SessionOrchestrator
         MapRuntimeBindingTarget.SaveMapCache => _settings!.SaveMapCacheBinding,
         MapRuntimeBindingTarget.RestMapDisplay => _settings!.RestMapDisplayBinding,
         MapRuntimeBindingTarget.MatchStateToggle => _settings!.MatchStateToggleBinding,
+        MapRuntimeBindingTarget.HideAlignmentResult =>
+            _settings!.HideAlignmentResultBinding,
         _ => throw new ArgumentOutOfRangeException(nameof(target), target, null)
     };
 
@@ -311,6 +318,9 @@ public sealed partial class SessionOrchestrator
             case MapRuntimeBindingTarget.SaveMapCache: _settings!.SaveMapCacheBinding = binding; break;
             case MapRuntimeBindingTarget.RestMapDisplay: _settings!.RestMapDisplayBinding = binding; break;
             case MapRuntimeBindingTarget.MatchStateToggle: _settings!.MatchStateToggleBinding = binding; break;
+            case MapRuntimeBindingTarget.HideAlignmentResult:
+                _settings!.HideAlignmentResultBinding = binding;
+                break;
             default: throw new ArgumentOutOfRangeException(nameof(target), target, null);
         }
     }
@@ -334,7 +344,8 @@ public sealed partial class SessionOrchestrator
                 _settings.SwitchFloorBinding,
                 _settings.SaveMapCacheBinding,
                 _settings.RestMapDisplayBinding,
-                _settings.MatchStateToggleBinding);
+                _settings.MatchStateToggleBinding,
+                _settings.HideAlignmentResultBinding);
     }
 
     /// <summary>将当前显示设置批量推送到叠加层窗口。</summary>
@@ -347,18 +358,10 @@ public sealed partial class SessionOrchestrator
         _overlay.SetReverseAlternateDisplay(s.ReverseAlternateDisplay);
         _overlay.SetAllowExtend(s.AllowMapExtendBeyondBounds);
         _overlay.SetMapOpacity(s.MapOpacity);
+        _overlay.SetRouteLineThickness(s.RouteLineThickness);
+        _overlay.SetHideMiniMap(s.HideMiniMap);
 
-        _overlay.SetShowGateMarkers(s.ShowGateMarkers);
-        _overlay.SetShowAuxiliaryAnchors(s.ShowAuxiliaryAnchors);
-        _overlay.SetShowTextAnnotations(s.ShowTextAnnotations);
-        _overlay.SetShowBoxAnnotations(s.ShowBoxAnnotations);
-        _overlay.SetShowLineAnnotations(s.ShowLineAnnotations);
-
-        _overlay.SetShowGateMarkersOnMiniMap(s.ShowGateMarkersOnMiniMap);
-        _overlay.SetShowAuxiliaryAnchorsOnMiniMap(s.ShowAuxiliaryAnchorsOnMiniMap);
-        _overlay.SetShowTextAnnotationsOnMiniMap(s.ShowTextAnnotationsOnMiniMap);
-        _overlay.SetShowBoxAnnotationsOnMiniMap(s.ShowBoxAnnotationsOnMiniMap);
-        _overlay.SetShowLineAnnotationsOnMiniMap(s.ShowLineAnnotationsOnMiniMap);
+        ApplyRouteVisibilityToOverlay(s.ShowRoutes);
         _overlay.SetShowFloorOnMiniMap(s.ShowFloorOnMiniMap);
 
         _overlay.SetStatusOpacity(s.StatusOpacity);
@@ -369,6 +372,20 @@ public sealed partial class SessionOrchestrator
         _overlay.SetMiniMapOpacity(s.MiniMapOpacity);
         _overlay.SetMiniMapOffsetX(s.MiniMapOffsetX);
         _overlay.SetMiniMapOffsetY(s.MiniMapOffsetY);
+    }
+
+    private void ApplyRouteVisibilityToOverlay(bool showRoutes)
+    {
+        _overlay.SetShowGateMarkers(showRoutes);
+        _overlay.SetShowAuxiliaryAnchors(false);
+        _overlay.SetShowTextAnnotations(showRoutes);
+        _overlay.SetShowBoxAnnotations(showRoutes);
+        _overlay.SetShowLineAnnotations(showRoutes);
+        _overlay.SetShowGateMarkersOnMiniMap(false);
+        _overlay.SetShowAuxiliaryAnchorsOnMiniMap(false);
+        _overlay.SetShowTextAnnotationsOnMiniMap(showRoutes);
+        _overlay.SetShowBoxAnnotationsOnMiniMap(showRoutes);
+        _overlay.SetShowLineAnnotationsOnMiniMap(showRoutes);
     }
 
     public async Task SetMapViewportAsync(
@@ -405,7 +422,7 @@ public sealed partial class SessionOrchestrator
 
     // Tuning
     public async Task SetRecognitionTuningAsync(MapRecognitionTuning t)
-    { t.ForceBestRecognitionResult = false; t.PlayerDecidesScale = false; _settings!.RecognitionTuning = t; await SaveSettingsAsync(); }
+    { t.ForceBestRecognitionResult = false; t.ForceCandidateSelection = false; t.PlayerDecidesScale = false; _settings!.RecognitionTuning = t; await SaveSettingsAsync(); }
     public async Task SetStructureRegistrationTuningAsync(MapStructureRegistrationTuning t)
     { _settings!.StructureRegistrationTuning = t; await SaveSettingsAsync(); }
     public async Task SetSessionTuningAsync(MapSessionTuning t)

@@ -38,6 +38,8 @@ public sealed partial class MapOverlayWindow : IDisposable
     private bool _showTextAnnotations = true;
     private bool _showBoxAnnotations = true;
     private bool _showLineAnnotations = true;
+    private int _routeLineThickness = 1;
+    private bool _hideMiniMap;
     private bool _showGateMarkersOnMiniMap = true;
     private bool _showAuxiliaryAnchorsOnMiniMap = true;
     private bool _showTextAnnotationsOnMiniMap = true;
@@ -57,6 +59,7 @@ public sealed partial class MapOverlayWindow : IDisposable
     private string? _miniMapImageKey;
     private readonly MiniMapFloorScaleState _miniMapFloorScales = new();
     private bool _showMainContent = true;
+    private bool _showMapContent = true;
     private int _presentDepth;
     private bool _presentDirty;
     private int _presentCount;
@@ -163,22 +166,8 @@ public sealed partial class MapOverlayWindow : IDisposable
                 anchor.DisplayName,
                 anchor.Bounds!.Clone()))
             .ToArray();
-        var annotations = profile.Annotations
-            .Where(a => a.IsValid)
-            .Select(a => new MapOverlayRenderAnnotation(
-                a.Type,
-                a.ColorIndex,
-                a.EffectiveColorHex,
-                a.Bounds?.Clone(),
-                a.Start?.Clone(),
-                a.End?.Clone(),
-                a.Text,
-                a.FontFamily,
-                a.FontSize,
-                a.IsBold,
-                a.IsItalic,
-                a.IsStrikethrough))
-            .ToArray();
+        var annotations = MapOverlayRenderAnnotation.FromProfile(profile,
+            recognition.Map.Floors.FirstOrDefault(floor => floor.Key == recognition.Result.Floor));
         _map = new MapOverlayRenderMap(
             recognition.FloorImagePath,
             ToFiniteSingle(transform.OffsetX - gameBounds.X),
@@ -198,7 +187,8 @@ public sealed partial class MapOverlayWindow : IDisposable
                     gameBounds.Width,
                     gameBounds.Height))
         {
-            Annotations = annotations
+            Annotations = annotations,
+            SupportsVectorRoutes = MapRouteRules.SupportsVectorRoutes(recognition.Map)
         };
         _mapId = recognition.Map.Id;
         _mapFloorKey = recognition.Result.Floor;
@@ -409,7 +399,7 @@ public sealed partial class MapOverlayWindow : IDisposable
                 : _map is null;
         }
 
-        var visibleMap = _showMainContent ? _map : null;
+        var visibleMap = _showMainContent && _showMapContent ? _map : null;
         var scene = new MapOverlayRenderScene(
             pixelWidth,
             pixelHeight,
@@ -417,21 +407,25 @@ public sealed partial class MapOverlayWindow : IDisposable
             null,
             _showMainContent ? _status : null,
             _showMainContent && showStatus,
-            _showMainContent ? _player : null,
-            MiniMap: _persistentMiniMap,
+            _showMainContent && _showMapContent ? _player : null,
+            MiniMap: !_hideMiniMap && _persistentMiniMap is { } miniMap
+                ? miniMap with { RouteLineThickness = _routeLineThickness } : null,
             AllowMapExtendBeyondBounds: _allowExtend,
             GameScreenBounds: _gameBounds,
             MonitorWorkingArea: monitorWorkingArea,
-            ShowGateMarkers: _showGateMarkers,
-            ShowAuxiliaryAnchors: _showAuxiliaryAnchors,
-            ShowTextAnnotations: _showTextAnnotations,
-            ShowBoxAnnotations: _showBoxAnnotations,
-            ShowLineAnnotations: _showLineAnnotations,
-            ShowGateMarkersOnMiniMap: _showGateMarkersOnMiniMap,
-            ShowAuxiliaryAnchorsOnMiniMap: _showAuxiliaryAnchorsOnMiniMap,
-            ShowTextAnnotationsOnMiniMap: _showTextAnnotationsOnMiniMap,
-            ShowBoxAnnotationsOnMiniMap: _showBoxAnnotationsOnMiniMap,
-            ShowLineAnnotationsOnMiniMap: _showLineAnnotationsOnMiniMap,
+            ShowGateMarkers: _showGateMarkers && (visibleMap?.SupportsVectorRoutes ?? false),
+            ShowAuxiliaryAnchors: false,
+            ShowTextAnnotations: _showTextAnnotations && (visibleMap?.SupportsVectorRoutes ?? false),
+            ShowBoxAnnotations: _showBoxAnnotations && (visibleMap?.SupportsVectorRoutes ?? false),
+            ShowLineAnnotations: _showLineAnnotations && (visibleMap?.SupportsVectorRoutes ?? false),
+            ShowGateMarkersOnMiniMap: false,
+            ShowAuxiliaryAnchorsOnMiniMap: false,
+            ShowTextAnnotationsOnMiniMap: _showTextAnnotationsOnMiniMap
+                && (_persistentMiniMap?.SupportsVectorRoutes ?? false),
+            ShowBoxAnnotationsOnMiniMap: _showBoxAnnotationsOnMiniMap
+                && (_persistentMiniMap?.SupportsVectorRoutes ?? false),
+            ShowLineAnnotationsOnMiniMap: _showLineAnnotationsOnMiniMap
+                && (_persistentMiniMap?.SupportsVectorRoutes ?? false),
             MapOpacity: _mapOpacity,
             StatusOpacity: _statusOpacity,
             StatusScale: _statusScale,
@@ -450,7 +444,7 @@ public sealed partial class MapOverlayWindow : IDisposable
         {
             if (visibleMap is not null)
                 PresentMapLayer(visibleMap, dpi);
-            else
+            else if (_mapNativeWindow.IsVisible)
                 _mapNativeWindow.Hide();
 
             var renderScene = MapOperationTraceAmbient.StartChild(

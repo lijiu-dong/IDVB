@@ -38,6 +38,9 @@ public sealed partial class SessionOrchestrator
             elapsedMs: execution.ElapsedMilliseconds,
             details: new()
             {
+                ["scanId"] = execution.ScanId,
+                ["cancelled"] = execution.CancellationToken.IsCancellationRequested,
+                ["superseded"] = execution.IsSuperseded,
                 ["budgetMs"] = execution.Policy.BudgetMilliseconds,
                 ["samplePoints"] = execution.Frame?.SearchPoints.Length ?? 0,
                 ["densePoints"] = execution.Frame?.DensePoints.Length ?? 0,
@@ -53,27 +56,48 @@ public sealed partial class SessionOrchestrator
     {
         var execution = ScanExecutionContext.Current;
         var recognition = result.Recognition;
-        if (execution is null || recognition?.Result.OverlayTransform is not { } transform
-            || execution.Frame is not { } observation || execution.Expired
-            || !ReferenceEquals(observation.Source, frame.Image)
-            || cancellation.IsCancellationRequested || !IsCurrentMatchOperation(match)
-            || !IsCurrentCaptureTarget(frame)
-            || execution.CatalogRevision?.Equals(_recognition.CatalogRevision) != true
-            || execution.CatalogRevision.Equals(_mapRepository.GetCatalogRevision()) != true
-            || !string.Equals(recognition.Map.Class, match.MapClass, StringComparison.OrdinalIgnoreCase))
+        bool Reject(string reason)
+        {
+            _logCollector.Append(MapLogCategory.ScanLifecycle, MapLogLevel.Warning,
+                $"扫描自动提交拒绝 · reason={reason}", details: new()
+                {
+                    ["reason"] = reason, ["scanId"] = execution?.ScanId,
+                    ["mapId"] = recognition?.Map.Id, ["floor"] = recognition?.Result.Floor,
+                    ["matchVersion"] = match.Version, ["currentMatchVersion"] = _matchSession.Snapshot.Version,
+                    ["cancelled"] = cancellation.IsCancellationRequested,
+                    ["superseded"] = execution?.IsSuperseded,
+                    ["remainingMs"] = execution?.RemainingMilliseconds,
+                    ["computeStopReason"] = execution?.ComputeStopReason
+                });
             return false;
+        }
+        if (execution is null) return Reject("missing-execution");
+        if (recognition?.Result.OverlayTransform is not { } transform) return Reject("missing-transform");
+        if (execution.Frame is not { } observation) return Reject("missing-evidence-frame");
+        if (execution.Expired) return Reject("execution-expired");
+        if (!ReferenceEquals(observation.Source, frame.Image)) return Reject("evidence-frame-mismatch");
+        if (cancellation.IsCancellationRequested) return Reject("cancelled");
+        if (!IsCurrentMatchOperation(match)) return Reject("match-changed");
+        if (!IsCurrentCaptureTarget(frame)) return Reject("capture-target-changed");
+        if (execution.CatalogRevision?.Equals(_recognition.CatalogRevision) != true)
+            return Reject("recognition-catalog-changed");
+        if (execution.CatalogRevision.Equals(_mapRepository.GetCatalogRevision()) != true)
+            return Reject("repository-catalog-changed");
+        if (!string.Equals(recognition.Map.Class, match.MapClass, StringComparison.OrdinalIgnoreCase))
+            return Reject("map-class-mismatch");
         var scan = result.PendingSideEntranceScan;
         var candidate = scan?.Candidates.FirstOrDefault(c => c.Map.Id == recognition.Map.Id
             && c.FloorKey == recognition.Result.Floor);
         if (candidate?.StructureIndex is not { } index
             || ScanIdentityVerifier.SelectIdentity(scan!.Candidates, execution.RetrievalCompleted
                 && scan.Candidates.Count == scan.EligibleMapCount, execution.CanCompute,
-                execution.VariantGroups) != recognition.Map.Id)
-            return false;
+                execution.VariantGroups, result.IdentitySelectionPolicy) != recognition.Map.Id)
+            return Reject("identity-selection-not-confirmed");
         var final = ScanIdentityVerifier.Verify(observation, index, transform, frame.ViewportBounds, execution);
         if (final.State != ScanIdentityState.Supported || !execution.CanCompute
             || !IsCurrentMatchOperation(match) || cancellation.IsCancellationRequested)
-            return false;
+            return Reject(final.State != ScanIdentityState.Supported ? "final-evidence:" + final.Reason
+                : !execution.CanCompute ? "final-compute-unavailable" : "final-context-changed");
 
         // No await between this generation/deadline check and first publication. The UI thread
         // owns the transaction; manual selection and future opens use their independent paths.
@@ -104,6 +128,16 @@ public sealed partial class SessionOrchestrator
         _overlay.Show();
         RefreshMiniMapForCurrentFloor();
         _statusMessage = $"已确认 {recognition.Map.DisplayName} · 结构支持 {final.SupportedFraction:P0}";
+        _logCollector.Append(MapLogCategory.ScanLifecycle, MapLogLevel.Info,
+            $"扫描自动提交成功 · map={recognition.Map.SequenceNumber}#{recognition.Result.Floor}",
+            details: new()
+            {
+                ["mapId"] = recognition.Map.Id,
+                ["selectionPolicy"] = result.IdentitySelectionPolicy.ToString(),
+                ["variantGroup"] = execution.VariantGroups.FirstOrDefault(g => g.Contains(recognition.Map.Id)),
+                ["support"] = final.SupportedFraction,
+                ["decisionElapsedMs"] = execution.ElapsedMilliseconds
+            });
         StateChanged?.Invoke(this, EventArgs.Empty);
         return true;
     }

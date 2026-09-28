@@ -5,10 +5,25 @@ using OpenCvSharp;
 namespace IDVBuff.Features.Maps;
 
 public enum ScanIdentityState { Unverified, Excluded, Supported }
+public readonly record struct ScanConflictPoint(int X, int Y);
+internal enum ScanIdentitySelectionPolicy
+{
+    RequireUniqueSupport,
+    AllowDominantSupport
+}
+
 public sealed record ScanIdentityEvidence(ScanIdentityState State, int TestedPoints,
     int TotalPoints, double ForwardMeanPixels, double SupportedFraction,
     double LongestConflictPixels, string Reason)
 {
+    public int ConflictCell { get; init; } = -1;
+    public int ConflictCellPoints { get; init; }
+    public int ConflictCellHits { get; init; }
+    public ScanConflictPoint? ConflictStart { get; init; }
+    public ScanConflictPoint? ConflictEnd { get; init; }
+    public double EvaluatedScale { get; init; }
+    public double ViewportOffsetX { get; init; }
+    public double ViewportOffsetY { get; init; }
     public static ScanIdentityEvidence Unverified(string reason) =>
         new(ScanIdentityState.Unverified, 0, 0, double.NaN, 0, 0, reason);
 }
@@ -89,47 +104,47 @@ internal sealed class ScanStructureIndex
 
 internal static class ScanIdentityVerifier
 {
+    internal readonly record struct SelectionDecision(Guid? MapId, string Reason);
     public static Guid? SelectIdentity(IReadOnlyList<SideEntranceScanCandidate> candidates,
-        bool retrievalComplete, bool withinBudget, IReadOnlyList<Guid[]>? variantGroups = null)
+        bool retrievalComplete, bool withinBudget, IReadOnlyList<Guid[]>? variantGroups = null,
+        ScanIdentitySelectionPolicy selectionPolicy = ScanIdentitySelectionPolicy.RequireUniqueSupport)
+        => EvaluateSelection(candidates, retrievalComplete, withinBudget, variantGroups, selectionPolicy).MapId;
+
+    internal static SelectionDecision EvaluateSelection(IReadOnlyList<SideEntranceScanCandidate> candidates,
+        bool retrievalComplete, bool withinBudget, IReadOnlyList<Guid[]>? variantGroups = null,
+        ScanIdentitySelectionPolicy selectionPolicy = ScanIdentitySelectionPolicy.RequireUniqueSupport)
     {
-        if (!retrievalComplete || !withinBudget || candidates.Any(c => c.IdentityEvidence.State == ScanIdentityState.Unverified))
-            return null;
-        var supported = candidates.Where(c => c.IdentityEvidence.State == ScanIdentityState.Supported
-                && c.Disposition == SideEntranceCandidateDisposition.Reliable)
-            .OrderBy(c => FitCost(c.IdentityEvidence)).ToArray();
-        // A better fit can choose a provisional resource, but cannot disprove another
-        // identity which also explains the visible fragment. Keep observing it.
-        if (supported.Length != 1) return null;
-        // A local contour veto is not evidence that a near-identical sibling is absent.
-        // Icons and reference omissions can trigger that veto even at >97% full-frame
-        // support. Keep the declared variant group unresolved instead of letting the
-        // first sibling just below the contour threshold win by elimination.
-        var winnerId = supported[0].Map.Id;
-        foreach (var group in variantGroups ?? [])
-        {
-            if (!group.Contains(winnerId)) continue;
-            foreach (var sibling in candidates.Where(c => c.Map.Id != winnerId && group.Contains(c.Map.Id)))
-            {
-                // Mean distance can improve by fitting a shared room more tightly
-                // while explaining less of the visible structure. That trade-off
-                // cannot establish which near-identical variant is present.
-                if (sibling.IdentityEvidence.State == ScanIdentityState.Supported
-                    && sibling.IdentityEvidence.SupportedFraction > supported[0].IdentityEvidence.SupportedFraction)
-                    return null;
-                var evidence = sibling.SearchHypotheses.Count > 0
-                    ? sibling.SearchHypotheses.Select(h => h.IdentityEvidence)
-                    : [sibling.IdentityEvidence];
-                if (evidence.Any(e => e.State == ScanIdentityState.Excluded
-                    && e.TestedPoints == e.TotalPoints && e.TotalPoints > 0
-                    && e.SupportedFraction >= MinimumSupport
-                    && e.Reason is "visible-contour-conflict" or "spatial-support-conflict"))
-                    return null;
-            }
-        }
-        return winnerId;
+        if (!retrievalComplete) return new(null, "retrieval-incomplete");
+        if (!withinBudget) return new(null, "execution-unavailable");
+        if (candidates.Any(c => c.IdentityEvidence.State == ScanIdentityState.Unverified))
+            return new(null, "unverified-identities");
+        var supported = candidates.Where(c => c.IdentityEvidence.State == ScanIdentityState.Supported)
+            .OrderBy(c => FitCost(c.IdentityEvidence))
+            .ThenByDescending(c => c.IdentityEvidence.SupportedFraction)
+            .ThenBy(c => c.Map.SequenceNumber).ThenBy(c => c.Map.Id).ToArray();
+        var verified = supported.Where(c => c.Disposition == SideEntranceCandidateDisposition.Reliable).ToArray();
+        if (verified.Length == 0) return new(null, supported.Length == 0
+            ? "all-identities-excluded" : "supported-without-confirmed-alignment");
+        // Compare identities at the user-selectable family boundary. Only the
+        // selected member needs a confirmed alignment; a fully compared losing
+        // identity must not force a dialog merely because it was not aligned.
+        var winnerId = verified[0].Map.Id;
+        var winnerCost = FitCost(verified[0].IdentityEvidence);
+        // Do not transitively merge overlapping groups. Each declared family has
+        // to beat every supported identity outside that one family independently.
+        var families = (variantGroups ?? []).Where(group => group.Contains(winnerId))
+            .Append(new[] { winnerId });
+        var selected = families.Any(family => supported.Where(c => !family.Contains(c.Map.Id)).All(c =>
+            selectionPolicy == ScanIdentitySelectionPolicy.AllowDominantSupport
+            && FitCost(c.IdentityEvidence) - winnerCost >= DominantFitMargin));
+        return new(selected ? winnerId : null, selected ? "selected" : "competing-supported-identities");
     }
-    private static double FitCost(ScanIdentityEvidence evidence) =>
+    internal const double DominantFitMargin = .35;
+    internal static double FitCost(ScanIdentityEvidence evidence) =>
         evidence.ForwardMeanPixels + (1 - evidence.SupportedFraction) * 5;
+    internal static bool CannotBeatFitCost(double partialDistance, int unsupportedPoints,
+        int totalPoints, double competitiveCost) => totalPoints > 0
+        && (partialDistance + unsupportedPoints * 5d) / totalPoints >= competitiveCost;
     // Same safety policy in every mode. Distances are measured in screen pixels.
     internal const double SupportTolerancePixels = 5.5;
     internal const double MinimumSupport = .88;
@@ -171,24 +186,41 @@ internal static class ScanIdentityVerifier
                     hits / (double)tested, 0, "unexplained-visible-structure");
         }
         var longest = 0d;
+        Point? conflictStart = null, conflictEnd = null;
         foreach (var contour in frame.Contours)
         {
             if (context is { CanCompute: false }) return ScanIdentityEvidence.Unverified("deadline");
-            longest = Math.Max(longest, MeasureStraightConflict(contour, Distance));
+            var measured = MeasureStraightConflict(contour, Distance, out var start, out var end);
+            if (measured > longest) { longest = measured; conflictStart = start; conflictEnd = end; }
             if (longest >= MaximumContinuousConflictPixels) break;
         }
         var support = hits / (double)points.Length;
         var spatialConflict = false;
+        var conflictCell = -1;
         for (var cell = 0; cell < cellTotals.Length; cell++)
-            if (cellTotals[cell] >= 30 && cellHits[cell] < cellTotals[cell] * .70) spatialConflict = true;
+            if (cellTotals[cell] >= 30 && cellHits[cell] < cellTotals[cell] * .70)
+            { spatialConflict = true; if (conflictCell < 0) conflictCell = cell; }
         var accepted = support >= MinimumSupport && !spatialConflict && longest < MaximumContinuousConflictPixels;
         return new(accepted ? ScanIdentityState.Supported : ScanIdentityState.Excluded,
             tested, points.Length, distance / tested, support, longest,
-            accepted ? "visible-structure-supported" : spatialConflict ? "spatial-support-conflict" : "visible-contour-conflict");
+            accepted ? "visible-structure-supported" : spatialConflict ? "spatial-support-conflict" : "visible-contour-conflict")
+        {
+            ConflictCell = conflictCell,
+            ConflictCellPoints = conflictCell < 0 ? 0 : cellTotals[conflictCell],
+            ConflictCellHits = conflictCell < 0 ? 0 : cellHits[conflictCell],
+            ConflictStart = conflictStart is { } startPoint ? new(startPoint.X, startPoint.Y) : null,
+            ConflictEnd = conflictEnd is { } endPoint ? new(endPoint.X, endPoint.Y) : null,
+            EvaluatedScale = scale, ViewportOffsetX = tx, ViewportOffsetY = ty
+        };
     }
 
     internal static double MeasureStraightConflict(Point[] contour, Func<Point, double> distance)
+        => MeasureStraightConflict(contour, distance, out _, out _);
+
+    internal static double MeasureStraightConflict(Point[] contour, Func<Point, double> distance,
+        out Point? conflictStart, out Point? conflictEnd)
     {
+        conflictStart = null; conflictEnd = null;
         // A small badge's perimeter (or a contour visited twice) is not the length
         // of an unexplained wall. Split at genuine turns, tolerating raster stair
         // steps, and measure supported/unsupported runs on each straight segment.
@@ -203,14 +235,20 @@ internal static class ScanIdentityVerifier
             var steps = Math.Max(Math.Abs(dx), Math.Abs(dy));
             if (steps == 0) continue;
             var run = 0d;
+            var runStart = a;
             for (var step = 0; step <= steps; step++)
             {
                 var p = new Point((int)Math.Round(a.X + dx * (step / (double)steps)),
                     (int)Math.Round(a.Y + dy * (step / (double)steps)));
                 if (distance(p) > SupportTolerancePixels)
+                {
+                    if (run == 0) runStart = step == 0 ? a : new Point(
+                        (int)Math.Round(a.X + dx * ((step - 1d) / steps)),
+                        (int)Math.Round(a.Y + dy * ((step - 1d) / steps)));
                     run += step == 0 ? 0 : length / steps;
+                }
                 else run = 0;
-                longest = Math.Max(longest, run);
+                if (run > longest) { longest = run; conflictStart = runStart; conflictEnd = p; }
                 if (longest >= MaximumContinuousConflictPixels) return longest;
             }
         }

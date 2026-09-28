@@ -5,7 +5,7 @@ namespace IDVBuff.Features.Maps;
 /// <summary>Persisted runtime configuration for the 解锁地图 status module.</summary>
 public sealed partial class MapRuntimeSettings
 {
-    public const int CurrentSchemaVersion = 19;
+    public const int CurrentSchemaVersion = 21;
     public const int CurrentCalibrationVersion = MapRuntimeSettingsRules.CurrentCalibrationVersion;
 
     public int SchemaVersion { get; set; } = CurrentSchemaVersion;
@@ -62,11 +62,18 @@ public sealed partial class MapRuntimeSettings
     public bool SkipFloorRecognition { get; set; }
     public bool AllowMapExtendBeyondBounds { get; set; } = true;
     public bool PersistentMiniMapEnabled { get; set; } = true;
+    public bool HideMiniMap { get; set; }
     public double MiniMapScale { get; set; } = 0.25d;
     public bool PlayerTrackingEnabled { get; set; } = false;
     public bool AllowAutomaticMapCache { get; set; }
     public bool ReverseAlternateDisplay { get; set; }
     public double MapOpacity { get; set; } = 0.46d;
+    /// <summary>显示受当前地图类能力声明保护的矢量路线。</summary>
+    public bool ShowRoutes { get; set; } = true;
+    /// <summary>线路粗细：0 细（原始宽度）、1 中、2 粗、3 更粗。</summary>
+    public int RouteLineThickness { get; set; } = 1;
+    // Compatibility fields retained for older settings files. ShowRoutes is
+    // the only product-facing source of truth; Normalize derives these values.
     public bool ShowGateMarkers { get; set; } = true;
     public bool ShowAuxiliaryAnchors { get; set; } = true;
     public bool ShowTextAnnotations { get; set; } = true;
@@ -100,6 +107,7 @@ public sealed partial class MapRuntimeSettings
     public MapInputBinding SaveMapCacheBinding { get; set; } = new();
     public MapInputBinding RestMapDisplayBinding { get; set; } = new();
     public MapInputBinding MatchStateToggleBinding { get; set; } = new();
+    public MapInputBinding HideAlignmentResultBinding { get; set; } = new();
     public MapRecognitionTuning RecognitionTuning { get; set; } = new();
     public MapStructureRegistrationTuning StructureRegistrationTuning { get; set; } = new();
     public MapSessionTuning SessionTuning { get; set; } = new();
@@ -152,13 +160,14 @@ public sealed partial class MapRuntimeSettings
         AllowAutomaticMapCache = false,
         ReverseAlternateDisplay = false,
         MapOpacity = 0.46d,
+        ShowRoutes = true,
         ShowGateMarkers = true,
-        ShowAuxiliaryAnchors = true,
+        ShowAuxiliaryAnchors = false,
         ShowTextAnnotations = true,
         ShowBoxAnnotations = true,
         ShowLineAnnotations = true,
-        ShowGateMarkersOnMiniMap = true,
-        ShowAuxiliaryAnchorsOnMiniMap = true,
+        ShowGateMarkersOnMiniMap = false,
+        ShowAuxiliaryAnchorsOnMiniMap = false,
         ShowTextAnnotationsOnMiniMap = true,
         ShowBoxAnnotationsOnMiniMap = true,
         ShowLineAnnotationsOnMiniMap = true,
@@ -185,6 +194,7 @@ public sealed partial class MapRuntimeSettings
         SaveMapCacheBinding = new MapInputBinding(),
         RestMapDisplayBinding = new MapInputBinding(),
         MatchStateToggleBinding = new MapInputBinding(),
+        HideAlignmentResultBinding = new MapInputBinding(),
         RecognitionTuning = new MapRecognitionTuning
         {
             GateTemplateThreshold = 0.72d,
@@ -349,6 +359,8 @@ public sealed partial class MapRuntimeSettings
         SaveMapCacheBinding = SaveMapCacheBinding?.Clone() ?? new MapInputBinding(),
         RestMapDisplayBinding = RestMapDisplayBinding?.Clone() ?? new MapInputBinding(),
         MatchStateToggleBinding = MatchStateToggleBinding?.Clone() ?? new MapInputBinding(),
+        HideAlignmentResultBinding =
+            HideAlignmentResultBinding?.Clone() ?? new MapInputBinding(),
         AllowAutomaticMapCache = AllowAutomaticMapCache,
         RecognitionTuning = RecognitionTuning?.Clone() ?? new MapRecognitionTuning(),
         StructureRegistrationTuning =
@@ -402,10 +414,13 @@ public sealed partial class MapRuntimeSettings
         FloorCalibrationVersion = FloorCalibrationVersion,
         AllowMapExtendBeyondBounds = AllowMapExtendBeyondBounds,
         PersistentMiniMapEnabled = PersistentMiniMapEnabled,
+        HideMiniMap = HideMiniMap,
         PlayerTrackingEnabled = PlayerTrackingEnabled,
         ReverseAlternateDisplay = ReverseAlternateDisplay,
         MiniMapScale = MiniMapScale,
         MapOpacity = MapOpacity,
+        RouteLineThickness = RouteLineThickness,
+        ShowRoutes = ShowRoutes,
         ShowGateMarkers = ShowGateMarkers,
         ShowAuxiliaryAnchors = ShowAuxiliaryAnchors,
         ShowTextAnnotations = ShowTextAnnotations,

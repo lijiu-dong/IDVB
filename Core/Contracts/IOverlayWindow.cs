@@ -108,6 +108,14 @@ public interface IOverlayWindow : IDisposable
     }
 
     /// <summary>
+    /// 临时控制大地图贴合图层的呈现。地图内容和最新变换仍继续更新，
+    /// 状态层和持久小地图不受影响。
+    /// </summary>
+    void SetMapContentVisible(bool visible)
+    {
+    }
+
+    /// <summary>
     /// 切换叠加层可见性。
     /// </summary>
     void Toggle();
@@ -150,7 +158,8 @@ public interface IOverlayWindow : IDisposable
         double miniMapScale,
         object? /* IReadOnlyList<MapOverlayRenderAnchor>? */ anchors = null,
         object? /* IReadOnlyList<MapOverlayRenderAnnotation>? */ annotations = null,
-        string? floorLabel = null);
+        string? floorLabel = null,
+        bool supportsVectorRoutes = false);
 
     /// <summary>
     /// 清除持久小地图内容。
@@ -166,6 +175,8 @@ public interface IOverlayWindow : IDisposable
     void SetReverseAlternateDisplay(bool enabled);
     void SetAllowExtend(bool allow);
     void SetMapOpacity(double opacity);
+    void SetRouteLineThickness(int level) { }
+    void SetHideMiniMap(bool hide) { }
     void SetShowGateMarkers(bool show);
     void SetShowAuxiliaryAnchors(bool show);
     void SetShowTextAnnotations(bool show);
