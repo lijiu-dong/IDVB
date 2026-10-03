@@ -18,7 +18,7 @@ namespace IDVBuff.Plugins.SceneQuickActions;
     "scene-quick-actions",
     DisplayName = "背包辅助",
     Description = "自动识别「邀请你牵手」与「可拾取」两个界面，执行接受邀请、拾取全部、快捷替换。",
-    Version = "1.6.1",
+    Version = "1.7.0",
     AlwaysActive = true)]
 public sealed class SceneQuickActionsPlugin
     : PluginBase, IPluginSettingsProvider, IHandle<SessionStateChangedMessage>
@@ -47,6 +47,22 @@ public sealed class SceneQuickActionsPlugin
             DisplayName = "拾取相关",
             Description = "识别到「可拾取」面板时，先「拾取全部」，再「快捷替换」。",
             DefaultValue = true
+        },
+        new PluginKeyBindingSetting
+        {
+            Key = SceneQuickActionsOptions.DropBagHotkeyKey,
+            DisplayName = "丢光背包 · 热键（键盘键或鼠标键）",
+            Description = "按下后先按 Tab 开背包切出鼠标，再把上排 3 格、中排 3 格依次拖到屏幕正中心松手，最后按 Tab 关背包。点右边按钮即可录制新键；不支持组合键。",
+            DefaultValue = PluginInputBinding.Keyboard(SceneQuickActionsOptions.DefaultDropBagVirtualKey).StorageValue,
+            AllowedKinds = PluginInputBindingKinds.All
+        },
+        new PluginKeyBindingSetting
+        {
+            Key = SceneQuickActionsOptions.DropHotbarHotkeyKey,
+            DisplayName = "逐个丢道具栏 · 热键（键盘键或鼠标键）",
+            Description = "每按一次，先切出鼠标，再把底部道具栏的下一个格子拖到屏幕正中心松手：第 1 次拖第 1 格，第 2 次拖第 2 格，依次循环。点右边按钮即可录制新键；不支持组合键。",
+            DefaultValue = PluginInputBinding.Keyboard(SceneQuickActionsOptions.DefaultDropHotbarVirtualKey).StorageValue,
+            AllowedKinds = PluginInputBindingKinds.All
         },
         new PluginKeyBindingSetting
         {
@@ -128,24 +144,6 @@ public sealed class SceneQuickActionsPlugin
             Maximum = SceneQuickActionsOptions.CooldownMaximum,
             StepFrequency = 100,
             DefaultValue = 1500
-        },
-        new PluginKeyBindingSetting
-        {
-            Key = SceneQuickActionsOptions.DropBagHotkeyKey,
-            DisplayName = "热键 · 丢光背包（6 格 → 屏幕中心）",
-            Description = "按下后先按 Tab 开背包切出鼠标，再把上排 3 格、中排 3 格依次拖到屏幕正中心松手，最后按 Tab 关背包。键盘键或鼠标键都能录（不支持组合键）。",
-            Group = SceneQuickActionsOptions.KeyGroupTitle,
-            DefaultValue = PluginInputBinding.Keyboard(SceneQuickActionsOptions.DefaultDropBagVirtualKey).StorageValue,
-            AllowedKinds = PluginInputBindingKinds.All
-        },
-        new PluginKeyBindingSetting
-        {
-            Key = SceneQuickActionsOptions.DropHotbarHotkeyKey,
-            DisplayName = "热键 · 逐个丢道具栏（1 → 2 → 3 → 4）",
-            Description = "每按一次，先切出鼠标，再把底部道具栏的下一个格子拖到屏幕正中心松手：第 1 次拖第 1 格，第 2 次拖第 2 格，依次循环。键盘键或鼠标键都能录（不支持组合键）。",
-            Group = SceneQuickActionsOptions.KeyGroupTitle,
-            DefaultValue = PluginInputBinding.Keyboard(SceneQuickActionsOptions.DefaultDropHotbarVirtualKey).StorageValue,
-            AllowedKinds = PluginInputBindingKinds.All
         },
         new PluginSliderSetting
         {
