@@ -135,7 +135,6 @@ using IDVBuff.Core.Contracts; using IDVBuff.Core.Diagnostics; using IDVBuff.Core
                     MapRecognitionAttempt? vpsg3Attempt = precomputedVpsg3Attempt;
                     IdvbStatus? steadyVpsgStatus = null;
                     if (vpsg3Attempt is null
-                        && alignmentChannel.Channel != MapAlignmentChannel.LowStructure
                         && _recognition.TryAlignWithVpsg3(
                             frame,
                             locked.Map,
@@ -143,7 +142,8 @@ using IDVBuff.Core.Contracts; using IDVBuff.Core.Diagnostics; using IDVBuff.Core
                             alignmentSession.SideEntranceScanPriorConfidence,
                             out var fastVpsgAttempt,
                             out steadyVpsgStatus,
-                            knownScaleSeed: warmSeed.Session.LockedTransform.ScaleX)
+                            knownScaleSeed: warmSeed.Session.LockedTransform.ScaleX,
+                            hasValidatedFloorScale: true)
                         && fastVpsgAttempt.Recognition is not null)
                     {
                         vpsg3Attempt = fastVpsgAttempt;
@@ -310,6 +310,8 @@ using IDVBuff.Core.Contracts; using IDVBuff.Core.Diagnostics; using IDVBuff.Core
             if (recoveryDecision.Resolution == FloorRecoveryResolution.SingleAccepted && recoveryDecision.Winner is { } winner)
             {
                 targetFloorKey = winner.FloorKey;
+                isOtherFloor = !string.Equals(targetFloorKey, primaryFloorKey, StringComparison.Ordinal);
+                trace?.SetContext(floorKey: targetFloorKey);
                 aligned = winner.AlignedRecognition;
                 failureReason = null;
                 repairCacheKey = winner.PendingRepairCacheKey;
@@ -334,7 +336,7 @@ using IDVBuff.Core.Contracts; using IDVBuff.Core.Diagnostics; using IDVBuff.Core
             else if (recoveryDecision.Resolution == FloorRecoveryResolution.AllRejected)
             {
                 aligned = null;
-                failureReason = "当前地图各楼层均未通过结构验证，请核对地图或重新开图。";
+                failureReason = recoveryDecision.Reason ?? "楼层对齐未通过，请重新开图。";
                 finalAttempt = initialAttemptResult.Attempt;
                 repairCacheKey = null;
             }

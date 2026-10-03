@@ -1,4 +1,7 @@
+extern alias VisionEngine;
+
 using IDVBuff.Diagnostics;
+using IDVBuff.Core.Contracts;
 using IDVBuff.Features.Plugins.V2;
 using IDVBuff.PluginContracts;
 using IdentityVisionBridge.PluginRuntime;
@@ -50,16 +53,21 @@ public partial class App
         WriteStartupTrace("Third-party directories, state and installer constructed; event bridge begin.");
         _thirdPartyHostEventBridge = new ThirdPartyHostEventBridge(pluginBus, thirdPartyEventHub);
         _thirdPartyHostEventBridge.Attach();
-        _pluginNotificationCenter = new PluginNotificationCenter();
         var serviceProvider = _serviceProvider
             ?? throw new InvalidOperationException("DI container is not initialized.");
+        _pluginNotificationCenter = new PluginNotificationCenter(
+            serviceProvider.GetRequiredService<IOverlayNotificationService>());
         WriteStartupTrace("Third-party event bridge attached; capability services resolution begin.");
         var capabilitySource = new ThirdPartyPluginCapabilitySource(
             thirdPartyEventHub,
             serviceProvider.GetRequiredService<IPluginInputService>(),
             serviceProvider.GetRequiredService<IPluginScreenshotService>(),
             _pluginNotificationCenter,
-            QueueThirdPartyPluginFault);
+            QueueThirdPartyPluginFault,
+            new VisionCapabilityProvider(
+                new DesktopPluginVisionHost(serviceProvider.GetRequiredService<Features.Maps.SessionOrchestrator>()),
+                () => new VisionEngine::IdentityVisionBridge.Vision.IdvbVisionEngine(
+                    Path.Combine(AppDataPaths.RootDirectory, "Maps"))));
         WriteStartupTrace("Third-party capability services resolved; context and manager construction begin.");
         var contextFactory = new DefaultThirdPartyPluginContextFactory(
             capabilitySource,
@@ -116,6 +124,7 @@ public partial class App
         var runtime = _thirdPartyPluginRuntime;
         if (runtime is null)
             return;
+        OutputLog.Write("ERROR", "PLUGIN/HOST", $"Plugin callback failed for {pluginId}: {exception}");
         _ = ReportAsync();
         return;
 

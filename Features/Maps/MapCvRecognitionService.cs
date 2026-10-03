@@ -23,6 +23,7 @@ public sealed partial class MapCvRecognitionService : IDisposable
         IReadOnlyList<MapGeometryFingerprint> Fingerprints, IReadOnlySet<Guid> ChangedMapIds);
 
     private readonly MapRepository _repository;
+    private readonly Action? _invalidateOverlayImageCache;
     private readonly SemaphoreSlim _cacheGate = new(1, 1);
     private readonly GateTemplateDetector _gateDetector;
     private readonly MapStructurePreprocessor _structurePreprocessor = new();
@@ -44,12 +45,16 @@ public sealed partial class MapCvRecognitionService : IDisposable
     private bool _cacheInitialized;
     private bool _disposed;
 
-    public MapCvRecognitionService(MapRepository repository)
+    public MapCvRecognitionService(MapRepository repository, Action? invalidateOverlayImageCache = null,
+        string? dataDirectory = null)
     {
         _repository = repository;
+        _invalidateOverlayImageCache = invalidateOverlayImageCache;
         _gateDetector = new GateTemplateDetector(MapCvRecognitionHelpers.ResolveGatePath());
         _structureRegistrar = new MapStructureRegistrar(_structurePreprocessor);
-        _structureCache = new MapStructureReferenceCache(_structurePreprocessor);
+        var cacheDirectory = dataDirectory is null ? null : Path.Combine(dataDirectory, "MapAlignmentCache");
+        _structureCache = new MapStructureReferenceCache(_structurePreprocessor, cacheDirectory);
+        if (cacheDirectory is not null) _vpsgScaleGraphCache = new MapVpsgScaleGraphCache(cacheDirectory);
     }
 
     // ── Internal accessors for static helper classes ────────────────────────────
@@ -80,6 +85,7 @@ public sealed partial class MapCvRecognitionService : IDisposable
         using var perfScope = RealtimePerformanceTracker.TrackScope("ResetMatchState", forceLog: true);
         ObjectDisposedException.ThrowIf(_disposed, this);
         _gateDetector.ResetSuccessfulScale();
+        _deepScanGateDetector?.ResetSuccessfulScale();
 
         Task[] pendingTasks;
         lock (_floorPrewarmGate)
@@ -190,6 +196,7 @@ public sealed partial class MapCvRecognitionService : IDisposable
                     }
 
                     var builtSideEntrance = MapCvRecognitionHelpers.BuildSideEntranceFeatureCache(_repository, buildResult.Maps);
+                    PrewarmDeepScan(builtSideEntrance.Values);
                     return (buildResult, builtSideEntrance);
                 });
             }
@@ -207,7 +214,7 @@ public sealed partial class MapCvRecognitionService : IDisposable
             _structureCache.InvalidateMaps(cache.ChangedMapIds);
             InvalidateAndTriggerVpsg3Rebuild(cache.Maps, cache.ChangedMapIds);
             // MapRepository may overwrite an image without changing its path.
-            MapOverlayBitmapRenderer.InvalidateImageCache();
+            _invalidateOverlayImageCache?.Invoke();
 
             // 刷新侧门特征缓存
             var oldFeatureCache = _sideEntranceFeatureCache;

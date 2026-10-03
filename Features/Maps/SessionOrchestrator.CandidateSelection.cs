@@ -22,10 +22,28 @@ public sealed partial class SessionOrchestrator
         bool nativeChoicesPrepared = false,
         IReadOnlyList<Microsoft.UI.Xaml.Media.ImageSource?>? preloadedChoicePreviews = null,
         MapManualCandidateWindow.CandidateLivePreviewAssets? preloadedLivePreview = null,
-        MapLearningScoreResult? precomputedLearningResult = null)
+        MapLearningScoreResult? precomputedLearningResult = null,
+        bool requiresExplicitSelection = false)
     {
         var selectionExecution = ScanExecutionContext.Current;
-        Action? onPresented = selectionExecution is null ? null : () => FinishScanExecution(selectionExecution);
+        // Background consumption runs after the scan's ambient scope ends.
+        // Carry its unresolved status explicitly instead of treating it as a
+        // fresh opportunity for model/headless top-one selection.
+        requiresExplicitSelection |= selectionExecution is not null;
+        var selectionRequest = ScanRequestDiagnostics.Current;
+        if (selectionExecution is not null)
+        {
+            // The automatic decision is over. Preview decoding, model ranking and
+            // waiting for the chooser are manual-selection work, not scan compute.
+            // Keep the scope for cancellation/generation checks and the explicit
+            // selection guard above; completing it must never auto-pick a result.
+            LogScanCheckpoint("candidate-preparation", capturedRequest: selectionRequest);
+            FinishScanExecution(selectionExecution);
+        }
+        Action? onPresented = selectionExecution is null ? null : () =>
+        {
+            LogScanCheckpoint("candidate-presented", capturedRequest: selectionRequest);
+        };
         var scopedCandidates = candidates
             .Where(candidate => string.Equals(
                 candidate.Recognition.Map.Class,
@@ -43,7 +61,7 @@ public sealed partial class SessionOrchestrator
             return new CandidateSelectionResolution(null, false);
         // An unresolved automatic scan has already failed the shared identity decision.
         // Headless presentation must not turn its first geometrically plausible choice into a lock.
-        if (_headless && _activeCandidateSelector is null && ScanExecutionContext.Current is not null)
+        if (_headless && _activeCandidateSelector is null && requiresExplicitSelection)
         {
             _lastCandidateChoices = orderedCandidates;
             _statusMessage = "地图身份未确定；已保留候选，等待明确选择。";
@@ -91,7 +109,7 @@ public sealed partial class SessionOrchestrator
             return new CandidateSelectionResolution(null, false);
         _lastCandidateChoices = orderedCandidates;
         RememberMapLearningContext(frame, orderedCandidates, mapClass);
-        if (CanAcceptModelTopOne(learningResult, orderedCandidates))
+        if (!requiresExplicitSelection && CanAcceptModelTopOne(learningResult, orderedCandidates))
         {
             var recognition = MapCvRecognitionService.ConfirmChoice(
                 orderedCandidates[0]);
@@ -370,6 +388,13 @@ public sealed partial class SessionOrchestrator
         RuntimeMapRecognition selected,
         CapturedGameFrame frame,
         bool userConfirmed)
+        => LockSelectedMapIdentity(selected, frame.ClientBounds, frame.WindowHandle, userConfirmed);
+
+    private RuntimeMapRecognition LockSelectedMapIdentity(
+        RuntimeMapRecognition selected,
+        MapScreenRect clientBounds,
+        IntPtr windowHandle,
+        bool userConfirmed)
     {
         CancelMapObservation(clearPreview: true);
         InvalidateActiveMapOpenOperation("candidate-identity-committed");
@@ -406,8 +431,8 @@ public sealed partial class SessionOrchestrator
             floorKey,
             identityLock.Result.IdentityConfidence);
         _currentFloorKey = floorKey;
-        _lastGameBounds = frame.ClientBounds;
-        _lastGameWindowHandle = frame.WindowHandle;
+        _lastGameBounds = clientBounds;
+        _lastGameWindowHandle = windowHandle;
         _statusMessage =
             $"已锁定所选地图：{identityLock.Map.DisplayName} · "
             + $"{floorKey.ToUpperInvariant()}；正在首次对齐……";
