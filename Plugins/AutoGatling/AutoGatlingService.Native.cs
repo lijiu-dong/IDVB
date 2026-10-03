@@ -131,6 +131,9 @@ public sealed partial class AutoGatlingService
     private static extern IntPtr GetForegroundWindow();
 
     [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+    [DllImport("user32.dll", SetLastError = true)]
     private static extern bool GetClientRect(IntPtr hWnd, out Rect rect);
 
     [DllImport("user32.dll", SetLastError = true)]

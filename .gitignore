@@ -1,0 +1,31 @@
+# 构建产物
+bin/
+obj/
+build-output/
+
+# 本地工具链（.NET 10 SDK 等，体积大且可重新获取）
+tools/
+
+# 临时 / 测试数据
+testdata/
+*.user
+*.log
+
+# ---------------------------------------------------------------------------
+# 下列内容上游 code-only 仓库【未发布】，属于作者的素材与调参，
+# 不要提交到公开 fork（LICENSE 第四条：第三方素材不在本许可覆盖范围内）。
+# 本地构建时用 交付\补丁与源码改动\build.ps1 从已安装的 IDVB 目录复制过来即可。
+# ---------------------------------------------------------------------------
+
+# 界面素材 / 贴图 / 图标族（安装目录 Assets/ 下有）
+Assets/*.png
+Assets/*.ico
+Assets/Algorithms/
+Assets/FloorIndicators/
+Assets/Icons/
+Assets/Markdown/
+
+# 全局配置与各分辨率调参预设（安装目录 IDVB_config.toml / IDVB_survey.toml /
+# Configuration/Presets/ 下有）
+Infrastructure/Configuration/*.toml
+Infrastructure/Configuration/Presets/

@@ -15,6 +15,14 @@ public sealed partial class AutoGatlingService
                 && PluginMouseInput.TryDecode((uint)wParam.ToInt64(), mouse.MouseData,
                     out var button, out var down))
             {
+                // 本修改版新增的护栏：只有游戏在前台时才接管绑定的鼠标键。
+                if (!IsGameForeground())
+                {
+                    _activateKeyDown = false;
+                    _reloadKeyDown = false;
+                    return CallNextHookEx(_mouseHook, code, wParam, lParam);
+                }
+
                 if (HandleMouseTrigger(_activateBinding, ref _activateKeyDown, button, down, true)
                     || HandleMouseTrigger(_reloadBinding, ref _reloadKeyDown, button, down, false))
                     return new IntPtr(1);

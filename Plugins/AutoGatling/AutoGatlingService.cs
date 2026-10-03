@@ -24,6 +24,10 @@ public sealed partial class AutoGatlingService : IDisposable
     private const uint KeyeventfKeyup = 0x0002;
     private const uint MouseeventfLeftdown = 0x0002;
     private const uint MouseeventfLeftup = 0x0004;
+    /// <summary>被监测的游戏进程名（与宿主抓帧所用的 dwrg 保持一致）。</summary>
+    private const string GameProcessName = "dwrg";
+    /// <summary>前台进程判定的缓存时长：钩子回调很频繁，避免每次都去查进程。</summary>
+    private static readonly TimeSpan ForegroundCheckCacheDuration = TimeSpan.FromMilliseconds(250);
     private static readonly IntPtr InputInjectionMarker =
         new(InputInjectionMarkers.HostGeneratedInput);
 
@@ -45,6 +49,9 @@ public sealed partial class AutoGatlingService : IDisposable
     private bool _reloadKeyDown;
     private bool _started;
     private bool _disposed;
+    private IntPtr _lastForegroundWindow;
+    private bool _lastForegroundIsGame;
+    private DateTime _lastForegroundCheckedAt = DateTime.MinValue;
 
     public AutoGatlingService(AutoGatlingOptions options, Action<string> log)
     {
@@ -241,6 +248,17 @@ public sealed partial class AutoGatlingService : IDisposable
                 var isUp = message is WmKeyUp or WmSysKeyUp;
                 if (isDown || isUp)
                 {
+                    // 本修改版新增的护栏：只有游戏在前台时才接管触发键。
+                    // 在浏览器等其它窗口按同样的键，既不吞键、也不会误操作别的程序。
+                    if (!IsGameForeground())
+                    {
+                        // 顺手清掉按下状态，避免"在游戏里按下 → 切出去松开"之后
+                        // 回到游戏时第一次按键被当成仍在按住而不触发。
+                        _activateKeyDown = false;
+                        _reloadKeyDown = false;
+                        return CallNextHookEx(_keyboardHook, code, wParam, lParam);
+                    }
+
                     if (HandleTrigger(
                         _activateBinding,
                         ref _activateKeyDown,

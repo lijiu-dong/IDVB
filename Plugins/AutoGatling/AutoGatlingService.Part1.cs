@@ -210,12 +210,67 @@ public sealed partial class AutoGatlingService : IDisposable
             _ = SendInput(1, [input], Marshal.SizeOf<NativeInput>());
     }
 
+    /// <summary>
+    /// 前台窗口是否属于游戏进程（带短时缓存）。键盘/鼠标钩子据此决定要不要接管触发键。
+    /// </summary>
+    private bool IsGameForeground()
+    {
+        var window = GetForegroundWindow();
+        if (window == IntPtr.Zero)
+            return false;
+
+        var now = DateTime.UtcNow;
+        if (window == _lastForegroundWindow
+            && now - _lastForegroundCheckedAt < ForegroundCheckCacheDuration)
+        {
+            return _lastForegroundIsGame;
+        }
+
+        var isGame = IsGameProcess(window);
+        _lastForegroundWindow = window;
+        _lastForegroundIsGame = isGame;
+        _lastForegroundCheckedAt = now;
+        return isGame;
+    }
+
+    /// <summary>指定窗口是否属于被监测的游戏进程。</summary>
+    private static bool IsGameProcess(IntPtr window)
+    {
+        if (window == IntPtr.Zero
+            || GetWindowThreadProcessId(window, out var processId) == 0
+            || processId == 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            using var process = Process.GetProcessById((int)processId);
+            return IsGameProcessName(process.ProcessName);
+        }
+        catch (Exception)
+        {
+            // 进程已退出或没有查询权限时按“不是游戏”处理：宁可放行按键，也不误吞。
+            return false;
+        }
+    }
+
+    private static bool IsGameProcessName(string? processName) =>
+        string.Equals(processName, GameProcessName, StringComparison.OrdinalIgnoreCase);
+
     private bool TryGetLayout(out GameLayout layout)
     {
         layout = default;
         var window = GetForegroundWindow();
         if (window == IntPtr.Zero || !GetClientRect(window, out var rect))
             return false;
+
+        // 本修改版新增的护栏：前台窗口必须属于游戏进程，否则一律不操作。
+        if (!IsGameProcess(window))
+        {
+            _log("自动加特林未执行：前台窗口不是游戏进程（dwrg.exe）。");
+            return false;
+        }
 
         var origin = new NativePoint();
         if (!ClientToScreen(window, ref origin))
