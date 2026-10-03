@@ -387,18 +387,17 @@ internal sealed class SceneQuickActionsRunner : IDisposable
         _logger.Info($"已点击「{label}」（相似度 {hit.Score:P0}，屏幕坐标 {x},{y}）。");
     }
 
+    /// <summary>
+    /// 切出鼠标：按用户要求行为固定——只要设置了切出键，每次动作前都注入一次，
+    /// 不再做「指针是否可见」之类的判断（旧的「切出鼠标方式」选项已删除）。
+    /// </summary>
     private void WakeMouse(SceneQuickActionsOptions options, IntPtr windowHandle, CancellationToken token)
     {
-        if (options.MouseWakeMode == MouseWakeMode.Never)
-            return;
         if (!options.MouseWakeBinding.IsConfigured)
         {
             LogThrottled("未设置「切出鼠标」按键，已跳过切出步骤。");
             return;
         }
-
-        if (options.MouseWakeMode == MouseWakeMode.Smart && NativeInput.IsSystemCursorVisible())
-            return;
 
         EnsureForeground(windowHandle);
         NativeInput.InjectBinding(options.MouseWakeBinding, WakeHoldMilliseconds);

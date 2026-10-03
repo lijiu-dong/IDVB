@@ -30,13 +30,6 @@ internal static class NativeInput
     public static bool IsForegroundWindow(IntPtr window) =>
         window != IntPtr.Zero && GetForegroundWindow() == window;
 
-    /// <summary>系统鼠标指针当前是否可见（游戏切出指针后通常为可见）。</summary>
-    public static bool IsSystemCursorVisible()
-    {
-        var info = new CursorInfo { Size = Marshal.SizeOf<CursorInfo>() };
-        return GetCursorInfo(ref info) && (info.Flags & CursorShowing) != 0;
-    }
-
     public static void MoveCursorTo(int x, int y)
     {
         lock (SendGate)
@@ -267,17 +260,6 @@ internal static class NativeInput
         public int Y;
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct CursorInfo
-    {
-        public int Size;
-        public int Flags;
-        public IntPtr Cursor;
-        public NativePoint ScreenPosition;
-    }
-
-    private const int CursorShowing = 0x00000001;
-
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint inputCount, NativeInputStructure[] inputs, int inputSize);
 
@@ -291,8 +273,4 @@ internal static class NativeInput
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
-
-    [DllImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetCursorInfo(ref CursorInfo info);
 }

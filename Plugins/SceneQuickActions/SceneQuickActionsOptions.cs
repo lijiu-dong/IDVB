@@ -2,22 +2,12 @@ using IDVBuff.PluginContracts;
 
 namespace IDVBuff.Plugins.SceneQuickActions;
 
-/// <summary>「切出鼠标」的执行方式。</summary>
-public enum MouseWakeMode
-{
-    /// <summary>系统指针不可见时才注入切出键（默认；游戏始终隐藏系统指针时等价于「总是注入」）。</summary>
-    Smart,
-
-    /// <summary>每次动作前都注入一次切出键。</summary>
-    Always,
-
-    /// <summary>不注入，适用于指针已经处于可点击状态时。</summary>
-    Never
-}
-
 /// <summary>
 /// 运行时参数快照。设置页改动后整体替换一份新实例，工作线程只在循环开头读一次，
 /// 因此磁盘/UI 线程与工作线程之间不需要细粒度锁。
+///
+/// 「切出鼠标」的行为是固定的：每次动作前都注入一次切出键（旧版的
+/// 「切出鼠标方式」下拉框已按用户要求删除，磁盘上残留的旧值一律忽略）。
 /// </summary>
 public sealed record SceneQuickActionsOptions
 {
@@ -28,7 +18,6 @@ public sealed record SceneQuickActionsOptions
     public const string TimingGroupTitle = "间隔设置";
 
     public const string InviteEnabledKey = "invite-enabled";
-    public const string MouseWakeModeKey = "mouse-wake-mode";
     public const string MouseWakeBindingKey = "mouse-wake-binding";
     public const string WakeDelayKey = "wake-delay-ms";
     public const string PickupEnabledKey = "pickup-enabled";
@@ -59,9 +48,6 @@ public sealed record SceneQuickActionsOptions
 
     /// <summary>自动接受邀请：识别到「邀请你牵手」的接受按钮时自动点「接受」。</summary>
     public bool InviteEnabled { get; init; } = true;
-
-    /// <summary>「切出鼠标」的执行方式。</summary>
-    public MouseWakeMode MouseWakeMode { get; init; } = MouseWakeMode.Smart;
 
     /// <summary>「切出鼠标」注入的按键。</summary>
     public PluginInputBinding MouseWakeBinding { get; init; } =
@@ -100,25 +86,6 @@ public sealed record SceneQuickActionsOptions
 
     public static int Clamp(int value, int minimum, int maximum) =>
         value < minimum ? minimum : value > maximum ? maximum : value;
-
-    /// <summary>设置页里「切出鼠标方式」的三个选项文案。</summary>
-    public static IReadOnlyList<string> MouseWakeModeOptions { get; } =
-        ["智能判断（指针不可见时才按）", "总是注入一次", "不切出（指针已在）"];
-
-    public static string ToStorageValue(MouseWakeMode mode) => mode switch
-    {
-        MouseWakeMode.Always => MouseWakeModeOptions[1],
-        MouseWakeMode.Never => MouseWakeModeOptions[2],
-        _ => MouseWakeModeOptions[0]
-    };
-
-    public static MouseWakeMode ParseMouseWakeMode(string? value) => value switch
-    {
-        null => MouseWakeMode.Smart,
-        _ when string.Equals(value, MouseWakeModeOptions[1], StringComparison.Ordinal) => MouseWakeMode.Always,
-        _ when string.Equals(value, MouseWakeModeOptions[2], StringComparison.Ordinal) => MouseWakeMode.Never,
-        _ => MouseWakeMode.Smart
-    };
 
     public static int FromDouble(object? value, int fallback, int minimum, int maximum)
     {

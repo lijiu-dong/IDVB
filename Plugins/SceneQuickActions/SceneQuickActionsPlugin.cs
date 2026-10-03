@@ -18,7 +18,7 @@ namespace IDVBuff.Plugins.SceneQuickActions;
     "scene-quick-actions",
     DisplayName = "背包辅助",
     Description = "自动识别「邀请你牵手」与「可拾取」两个界面，执行接受邀请、拾取全部、快捷替换。",
-    Version = "1.2.0",
+    Version = "1.3.0",
     AlwaysActive = true)]
 public sealed class SceneQuickActionsPlugin
     : PluginBase, IPluginSettingsProvider, IHandle<SessionStateChangedMessage>
@@ -47,15 +47,6 @@ public sealed class SceneQuickActionsPlugin
             DisplayName = "拾取相关",
             Description = "识别到「可拾取」面板时，先「拾取全部」，再「快捷替换」。",
             DefaultValue = true
-        },
-        new PluginChoiceSetting
-        {
-            Key = SceneQuickActionsOptions.MouseWakeModeKey,
-            DisplayName = "切出鼠标方式",
-            Description = "「智能判断」只在系统指针不可见时才按切出键；若你的环境判断不准，可改为「总是注入一次」。",
-            Group = SceneQuickActionsOptions.KeyGroupTitle,
-            Options = [.. SceneQuickActionsOptions.MouseWakeModeOptions],
-            DefaultIndex = 0
         },
         new PluginKeyBindingSetting
         {
@@ -194,8 +185,7 @@ public sealed class SceneQuickActionsPlugin
         Context.Logger.Info(
             $"参数：检测间隔 {_options.PollIntervalMilliseconds}ms，阈值 {_options.MatchThresholdPercent}%，"
             + $"自动接受邀请 {(_options.InviteEnabled ? "开" : "关")}，拾取相关 {(_options.PickupEnabled ? "开" : "关")}；"
-            + $"切出鼠标 {_options.MouseWakeBinding.DisplayName}"
-            + $"（{SceneQuickActionsOptions.ToStorageValue(_options.MouseWakeMode)}）；"
+            + $"切出鼠标 {_options.MouseWakeBinding.DisplayName}（每次动作前注入一次）；"
             + $"拾取全部 {_options.PickupAllBinding.DisplayName}，"
             + $"快捷替换 {_options.QuickReplaceBinding.DisplayName}。");
     }
@@ -221,8 +211,6 @@ public sealed class SceneQuickActionsPlugin
     public object? GetSettingValue(string key) => key switch
     {
         SceneQuickActionsOptions.InviteEnabledKey => _options.InviteEnabled,
-        SceneQuickActionsOptions.MouseWakeModeKey =>
-            SceneQuickActionsOptions.ToStorageValue(_options.MouseWakeMode),
         SceneQuickActionsOptions.MouseWakeBindingKey => _options.MouseWakeBinding.StorageValue,
         SceneQuickActionsOptions.WakeDelayKey => (double)_options.WakeDelayMilliseconds,
         SceneQuickActionsOptions.PickupEnabledKey => _options.PickupEnabled,
@@ -253,8 +241,6 @@ public sealed class SceneQuickActionsPlugin
         {
             case SceneQuickActionsOptions.InviteEnabledKey when value is bool inviteEnabled:
                 return _options with { InviteEnabled = inviteEnabled };
-            case SceneQuickActionsOptions.MouseWakeModeKey when value is string wakeMode:
-                return _options with { MouseWakeMode = SceneQuickActionsOptions.ParseMouseWakeMode(wakeMode) };
             case SceneQuickActionsOptions.MouseWakeBindingKey when value is string wakeBinding:
                 return TryParseBinding(wakeBinding, out var parsedWake)
                     ? _options with { MouseWakeBinding = parsedWake }
