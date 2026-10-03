@@ -3,7 +3,11 @@ namespace IDVBuff;
 /// <summary>Separates manual test builds from the user's production data.</summary>
 public static class AppDataPaths
 {
-#if IDVBUFF_TEST_BUILD
+#if IDVB_EMBEDDED
+    public const bool IsTestBuild = false;
+    public const string ProductDirectoryName = "IDVB-Embedded";
+    public const string DisplayName = "Identity Vision Bridge";
+#elif IDVBUFF_TEST_BUILD
     public const bool IsTestBuild = true;
     public const string ProductDirectoryName = "IDVB-Test";
     private const string LegacyProductDirectoryName = "IDVBuff-Test";
@@ -15,10 +19,18 @@ public static class AppDataPaths
     public const string DisplayName = "Identity Vision Bridge";
 #endif
 
-    public static string RootDirectory { get; } = ResolveRootDirectory();
+    private static readonly Lazy<string> ResolvedRoot = new(ResolveRootDirectory);
+    public static string RootDirectory => ResolvedRoot.Value;
 
     private static string ResolveRootDirectory()
     {
+#if IDVB_EMBEDDED
+        // Embedded processing must never migrate or share the desktop application's data.
+        return Path.Combine(Path.GetTempPath(), "IDVB-Embedded", Environment.ProcessId.ToString());
+#elif IDVB_UNIT_TEST
+        // Unit tests must never migrate or write the user's installed data.
+        return Path.Combine(Path.GetTempPath(), $"IDVB-UnitTests-{Environment.ProcessId}");
+#else
         var localAppData = Environment.GetFolderPath(
             Environment.SpecialFolder.LocalApplicationData);
         var targetDirectory = Path.Combine(localAppData, ProductDirectoryName);
@@ -43,6 +55,37 @@ public static class AppDataPaths
         }
 
         return targetDirectory;
+#endif
+    }
+
+    internal static readonly object CacheIoGate = new();
+    private static readonly Dictionary<string, int> ActiveCachePaths = new(StringComparer.OrdinalIgnoreCase);
+
+    internal static IDisposable ProtectCachePath(string path)
+    {
+        path = Path.GetFullPath(path);
+        lock (CacheIoGate)
+            ActiveCachePaths[path] = ActiveCachePaths.GetValueOrDefault(path) + 1;
+        return new CachePathLease(path);
+    }
+
+    internal static string[] GetActiveCachePaths()
+    {
+        lock (CacheIoGate) return ActiveCachePaths.Keys.ToArray();
+    }
+
+    private sealed class CachePathLease(string path) : IDisposable
+    {
+        private bool _disposed;
+        public void Dispose()
+        {
+            lock (CacheIoGate)
+            {
+                if (_disposed) return;
+                _disposed = true;
+                if (--ActiveCachePaths[path] == 0) ActiveCachePaths.Remove(path);
+            }
+        }
     }
 
     private static void MoveMissingLegacyEntries(

@@ -42,6 +42,31 @@ internal static class BackgroundScanRules
         bool hasCandidateSelector) =>
         !isHeadless && !hasCandidateSelector;
 
+    internal static BackgroundScanOutcome ClassifyAutomaticScan(
+        ScanExecutionContext execution, RuntimeMapRecognition? identity,
+        IReadOnlyList<MapRecognitionChoice>? choices, string? failureReason,
+        object recognitionRevision, object repositoryRevision, ScanUncertainAction uncertainAction)
+    {
+        var contextCurrent = HasCurrentResultContext(execution, recognitionRevision, repositoryRevision);
+        // Background publication must observe the same lease as foreground
+        // commit. A late result must not become next-open identity/scale state.
+        if (!execution.CanCompute || !execution.RetrievalCompleted || !contextCurrent)
+        {
+            identity = null;
+            failureReason = "扫描已超时、取消、目录已变化或比较未完成，未保存自动识别结果。";
+        }
+        if (!contextCurrent || !ScanUncertainPolicies.Resolve(uncertainAction).OfferCandidates
+            || !MapCandidatePresentationRules.CanPresentChoices(execution, choices))
+            choices = null;
+        return ClassifyBackgroundScan(identity, choices, failureReason);
+    }
+
+    internal static bool HasCurrentResultContext(ScanExecutionContext execution,
+        object recognitionRevision, object repositoryRevision) =>
+        !execution.CancellationToken.IsCancellationRequested && !execution.IsSuperseded
+        && execution.CatalogRevision?.Equals(recognitionRevision) == true
+        && execution.CatalogRevision.Equals(repositoryRevision);
+
     /// <summary>
     /// 根据后台识别状态判定完成类型。纯函数，供单测驱动。
     /// </summary>
@@ -160,6 +185,12 @@ internal static class BackgroundScanRules
         RuntimeMapRecognition identity,
         string floorKey)
     {
+        // Choosing an identity does not validate its earlier retrieval pose.
+        // Verified structure scales are recovered separately below; an identity-
+        // only user choice must start independent alignment of its own floor.
+        if (identity.Result.Source == MapRecognitionSource.UserConfirmed
+            && identity.Result.OverlayTransform is null)
+            return null;
         if (seed is null)
             return null;
         if (seed.MapId != identity.Map.Id)
