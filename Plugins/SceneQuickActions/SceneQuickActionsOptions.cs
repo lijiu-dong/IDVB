@@ -6,8 +6,9 @@ namespace IDVBuff.Plugins.SceneQuickActions;
 /// 运行时参数快照。设置页改动后整体替换一份新实例，工作线程只在循环开头读一次，
 /// 因此磁盘/UI 线程与工作线程之间不需要细粒度锁。
 ///
-/// 「切出鼠标」的行为是固定的：每次动作前都注入一次切出键（旧版的
-/// 「切出鼠标方式」下拉框已按用户要求删除，磁盘上残留的旧值一律忽略）。
+/// 「切出鼠标」的行为是固定的：按一次 Tab 打开背包把系统指针切出来，动作做完再按
+/// 一次 Tab 关掉背包。旧版的「切出鼠标方式」下拉框与「切出鼠标按键」都已按用户要求
+/// 删除——实测合成的鼠标侧键游戏不认，而 Tab 这类游戏内键位走得通。
 /// </summary>
 public sealed record SceneQuickActionsOptions
 {
@@ -17,8 +18,10 @@ public sealed record SceneQuickActionsOptions
     /// <summary>设置页里「间隔设置」可折叠区的标题。</summary>
     public const string TimingGroupTitle = "间隔设置";
 
+    /// <summary>「切出鼠标」固定用的键：Tab（打开 / 关闭背包）。</summary>
+    public const uint WakeVirtualKey = 0x09;
+
     public const string InviteEnabledKey = "invite-enabled";
-    public const string MouseWakeBindingKey = "mouse-wake-binding";
     public const string WakeDelayKey = "wake-delay-ms";
     public const string PickupEnabledKey = "pickup-enabled";
     public const string PickupAllBindingKey = "pickup-all-binding";
@@ -48,10 +51,6 @@ public sealed record SceneQuickActionsOptions
 
     /// <summary>自动接受邀请：识别到「邀请你牵手」的接受按钮时自动点「接受」。</summary>
     public bool InviteEnabled { get; init; } = true;
-
-    /// <summary>「切出鼠标」注入的按键。</summary>
-    public PluginInputBinding MouseWakeBinding { get; init; } =
-        PluginInputBinding.Mouse(PluginMouseButton.XButton1);
 
     /// <summary>切出鼠标后、移动指针前的等待时间。</summary>
     public int WakeDelayMilliseconds { get; init; } = 150;

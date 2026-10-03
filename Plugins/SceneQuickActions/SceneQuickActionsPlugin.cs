@@ -18,7 +18,7 @@ namespace IDVBuff.Plugins.SceneQuickActions;
     "scene-quick-actions",
     DisplayName = "背包辅助",
     Description = "自动识别「邀请你牵手」与「可拾取」两个界面，执行接受邀请、拾取全部、快捷替换。",
-    Version = "1.3.0",
+    Version = "1.4.0",
     AlwaysActive = true)]
 public sealed class SceneQuickActionsPlugin
     : PluginBase, IPluginSettingsProvider, IHandle<SessionStateChangedMessage>
@@ -50,15 +50,6 @@ public sealed class SceneQuickActionsPlugin
         },
         new PluginKeyBindingSetting
         {
-            Key = SceneQuickActionsOptions.MouseWakeBindingKey,
-            DisplayName = "切出鼠标按键",
-            Description = "唤醒游戏鼠标指针的按键（默认鼠标侧键 1，与「启用鼠标按键」一致）。",
-            Group = SceneQuickActionsOptions.KeyGroupTitle,
-            DefaultValue = PluginInputBinding.Mouse(PluginMouseButton.XButton1).StorageValue,
-            AllowedKinds = PluginInputBindingKinds.All
-        },
-        new PluginKeyBindingSetting
-        {
             Key = SceneQuickActionsOptions.PickupAllBindingKey,
             DisplayName = "拾取全部按键",
             Description = "游戏里「拾取全部」提示上显示的按键（默认 B 键）。点「重置按键」清空后，改为用鼠标点击该提示。",
@@ -79,7 +70,7 @@ public sealed class SceneQuickActionsPlugin
         {
             Key = SceneQuickActionsOptions.PickupWakeKey,
             DisplayName = "拾取相关动作前先切出鼠标",
-            Description = "两步都用按键时不需要；只有用鼠标点击「快捷替换」且指针没切出时才打开。",
+            Description = "两步都用按键时不需要。打开后同样用「按 Tab 开背包」切出指针，动作完自动按 Tab 关上。",
             Group = SceneQuickActionsOptions.KeyGroupTitle,
             DefaultValue = false
         },
@@ -87,7 +78,7 @@ public sealed class SceneQuickActionsPlugin
         {
             Key = SceneQuickActionsOptions.WakeDelayKey,
             DisplayName = "切出鼠标后等待（毫秒）",
-            Description = "按下切出键后，等指针真正出现再移动点击。",
+            Description = "按 Tab 打开背包后，等指针真正出现再移动点击（内部下限 120ms，避免背包还没开就开始点）。",
             Group = SceneQuickActionsOptions.TimingGroupTitle,
             Minimum = SceneQuickActionsOptions.WakeDelayMinimum,
             Maximum = SceneQuickActionsOptions.WakeDelayMaximum,
@@ -185,7 +176,7 @@ public sealed class SceneQuickActionsPlugin
         Context.Logger.Info(
             $"参数：检测间隔 {_options.PollIntervalMilliseconds}ms，阈值 {_options.MatchThresholdPercent}%，"
             + $"自动接受邀请 {(_options.InviteEnabled ? "开" : "关")}，拾取相关 {(_options.PickupEnabled ? "开" : "关")}；"
-            + $"切出鼠标 {_options.MouseWakeBinding.DisplayName}（每次动作前注入一次）；"
+            + "切出鼠标 按 Tab 开背包（动作完再按 Tab 关上）；"
             + $"拾取全部 {_options.PickupAllBinding.DisplayName}，"
             + $"快捷替换 {_options.QuickReplaceBinding.DisplayName}。");
     }
@@ -211,7 +202,6 @@ public sealed class SceneQuickActionsPlugin
     public object? GetSettingValue(string key) => key switch
     {
         SceneQuickActionsOptions.InviteEnabledKey => _options.InviteEnabled,
-        SceneQuickActionsOptions.MouseWakeBindingKey => _options.MouseWakeBinding.StorageValue,
         SceneQuickActionsOptions.WakeDelayKey => (double)_options.WakeDelayMilliseconds,
         SceneQuickActionsOptions.PickupEnabledKey => _options.PickupEnabled,
         SceneQuickActionsOptions.PickupAllBindingKey => _options.PickupAllBinding.StorageValue,
@@ -241,10 +231,6 @@ public sealed class SceneQuickActionsPlugin
         {
             case SceneQuickActionsOptions.InviteEnabledKey when value is bool inviteEnabled:
                 return _options with { InviteEnabled = inviteEnabled };
-            case SceneQuickActionsOptions.MouseWakeBindingKey when value is string wakeBinding:
-                return TryParseBinding(wakeBinding, out var parsedWake)
-                    ? _options with { MouseWakeBinding = parsedWake }
-                    : _options;
             case SceneQuickActionsOptions.WakeDelayKey:
                 return _options with
                 {

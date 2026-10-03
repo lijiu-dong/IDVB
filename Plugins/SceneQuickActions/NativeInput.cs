@@ -84,7 +84,21 @@ internal static class NativeInput
         }
     }
 
-    /// <summary>按下并抬起一个插件绑定（键盘组合或鼠标键），用于「切出鼠标」。</summary>
+    /// <summary>按下并抬起一个键盘键，用于「按 Tab 开 / 关背包」这类固定动作。</summary>
+    public static void InjectKey(uint virtualKey, int holdMilliseconds)
+    {
+        SendKeyboard(virtualKey, up: false);
+        try
+        {
+            Thread.Sleep(Math.Clamp(holdMilliseconds, 1, 500));
+        }
+        finally
+        {
+            SendKeyboard(virtualKey, up: true);
+        }
+    }
+
+    /// <summary>按下并抬起一个插件绑定（键盘组合或鼠标键）。</summary>
     public static void InjectBinding(PluginInputBinding binding, int holdMilliseconds)
     {
         if (!binding.IsConfigured)

@@ -14,6 +14,8 @@ internal sealed class SceneQuickActionsRunner : IDisposable
     private const int ClickHoldMilliseconds = 35;
     private const int KeyHoldMilliseconds = 30;
     private const int WakeHoldMilliseconds = 25;
+    // 「切出鼠标后等待」的内部下限：按完 Tab 背包还没开出来就开始点会白点一次。
+    private const int MinimumWakeDelayMilliseconds = 120;
     private const int PreClickDelayMilliseconds = 40;
     private const int QuickReplaceAttempts = 3;
     private const int QuickReplaceRetryMilliseconds = 150;
@@ -186,15 +188,23 @@ internal sealed class SceneQuickActionsRunner : IDisposable
         CancellationToken token)
     {
         var (x, y) = SceneQuickActionsMatcher.ToScreen(hit.CenterX, hit.CenterY, frame.Bounds, frame.Size);
-        _logger.Info($"识别到「接受」按钮（相似度 {hit.Score:P0}），执行「切出鼠标 → 点击接受」。");
+        _logger.Info($"识别到「接受」按钮（相似度 {hit.Score:P0}），执行「按 Tab 开背包切出鼠标 → 点击接受 → 按 Tab 关背包」。");
 
         WakeMouse(options, frame.WindowHandle, token);
-        EnsureForeground(frame.WindowHandle);
-        NativeInput.MoveSmoothly(x, y, MoveDurationMilliseconds, token);
-        NativeInput.Sleep(PreClickDelayMilliseconds, token);
-        EnsureForeground(frame.WindowHandle);
-        NativeInput.ClickLeft(ClickHoldMilliseconds);
-        _logger.Info($"已点击「接受」（屏幕坐标 {x},{y}）。");
+        try
+        {
+            EnsureForeground(frame.WindowHandle);
+            NativeInput.MoveSmoothly(x, y, MoveDurationMilliseconds, token);
+            NativeInput.Sleep(PreClickDelayMilliseconds, token);
+            EnsureForeground(frame.WindowHandle);
+            NativeInput.ClickLeft(ClickHoldMilliseconds);
+            _logger.Info($"已点击「接受」（屏幕坐标 {x},{y}）。");
+        }
+        finally
+        {
+            // 无论点击成功与否都要把背包关掉：留在背包界面里会挡住游戏后续操作。
+            CloseBackpack(frame.WindowHandle);
+        }
     }
 
     private void ProcessPickupScene(
@@ -249,45 +259,58 @@ internal sealed class SceneQuickActionsRunner : IDisposable
         SceneQuickActionsOptions options,
         CancellationToken token)
     {
+        var wokeMouse = false;
         if (options.PickupWakeMouse)
+        {
             WakeMouse(options, frame.WindowHandle, token);
-
-        // 第一步：拾取全部（按下配置的按键，未配置则点击提示位置）
-        if (options.PickupAllBinding.IsConfigured)
-        {
-            EnsureForeground(frame.WindowHandle);
-            NativeInput.InjectBinding(options.PickupAllBinding, KeyHoldMilliseconds);
-            _logger.Info($"已按下「拾取全部」按键（{options.PickupAllBinding.DisplayName}）。");
-        }
-        else if (pickupHit is { } anchor)
-        {
-            var (x, y) = SceneQuickActionsMatcher.ToScreen(
-                anchor.CenterX,
-                anchor.CenterY,
-                frame.Bounds,
-                frame.Size);
-            EnsureForeground(frame.WindowHandle);
-            NativeInput.MoveSmoothly(x, y, MoveDurationMilliseconds, token);
-            NativeInput.Sleep(PreClickDelayMilliseconds, token);
-            EnsureForeground(frame.WindowHandle);
-            NativeInput.ClickLeft(ClickHoldMilliseconds);
-            _logger.Info($"已点击「拾取全部」（相似度 {anchor.Score:P0}，屏幕坐标 {x},{y}）。");
-        }
-        else
-        {
-            return;
+            wokeMouse = true;
         }
 
-        NativeInput.Sleep(options.BetweenClicksMilliseconds, token);
-
-        // 第二步：快捷替换
-        if (options.QuickReplaceBinding.IsConfigured)
+        try
         {
-            PressQuickReplaceKey(options, token);
-            return;
-        }
+            // 第一步：拾取全部（按下配置的按键，未配置则点击提示位置）
+            if (options.PickupAllBinding.IsConfigured)
+            {
+                EnsureForeground(frame.WindowHandle);
+                NativeInput.InjectBinding(options.PickupAllBinding, KeyHoldMilliseconds);
+                _logger.Info($"已按下「拾取全部」按键（{options.PickupAllBinding.DisplayName}）。");
+            }
+            else if (pickupHit is { } anchor)
+            {
+                var (x, y) = SceneQuickActionsMatcher.ToScreen(
+                    anchor.CenterX,
+                    anchor.CenterY,
+                    frame.Bounds,
+                    frame.Size);
+                EnsureForeground(frame.WindowHandle);
+                NativeInput.MoveSmoothly(x, y, MoveDurationMilliseconds, token);
+                NativeInput.Sleep(PreClickDelayMilliseconds, token);
+                EnsureForeground(frame.WindowHandle);
+                NativeInput.ClickLeft(ClickHoldMilliseconds);
+                _logger.Info($"已点击「拾取全部」（相似度 {anchor.Score:P0}，屏幕坐标 {x},{y}）。");
+            }
+            else
+            {
+                return;
+            }
 
-        ClickQuickReplace(frame, quickReplaceHit, options, token);
+            NativeInput.Sleep(options.BetweenClicksMilliseconds, token);
+
+            // 第二步：快捷替换
+            if (options.QuickReplaceBinding.IsConfigured)
+            {
+                PressQuickReplaceKey(options, token);
+                return;
+            }
+
+            ClickQuickReplace(frame, quickReplaceHit, options, token);
+        }
+        finally
+        {
+            // 切出过背包就必须关掉，否则会把拾取面板顶掉、还挡住后续操作。
+            if (wokeMouse)
+                CloseBackpack(frame.WindowHandle);
+        }
     }
 
     /// <summary>「快捷替换」用按键：只需要确认面板还在，位置不重要。</summary>
@@ -388,21 +411,40 @@ internal sealed class SceneQuickActionsRunner : IDisposable
     }
 
     /// <summary>
-    /// 切出鼠标：按用户要求行为固定——只要设置了切出键，每次动作前都注入一次，
-    /// 不再做「指针是否可见」之类的判断（旧的「切出鼠标方式」选项已删除）。
+    /// 切出鼠标：按一次 Tab 打开背包，把系统指针切出来。
+    /// 之所以不用鼠标侧键：实测合成的侧键事件游戏不认（物理侧键正常），
+    /// 而游戏自身键位（Tab）走键盘输入路径是通的。调用方负责成对调用
+    /// <see cref="CloseBackpack"/> 把背包关掉。
     /// </summary>
     private void WakeMouse(SceneQuickActionsOptions options, IntPtr windowHandle, CancellationToken token)
     {
-        if (!options.MouseWakeBinding.IsConfigured)
+        EnsureForeground(windowHandle);
+        NativeInput.InjectKey(SceneQuickActionsOptions.WakeVirtualKey, WakeHoldMilliseconds);
+        _logger.Info("已按 Tab 打开背包切出鼠标。");
+
+        // 下限 120ms：按完 Tab 背包还要一帧才真的开出来，太快移动会白动。
+        var wait = Math.Max(options.WakeDelayMilliseconds, MinimumWakeDelayMilliseconds);
+        NativeInput.Sleep(wait, token);
+    }
+
+    /// <summary>再按一次 Tab 把背包关掉，恢复游戏手势。游戏已不在前台时只记日志、不注入。</summary>
+    private void CloseBackpack(IntPtr windowHandle)
+    {
+        if (!NativeInput.IsForegroundWindow(windowHandle))
         {
-            LogThrottled("未设置「切出鼠标」按键，已跳过切出步骤。");
+            _logger.Warning("游戏已不在前台，跳过「按 Tab 关闭背包」。");
             return;
         }
 
-        EnsureForeground(windowHandle);
-        NativeInput.InjectBinding(options.MouseWakeBinding, WakeHoldMilliseconds);
-        _logger.Info($"已注入「切出鼠标」按键（{options.MouseWakeBinding.DisplayName}）。");
-        NativeInput.Sleep(options.WakeDelayMilliseconds, token);
+        try
+        {
+            NativeInput.InjectKey(SceneQuickActionsOptions.WakeVirtualKey, WakeHoldMilliseconds);
+            _logger.Info("已再按一次 Tab 关闭背包。");
+        }
+        catch (Exception exception)
+        {
+            _logger.Warning($"关闭背包失败：{exception.Message}");
+        }
     }
 
     private static void EnsureForeground(IntPtr windowHandle)
