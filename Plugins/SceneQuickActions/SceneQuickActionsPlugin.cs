@@ -18,7 +18,7 @@ namespace IDVBuff.Plugins.SceneQuickActions;
     "scene-quick-actions",
     DisplayName = "背包辅助",
     Description = "自动识别「邀请你牵手」与「可拾取」两个界面，执行接受邀请、拾取全部、快捷替换。",
-    Version = "1.4.0",
+    Version = "1.5.0",
     AlwaysActive = true)]
 public sealed class SceneQuickActionsPlugin
     : PluginBase, IPluginSettingsProvider, IHandle<SessionStateChangedMessage>
@@ -128,6 +128,35 @@ public sealed class SceneQuickActionsPlugin
             Maximum = SceneQuickActionsOptions.CooldownMaximum,
             StepFrequency = 100,
             DefaultValue = 1500
+        },
+        new PluginChoiceSetting
+        {
+            Key = SceneQuickActionsOptions.DropBagHotkeyKey,
+            DisplayName = "热键 · 丢光背包（6 格 → 屏幕中心）",
+            Description = "按下后依次把背包上排 3 格、中排 3 格的物品拖到屏幕正中心松手。需要背包已经打开。",
+            Group = SceneQuickActionsOptions.KeyGroupTitle,
+            Options = [.. SceneQuickActionsOptions.HotkeyOptions],
+            DefaultIndex = 4
+        },
+        new PluginChoiceSetting
+        {
+            Key = SceneQuickActionsOptions.DropHotbarHotkeyKey,
+            DisplayName = "热键 · 逐个丢道具栏（1 → 2 → 3 → 4）",
+            Description = "每按一次，把底部道具栏的下一个格子拖到屏幕正中心松手：第 1 次拖第 1 格，第 2 次拖第 2 格，依次循环。",
+            Group = SceneQuickActionsOptions.KeyGroupTitle,
+            Options = [.. SceneQuickActionsOptions.HotkeyOptions],
+            DefaultIndex = 5
+        },
+        new PluginSliderSetting
+        {
+            Key = SceneQuickActionsOptions.DropSilenceKey,
+            DisplayName = "丢东西后暂停拾取（秒）",
+            Description = "按上面两个热键之后，这段时间内「拾取相关」不再动作，免得把自己刚丢出来的东西又捡回去。",
+            Group = SceneQuickActionsOptions.TimingGroupTitle,
+            Minimum = SceneQuickActionsOptions.DropSilenceMinimum,
+            Maximum = SceneQuickActionsOptions.DropSilenceMaximum,
+            StepFrequency = 5,
+            DefaultValue = 30
         }
     ];
 
@@ -211,6 +240,13 @@ public sealed class SceneQuickActionsPlugin
         SceneQuickActionsOptions.PollIntervalKey => (double)_options.PollIntervalMilliseconds,
         SceneQuickActionsOptions.ThresholdKey => (double)_options.MatchThresholdPercent,
         SceneQuickActionsOptions.CooldownKey => (double)_options.CooldownMilliseconds,
+        SceneQuickActionsOptions.DropBagHotkeyKey =>
+            SceneQuickActionsOptions.ToHotkeyOption(_options.DropBagHotkey)
+            ?? SceneQuickActionsOptions.HotkeyOptions[4],
+        SceneQuickActionsOptions.DropHotbarHotkeyKey =>
+            SceneQuickActionsOptions.ToHotkeyOption(_options.DropHotbarHotkey)
+            ?? SceneQuickActionsOptions.HotkeyOptions[5],
+        SceneQuickActionsOptions.DropSilenceKey => (double)_options.DropSilenceSeconds,
         _ => null
     };
 
@@ -287,6 +323,25 @@ public sealed class SceneQuickActionsPlugin
                         _options.CooldownMilliseconds,
                         SceneQuickActionsOptions.CooldownMinimum,
                         SceneQuickActionsOptions.CooldownMaximum)
+                };
+            case SceneQuickActionsOptions.DropBagHotkeyKey when value is string bagHotkey:
+                {
+                    var bagKey = SceneQuickActionsOptions.ParseHotkey(bagHotkey);
+                    return bagKey == 0 ? _options : _options with { DropBagHotkey = bagKey };
+                }
+            case SceneQuickActionsOptions.DropHotbarHotkeyKey when value is string hotbarHotkey:
+                {
+                    var hotbarKey = SceneQuickActionsOptions.ParseHotkey(hotbarHotkey);
+                    return hotbarKey == 0 ? _options : _options with { DropHotbarHotkey = hotbarKey };
+                }
+            case SceneQuickActionsOptions.DropSilenceKey:
+                return _options with
+                {
+                    DropSilenceSeconds = SceneQuickActionsOptions.FromDouble(
+                        value,
+                        _options.DropSilenceSeconds,
+                        SceneQuickActionsOptions.DropSilenceMinimum,
+                        SceneQuickActionsOptions.DropSilenceMaximum)
                 };
             default:
                 return _options;

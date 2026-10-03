@@ -1,4 +1,7 @@
+using System.ComponentModel;
+using System.Runtime.InteropServices;
 using IDVBuff.PluginContracts;
+using IDVBuff.PluginHostMessages;
 
 namespace IDVBuff.Plugins.SceneQuickActions;
 
@@ -7,6 +10,11 @@ namespace IDVBuff.Plugins.SceneQuickActions;
 ///
 /// 线程只在插件启用期间存在；未在游戏中（dwrg.exe 不是前台窗口）时抓帧会立刻失败，
 /// 开销接近 0。
+///
+/// 另外负责两个手动热键（默认 F5 / F6）：
+///   F5 —— 把背包上排 3 格 + 中排 3 格的物品依次拖到屏幕正中心松手；
+///   F6 —— 每按一次，把底部道具栏的下一个格子拖到屏幕正中心松手（1 → 2 → 3 → 4 循环）。
+/// 触发后一段时间内暂停「拾取相关」，免得把刚丢出来的东西又捡回去。
 /// </summary>
 internal sealed class SceneQuickActionsRunner : IDisposable
 {
@@ -20,6 +28,42 @@ internal sealed class SceneQuickActionsRunner : IDisposable
     private const int QuickReplaceAttempts = 3;
     private const int QuickReplaceRetryMilliseconds = 150;
     private const int WarningThrottleSeconds = 20;
+
+    // —— 拖拽热键相关 ——
+    private const int DragMoveDurationMilliseconds = 260;
+    private const int DragSettleMilliseconds = 120;
+    private const int BagSlotIntervalMilliseconds = 400;
+    private const int HotkeyDebounceMilliseconds = 400;
+
+    private const int WhKeyboardLl = 13;
+    private const int WmKeydown = 0x0100;
+    private const int WmKeyup = 0x0101;
+    private const int WmSyskeydown = 0x0104;
+    private const int WmSyskeyup = 0x0105;
+    private const int WmQuit = 0x0012;
+
+    private const uint MouseeventfLeftdown = 0x0002;
+    private const uint MouseeventfLeftup = 0x0004;
+
+    /// <summary>背包上排 3 格 + 中排 3 格的归一化坐标（实测于 1920×1080 探索模式背包界面）。</summary>
+    private static readonly (double X, double Y)[] BagSlots =
+    [
+        (0.235, 0.240), (0.310, 0.240), (0.385, 0.240),
+        (0.235, 0.390), (0.310, 0.390), (0.385, 0.390)
+    ];
+
+    /// <summary>底部道具栏 4 格的归一化坐标（与 PluginInventoryScale 的 Shape 3 实测吻合）。</summary>
+    private static readonly (double X, double Y)[] HotbarSlots =
+    [
+        (0.39, 0.92), (0.47, 0.92), (0.56, 0.92), (0.64, 0.92)
+    ];
+
+    /// <summary>落点：屏幕正中心。</summary>
+    private const double DropTargetX = 0.50;
+    private const double DropTargetY = 0.50;
+
+    private static readonly IntPtr InjectionMarker =
+        new(InputInjectionMarkers.HostGeneratedInput);
 
     private readonly object _sync = new();
     private readonly GameFrameGrabber _grabber;
@@ -37,6 +81,16 @@ internal sealed class SceneQuickActionsRunner : IDisposable
     private string _lastWarning = string.Empty;
     private DateTime _lastWarningAt = DateTime.MinValue;
     private bool _disposed;
+
+    // 热键状态
+    private LowLevelKeyboardProc? _hotkeyProc;
+    private IntPtr _hotkeyHook;
+    private Thread? _hotkeyThread;
+    private uint _hotkeyThreadId;
+    private int _hotkeyBusy;
+    private int _hotbarCursor;
+    private DateTime _lastHotkeyAt = DateTime.MinValue;
+    private DateTime _dropSilenceUntil = DateTime.MinValue;
 
     public SceneQuickActionsRunner(
         GameFrameGrabber grabber,
@@ -72,10 +126,13 @@ internal sealed class SceneQuickActionsRunner : IDisposable
         }
 
         _logger.Info($"背包辅助已启动（抓帧路径：{(_grabber.HasFastPath ? "宿主快速抓帧" : "PNG 截图")}）。");
+        StartHotkeyHook();
     }
 
     public void Stop()
     {
+        StopHotkeyHook();
+
         Thread? worker;
         CancellationTokenSource? cancellation;
         lock (_sync)
@@ -149,7 +206,7 @@ internal sealed class SceneQuickActionsRunner : IDisposable
             var now = DateTime.UtcNow;
             if (options.InviteEnabled && ProcessInviteScene(frame, options, now, token))
                 return;
-            if (options.PickupEnabled)
+            if (options.PickupEnabled && now >= _dropSilenceUntil)
                 ProcessPickupScene(frame, options, now, token);
         }
     }
@@ -446,6 +503,440 @@ internal sealed class SceneQuickActionsRunner : IDisposable
             _logger.Warning($"关闭背包失败：{exception.Message}");
         }
     }
+
+    // ==================== 拖拽热键 ====================
+
+    /// <summary>装上全局键盘热键钩子（只在游戏处于前台时才动手）。</summary>
+    private void StartHotkeyHook()
+    {
+        lock (_sync)
+        {
+            if (_hotkeyThread is not null)
+                return;
+
+            _hotkeyProc = HotkeyCallback;
+            var thread = new Thread(HotkeyThreadMain)
+            {
+                IsBackground = true,
+                Name = "IDVB scene-quick-actions hotkeys"
+            };
+            _hotkeyThread = thread;
+            thread.Start();
+        }
+    }
+
+    /// <summary>卸掉热键钩子并结束钩子线程的消息循环。</summary>
+    private void StopHotkeyHook()
+    {
+        Thread? thread;
+        uint threadId;
+        IntPtr hook;
+        lock (_sync)
+        {
+            thread = _hotkeyThread;
+            threadId = _hotkeyThreadId;
+            hook = _hotkeyHook;
+            _hotkeyThread = null;
+            _hotkeyThreadId = 0;
+            _hotkeyHook = IntPtr.Zero;
+        }
+
+        if (threadId != 0)
+            PostThreadMessage(threadId, WmQuit, IntPtr.Zero, IntPtr.Zero);
+        if (thread is not null && thread != Thread.CurrentThread)
+            thread.Join(TimeSpan.FromSeconds(2));
+        if (hook != IntPtr.Zero)
+            UnhookWindowsHookEx(hook);
+    }
+
+    private void HotkeyThreadMain()
+    {
+        try
+        {
+            _hotkeyThreadId = GetCurrentThreadId();
+            // 先建消息队列，否则 SetWindowsHookEx 可能拿不到消息。
+            PeekMessage(out _, IntPtr.Zero, 0, 0, PmNoRemove);
+            _hotkeyHook = SetWindowsHookEx(
+                WhKeyboardLl,
+                _hotkeyProc!,
+                GetModuleHandle(null),
+                0);
+            if (_hotkeyHook == IntPtr.Zero)
+                throw new Win32Exception(
+                    Marshal.GetLastWin32Error(),
+                    "无法注册背包辅助热键钩子。");
+
+            _logger.Info("背包辅助热键已就绪。");
+            while (GetMessage(out var message, IntPtr.Zero, 0, 0) > 0)
+            {
+                TranslateMessage(ref message);
+                DispatchMessage(ref message);
+            }
+        }
+        catch (Exception exception)
+        {
+            _logger.Error($"背包辅助热键不可用：{exception.Message}");
+        }
+        finally
+        {
+            var hook = _hotkeyHook;
+            _hotkeyHook = IntPtr.Zero;
+            if (hook != IntPtr.Zero)
+                UnhookWindowsHookEx(hook);
+        }
+    }
+
+    private IntPtr HotkeyCallback(int code, IntPtr wParam, IntPtr lParam)
+    {
+        if (code < 0)
+            return CallNextHookEx(_hotkeyHook, code, wParam, lParam);
+
+        var message = wParam.ToInt32();
+        if (message is WmKeydown or WmSyskeydown)
+        {
+            var data = Marshal.PtrToStructure<KbdLlHookStruct>(lParam);
+            // 自己注入的键盘事件一律忽略，避免自触发。
+            if (!InputInjectionMarkers.IsHostGeneratedMouseInput(data.ExtraInfo))
+                HandleHotkey(data.VirtualKey);
+        }
+
+        return CallNextHookEx(_hotkeyHook, code, wParam, lParam);
+    }
+
+    private void HandleHotkey(uint virtualKey)
+    {
+        if (virtualKey == 0)
+            return;
+
+        var options = Volatile.Read(ref _options);
+        var isBagHotkey = options.DropBagHotkey != 0 && virtualKey == options.DropBagHotkey;
+        var isHotbarHotkey = options.DropHotbarHotkey != 0 && virtualKey == options.DropHotbarHotkey;
+        if (!isBagHotkey && !isHotbarHotkey)
+            return;
+
+        // 防抖：按住不放时只认第一次
+        var now = DateTime.UtcNow;
+        if (now < _lastHotkeyAt.AddMilliseconds(HotkeyDebounceMilliseconds))
+            return;
+        _lastHotkeyAt = now;
+
+        if (Interlocked.CompareExchange(ref _hotkeyBusy, 1, 0) != 0)
+            return;
+
+        try
+        {
+            if (!IsGameForeground())
+            {
+                LogThrottled("热键已按下，但当前前台窗口不是游戏，已忽略。");
+                return;
+            }
+
+            var window = GetForegroundWindow();
+            if (!TryGetClientBounds(window, out _))
+            {
+                LogThrottled("热键已按下，但读不到游戏客户区尺寸，已忽略。");
+                return;
+            }
+
+            // 暂停「拾取相关」：默认 30 秒，免得把刚丢出来的东西又捡回去。
+            var silence = Math.Clamp(
+                options.DropSilenceSeconds,
+                SceneQuickActionsOptions.DropSilenceMinimum,
+                SceneQuickActionsOptions.DropSilenceMaximum);
+            _dropSilenceUntil = DateTime.UtcNow.AddSeconds(silence);
+
+            string[] work;
+            if (isBagHotkey)
+            {
+                work = BuildBagDropWork();
+                _logger.Info($"热键「丢光背包」触发：{work.Length} 格依次拖到屏幕中心；「拾取相关」暂停 {silence} 秒。");
+            }
+            else
+            {
+                var cursor = Volatile.Read(ref _hotbarCursor);
+                work = BuildHotbarDropWork(ref cursor);
+                Volatile.Write(ref _hotbarCursor, cursor);
+                _logger.Info($"热键「逐个丢道具栏」触发：{work[0]}；「拾取相关」暂停 {silence} 秒。");
+            }
+
+            _ = Task.Run(() => RunDropWork(work, window));
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _hotkeyBusy, 0);
+        }
+    }
+
+    /// <summary>丢光背包：上排 3 格 + 中排 3 格，逐个拖到屏幕正中心松手。</summary>
+    private static string[] BuildBagDropWork() =>
+    [
+        .. BagSlots.Select((_, index) => DescribeSlot("背包", index + 1))
+    ];
+
+    /// <summary>逐个丢道具栏：每按一次取下一个格子（1 → 2 → 3 → 4 循环）。</summary>
+    private static string[] BuildHotbarDropWork(ref int cursor)
+    {
+        var slot = cursor % HotbarSlots.Length;
+        cursor = (slot + 1) % HotbarSlots.Length;
+        return [DescribeSlot("道具栏", slot + 1)];
+    }
+
+    private static string DescribeSlot(string kind, int index) => $"{kind}第 {index} 格";
+
+    /// <summary>后台执行拖拽：源格 → 按住左键 → 拖到屏幕中心 → 松手。</summary>
+    private void RunDropWork(string[] labels, IntPtr window)
+    {
+        try
+        {
+            if (!TryGetClientBounds(window, out var bounds))
+                return;
+
+            var isBag = labels.Length > 1;
+            var source = isBag
+                ? BagSlots
+                : [HotbarSlots[(Volatile.Read(ref _hotbarCursor) + HotbarSlots.Length - 1) % HotbarSlots.Length]];
+
+            var originX = bounds.X;
+            var originY = bounds.Y;
+            var targetX = originX + (int)Math.Round(DropTargetX * bounds.Width);
+            var targetY = originY + (int)Math.Round(DropTargetY * bounds.Height);
+
+            for (var index = 0; index < source.Length; index++)
+            {
+                if (!IsGameForeground())
+                {
+                    _logger.Warning("游戏已不在前台，放弃本次拖拽。");
+                    return;
+                }
+
+                var fromX = originX + (int)Math.Round(source[index].X * bounds.Width);
+                var fromY = originY + (int)Math.Round(source[index].Y * bounds.Height);
+                DragOnce(fromX, fromY, targetX, targetY);
+                _logger.Info($"已把 {labels[index]} 拖到屏幕中心（{fromX},{fromY} → {targetX},{targetY}）。");
+                Thread.Sleep(BagSlotIntervalMilliseconds);
+            }
+        }
+        catch (Exception exception)
+        {
+            _logger.Warning($"拖拽失败：{exception.Message}");
+        }
+    }
+
+    /// <summary>按一次左键拖拽：移动 → 按下 → 缓动到目标 → 松手。</summary>
+    private static void DragOnce(int fromX, int fromY, int targetX, int targetY)
+    {
+        SetCursor(fromX, fromY);
+        Thread.Sleep(DragSettleMilliseconds);
+
+        SendMouse(MouseeventfLeftdown);
+        try
+        {
+            Thread.Sleep(DragSettleMilliseconds);
+            var steps = 24;
+            for (var step = 1; step <= steps; step++)
+            {
+                var progress = step / (double)steps;
+                var eased = progress * progress * (3 - (2 * progress));
+                SetCursor(
+                    (int)Math.Round(fromX + ((targetX - fromX) * eased)),
+                    (int)Math.Round(fromY + ((targetY - fromY) * eased)));
+                Thread.Sleep(Math.Max(1, DragMoveDurationMilliseconds / steps));
+            }
+        }
+        finally
+        {
+            SendMouse(MouseeventfLeftup);
+        }
+    }
+
+    private static void SetCursor(int x, int y)
+    {
+        if (!SetCursorPos(x, y))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "无法移动鼠标指针。");
+    }
+
+    private static void SendMouse(uint flags)
+    {
+        var input = new NativeInputStructure
+        {
+            Type = InputMouse,
+            Data = new NativeInputUnion
+            {
+                Mouse = new MouseInput
+                {
+                    Flags = flags,
+                    ExtraInfo = InjectionMarker
+                }
+            }
+        };
+        if (SendInput(1, [input], Marshal.SizeOf<NativeInputStructure>()) != 1)
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "无法注入鼠标输入。");
+    }
+
+    private static bool IsGameForeground()
+    {
+        var window = GetForegroundWindow();
+        if (window == IntPtr.Zero)
+            return false;
+        GetWindowThreadProcessId(window, out var processId);
+        if (processId == 0)
+            return false;
+
+        try
+        {
+            using var process = System.Diagnostics.Process.GetProcessById((int)processId);
+            return string.Equals(process.ProcessName, "dwrg", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryGetClientBounds(IntPtr window, out ClientBounds bounds)
+    {
+        bounds = default;
+        if (window == IntPtr.Zero || !GetClientRect(window, out var client))
+            return false;
+
+        var width = client.Right - client.Left;
+        var height = client.Bottom - client.Top;
+        if (width <= 0 || height <= 0)
+            return false;
+
+        var origin = new NativePoint { X = client.Left, Y = client.Top };
+        if (!ClientToScreen(window, ref origin))
+            return false;
+
+        bounds = new ClientBounds(origin.X, origin.Y, width, height);
+        return true;
+    }
+
+    private readonly record struct ClientBounds(int X, int Y, int Width, int Height);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct KbdLlHookStruct
+    {
+        public uint VirtualKey;
+        public uint ScanCode;
+        public uint Flags;
+        public uint Time;
+        public IntPtr ExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    private delegate IntPtr LowLevelKeyboardProc(int code, IntPtr wParam, IntPtr lParam);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativePoint
+    {
+        public int X;
+        public int Y;
+    }
+
+    private const uint InputMouse = 0;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeInputStructure
+    {
+        public uint Type;
+        public NativeInputUnion Data;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    private struct NativeInputUnion
+    {
+        [FieldOffset(0)] public MouseInput Mouse;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MouseInput
+    {
+        public int X;
+        public int Y;
+        public uint MouseData;
+        public uint Flags;
+        public uint Time;
+        public IntPtr ExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Message
+    {
+        public IntPtr Window;
+        public uint Value;
+        public IntPtr WParam;
+        public IntPtr LParam;
+        public uint Time;
+        public NativePoint Point;
+    }
+
+    private const uint PmNoRemove = 0;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr SetWindowsHookEx(
+        int hookId, LowLevelKeyboardProc procedure, IntPtr module, uint threadId);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool UnhookWindowsHookEx(IntPtr hook);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern int GetMessage(out Message message, IntPtr window, uint filterMin, uint filterMax);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool PeekMessage(
+        out Message message, IntPtr window, uint filterMin, uint filterMax, uint remove);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool TranslateMessage(ref Message message);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr DispatchMessage(ref Message message);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool PostThreadMessage(uint threadId, uint message, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr GetModuleHandle(string? moduleName);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetClientRect(IntPtr window, out NativeRect rect);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ClientToScreen(IntPtr window, ref NativePoint point);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetCursorPos(int x, int y);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint SendInput(uint count, NativeInputStructure[] inputs, int size);
 
     private static void EnsureForeground(IntPtr windowHandle)
     {

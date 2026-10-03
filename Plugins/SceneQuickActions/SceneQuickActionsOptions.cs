@@ -21,6 +21,46 @@ public sealed record SceneQuickActionsOptions
     /// <summary>「切出鼠标」固定用的键：Tab（打开 / 关闭背包）。</summary>
     public const uint WakeVirtualKey = 0x09;
 
+    /// <summary>「丢光背包」热键，默认 F5。</summary>
+    public const uint DefaultDropBagVirtualKey = 0x74;
+
+    /// <summary>「逐个丢道具栏」热键，默认 F6。</summary>
+    public const uint DefaultDropHotbarVirtualKey = 0x75;
+
+    /// <summary>热键下拉选项：功能键 F1–F12（索引 + 0x70 即虚拟键码）。</summary>
+    public static IReadOnlyList<string> HotkeyOptions { get; } =
+        ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"];
+
+    /// <summary>把热键选项文本转成虚拟键码；无法识别时返回 0。</summary>
+    public static uint ParseHotkey(string? option)
+    {
+        var index = -1;
+        for (var candidate = 0; candidate < HotkeyOptions.Count; candidate++)
+        {
+            if (string.Equals(HotkeyOptions[candidate], option, StringComparison.Ordinal))
+            {
+                index = candidate;
+                break;
+            }
+        }
+
+        return index < 0 ? 0u : (uint)(0x70 + index);
+    }
+
+    /// <summary>把虚拟键码转回热键选项文本；不是功能键时返回 null。</summary>
+    public static string? ToHotkeyOption(uint virtualKey) =>
+        virtualKey is >= 0x70 and <= 0x7B
+            ? HotkeyOptions[(int)(virtualKey - 0x70)]
+            : null;
+
+    public const string DropBagHotkeyKey = "drop-bag-hotkey";
+    public const string DropHotbarHotkeyKey = "drop-hotbar-hotkey";
+    public const string DropSilenceKey = "drop-silence-seconds";
+
+    /// <summary>触发丢东西后暂停「拾取相关」检测的秒数范围。</summary>
+    public const int DropSilenceMinimum = 5;
+    public const int DropSilenceMaximum = 120;
+
     public const string InviteEnabledKey = "invite-enabled";
     public const string WakeDelayKey = "wake-delay-ms";
     public const string PickupEnabledKey = "pickup-enabled";
@@ -79,6 +119,15 @@ public sealed record SceneQuickActionsOptions
 
     /// <summary>同一场景两次动作之间的最小间隔。</summary>
     public int CooldownMilliseconds { get; init; } = 1500;
+
+    /// <summary>「丢光背包」热键（默认 F5）。</summary>
+    public uint DropBagHotkey { get; init; } = DefaultDropBagVirtualKey;
+
+    /// <summary>「逐个丢道具栏」热键（默认 F6）。</summary>
+    public uint DropHotbarHotkey { get; init; } = DefaultDropHotbarVirtualKey;
+
+    /// <summary>触发丢东西后暂停「拾取相关」的秒数。</summary>
+    public int DropSilenceSeconds { get; init; } = 30;
 
     public double MatchThreshold =>
         Clamp(MatchThresholdPercent, ThresholdMinimum, ThresholdMaximum) / 100d;
