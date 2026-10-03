@@ -4,11 +4,11 @@ using IDVBuff.PluginHostMessages;
 namespace IDVBuff.Plugins.SceneQuickActions;
 
 /// <summary>
-/// 场景快捷助手：把《第五人格》里两个反复出现的界面操作自动化。
+/// 背包辅助：把《第五人格》里两个反复出现的界面操作自动化。
 ///
-/// 场景一 —— 有人邀请你牵手（右上角出现「××邀请你牵手」+「拒绝 / 接受」）：
+/// 自动接受邀请 —— 有人邀请你牵手（右上角出现「××邀请你牵手」+「拒绝 / 接受」）：
 ///   切出鼠标 → 移到「接受」→ 左键点击。
-/// 场景二 —— 出现「可拾取」面板（右上角列出物品，下方有「拾取全部」提示）：
+/// 拾取相关 —— 出现「可拾取」面板（右上角列出物品，下方有「拾取全部」提示）：
 ///   先「拾取全部」→ 再「快捷替换」；这两步各自可以用按键（可配置）或鼠标点击完成。
 ///
 /// 识别方式是对宿主抓到的客户区画面做多尺度模板匹配，模板来自用户提供的
@@ -16,9 +16,9 @@ namespace IDVBuff.Plugins.SceneQuickActions;
 /// </summary>
 [Plugin(
     "scene-quick-actions",
-    DisplayName = "场景快捷助手",
+    DisplayName = "背包辅助",
     Description = "自动识别「邀请你牵手」与「可拾取」两个界面，执行接受邀请、拾取全部、快捷替换。",
-    Version = "1.1.0",
+    Version = "1.2.0",
     AlwaysActive = true)]
 public sealed class SceneQuickActionsPlugin
     : PluginBase, IPluginSettingsProvider, IHandle<SessionStateChangedMessage>
@@ -30,15 +30,22 @@ public sealed class SceneQuickActionsPlugin
 
     public override string Id => "scene-quick-actions";
 
-    public override string DisplayName => "场景快捷助手";
+    public override string DisplayName => "背包辅助";
 
     public IReadOnlyList<IPluginSetting> Settings { get; } =
     [
         new PluginToggleSetting
         {
             Key = SceneQuickActionsOptions.InviteEnabledKey,
-            DisplayName = "场景一 · 牵手邀请：自动接受",
+            DisplayName = "自动接受邀请",
             Description = "识别到「接受」按钮时，自动切出鼠标并点击它。",
+            DefaultValue = true
+        },
+        new PluginToggleSetting
+        {
+            Key = SceneQuickActionsOptions.PickupEnabledKey,
+            DisplayName = "拾取相关",
+            Description = "识别到「可拾取」面板时，先「拾取全部」，再「快捷替换」。",
             DefaultValue = true
         },
         new PluginChoiceSetting
@@ -46,6 +53,7 @@ public sealed class SceneQuickActionsPlugin
             Key = SceneQuickActionsOptions.MouseWakeModeKey,
             DisplayName = "切出鼠标方式",
             Description = "「智能判断」只在系统指针不可见时才按切出键；若你的环境判断不准，可改为「总是注入一次」。",
+            Group = SceneQuickActionsOptions.KeyGroupTitle,
             Options = [.. SceneQuickActionsOptions.MouseWakeModeOptions],
             DefaultIndex = 0
         },
@@ -54,31 +62,16 @@ public sealed class SceneQuickActionsPlugin
             Key = SceneQuickActionsOptions.MouseWakeBindingKey,
             DisplayName = "切出鼠标按键",
             Description = "唤醒游戏鼠标指针的按键（默认鼠标侧键 1，与「启用鼠标按键」一致）。",
+            Group = SceneQuickActionsOptions.KeyGroupTitle,
             DefaultValue = PluginInputBinding.Mouse(PluginMouseButton.XButton1).StorageValue,
             AllowedKinds = PluginInputBindingKinds.All
-        },
-        new PluginSliderSetting
-        {
-            Key = SceneQuickActionsOptions.WakeDelayKey,
-            DisplayName = "切出鼠标后等待（毫秒）",
-            Description = "按下切出键后，等指针真正出现再移动点击。",
-            Minimum = SceneQuickActionsOptions.WakeDelayMinimum,
-            Maximum = SceneQuickActionsOptions.WakeDelayMaximum,
-            StepFrequency = 10,
-            DefaultValue = 150
-        },
-        new PluginToggleSetting
-        {
-            Key = SceneQuickActionsOptions.PickupEnabledKey,
-            DisplayName = "场景二 · 可拾取：拾取全部 + 快捷替换",
-            Description = "识别到「可拾取」面板时，先「拾取全部」，再「快捷替换」。",
-            DefaultValue = true
         },
         new PluginKeyBindingSetting
         {
             Key = SceneQuickActionsOptions.PickupAllBindingKey,
             DisplayName = "拾取全部按键",
             Description = "游戏里「拾取全部」提示上显示的按键（默认 B 键）。点「重置按键」清空后，改为用鼠标点击该提示。",
+            Group = SceneQuickActionsOptions.KeyGroupTitle,
             DefaultValue = PluginInputBinding.Keyboard(SceneQuickActionsOptions.DefaultPickupAllVirtualKey).StorageValue,
             AllowedKinds = PluginInputBindingKinds.All
         },
@@ -87,31 +80,46 @@ public sealed class SceneQuickActionsPlugin
             Key = SceneQuickActionsOptions.QuickReplaceBindingKey,
             DisplayName = "快捷替换按键",
             Description = "若你的游戏里「快捷替换」也有按键提示，就在这里录一个；保持「未设置」时用鼠标点击该按钮。",
+            Group = SceneQuickActionsOptions.KeyGroupTitle,
             DefaultValue = SceneQuickActionsOptions.NoBindingStorageValue,
             AllowedKinds = PluginInputBindingKinds.All
-        },
-        new PluginSliderSetting
-        {
-            Key = SceneQuickActionsOptions.BetweenClicksKey,
-            DisplayName = "场景二 · 两次动作间隔（毫秒）",
-            Description = "「拾取全部」与「快捷替换」之间的等待时间。",
-            Minimum = SceneQuickActionsOptions.BetweenClicksMinimum,
-            Maximum = SceneQuickActionsOptions.BetweenClicksMaximum,
-            StepFrequency = 20,
-            DefaultValue = 260
         },
         new PluginToggleSetting
         {
             Key = SceneQuickActionsOptions.PickupWakeKey,
-            DisplayName = "场景二 · 动作前先切出鼠标",
+            DisplayName = "拾取相关动作前先切出鼠标",
             Description = "两步都用按键时不需要；只有用鼠标点击「快捷替换」且指针没切出时才打开。",
+            Group = SceneQuickActionsOptions.KeyGroupTitle,
             DefaultValue = false
+        },
+        new PluginSliderSetting
+        {
+            Key = SceneQuickActionsOptions.WakeDelayKey,
+            DisplayName = "切出鼠标后等待（毫秒）",
+            Description = "按下切出键后，等指针真正出现再移动点击。",
+            Group = SceneQuickActionsOptions.TimingGroupTitle,
+            Minimum = SceneQuickActionsOptions.WakeDelayMinimum,
+            Maximum = SceneQuickActionsOptions.WakeDelayMaximum,
+            StepFrequency = 10,
+            DefaultValue = 150
+        },
+        new PluginSliderSetting
+        {
+            Key = SceneQuickActionsOptions.BetweenClicksKey,
+            DisplayName = "两次动作间隔（毫秒）",
+            Description = "「拾取全部」与「快捷替换」之间的等待时间。",
+            Group = SceneQuickActionsOptions.TimingGroupTitle,
+            Minimum = SceneQuickActionsOptions.BetweenClicksMinimum,
+            Maximum = SceneQuickActionsOptions.BetweenClicksMaximum,
+            StepFrequency = 20,
+            DefaultValue = 260
         },
         new PluginSliderSetting
         {
             Key = SceneQuickActionsOptions.PollIntervalKey,
             DisplayName = "检测间隔（毫秒）",
             Description = "多久抓一帧做识别；只在游戏处于前台时才会真正抓帧。",
+            Group = SceneQuickActionsOptions.TimingGroupTitle,
             Minimum = SceneQuickActionsOptions.PollIntervalMinimum,
             Maximum = SceneQuickActionsOptions.PollIntervalMaximum,
             StepFrequency = 50,
@@ -122,6 +130,7 @@ public sealed class SceneQuickActionsPlugin
             Key = SceneQuickActionsOptions.ThresholdKey,
             DisplayName = "识别相似度阈值（%）",
             Description = "越高越不容易误判，但界面被遮挡或分辨率差异大时可能识别不到。",
+            Group = SceneQuickActionsOptions.TimingGroupTitle,
             Minimum = SceneQuickActionsOptions.ThresholdMinimum,
             Maximum = SceneQuickActionsOptions.ThresholdMaximum,
             StepFrequency = 1,
@@ -132,6 +141,7 @@ public sealed class SceneQuickActionsPlugin
             Key = SceneQuickActionsOptions.CooldownKey,
             DisplayName = "同一场景动作冷却（毫秒）",
             Description = "同一场景两次动作之间的最小间隔，避免连续重复点击。",
+            Group = SceneQuickActionsOptions.TimingGroupTitle,
             Minimum = SceneQuickActionsOptions.CooldownMinimum,
             Maximum = SceneQuickActionsOptions.CooldownMaximum,
             StepFrequency = 100,
@@ -149,7 +159,7 @@ public sealed class SceneQuickActionsPlugin
         }
         catch (Exception exception)
         {
-            context.Logger.Error($"场景快捷助手加载识别模板失败，插件不可用：{exception.Message}");
+            context.Logger.Error($"背包辅助加载识别模板失败，插件不可用：{exception.Message}");
             return;
         }
 
@@ -157,7 +167,7 @@ public sealed class SceneQuickActionsPlugin
         var gameWindow = context.GetService<IPluginGameWindowService>();
         if (screenshot is null && gameWindow is null)
         {
-            context.Logger.Error("宿主没有提供截图能力，场景快捷助手不可用。");
+            context.Logger.Error("宿主没有提供截图能力，背包辅助不可用。");
             return;
         }
 
@@ -175,7 +185,7 @@ public sealed class SceneQuickActionsPlugin
         _enabled = true;
         if (_runner is null)
         {
-            Context.Logger.Error("场景快捷助手未成功初始化，无法启动检测。");
+            Context.Logger.Error("背包辅助未成功初始化，无法启动检测。");
             return;
         }
 
@@ -183,7 +193,7 @@ public sealed class SceneQuickActionsPlugin
         _runner.Start();
         Context.Logger.Info(
             $"参数：检测间隔 {_options.PollIntervalMilliseconds}ms，阈值 {_options.MatchThresholdPercent}%，"
-            + $"场景一 {(_options.InviteEnabled ? "开" : "关")}，场景二 {(_options.PickupEnabled ? "开" : "关")}；"
+            + $"自动接受邀请 {(_options.InviteEnabled ? "开" : "关")}，拾取相关 {(_options.PickupEnabled ? "开" : "关")}；"
             + $"切出鼠标 {_options.MouseWakeBinding.DisplayName}"
             + $"（{SceneQuickActionsOptions.ToStorageValue(_options.MouseWakeMode)}）；"
             + $"拾取全部 {_options.PickupAllBinding.DisplayName}，"

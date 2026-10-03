@@ -3,7 +3,7 @@ using IDVBuff.PluginContracts;
 namespace IDVBuff.Plugins.SceneQuickActions;
 
 /// <summary>
-/// 场景快捷助手的工作线程：按检测间隔抓一帧 → 模板匹配 → 命中则执行点击流程。
+/// 背包辅助的工作线程：按检测间隔抓一帧 → 模板匹配 → 命中则执行点击流程。
 ///
 /// 线程只在插件启用期间存在；未在游戏中（dwrg.exe 不是前台窗口）时抓帧会立刻失败，
 /// 开销接近 0。
@@ -69,7 +69,7 @@ internal sealed class SceneQuickActionsRunner : IDisposable
             _worker.Start();
         }
 
-        _logger.Info($"场景快捷助手已启动（抓帧路径：{(_grabber.HasFastPath ? "宿主快速抓帧" : "PNG 截图")}）。");
+        _logger.Info($"背包辅助已启动（抓帧路径：{(_grabber.HasFastPath ? "宿主快速抓帧" : "PNG 截图")}）。");
     }
 
     public void Stop()
@@ -186,7 +186,7 @@ internal sealed class SceneQuickActionsRunner : IDisposable
         CancellationToken token)
     {
         var (x, y) = SceneQuickActionsMatcher.ToScreen(hit.CenterX, hit.CenterY, frame.Bounds, frame.Size);
-        _logger.Info($"识别到牵手邀请（相似度 {hit.Score:P0}），执行「切出鼠标 → 接受」。");
+        _logger.Info($"识别到「接受」按钮（相似度 {hit.Score:P0}），执行「切出鼠标 → 点击接受」。");
 
         WakeMouse(options, frame.WindowHandle, token);
         EnsureForeground(frame.WindowHandle);

@@ -21,6 +21,12 @@ public enum MouseWakeMode
 /// </summary>
 public sealed record SceneQuickActionsOptions
 {
+    /// <summary>设置页里「配置按键」可折叠区的标题。</summary>
+    public const string KeyGroupTitle = "配置按键";
+
+    /// <summary>设置页里「间隔设置」可折叠区的标题。</summary>
+    public const string TimingGroupTitle = "间隔设置";
+
     public const string InviteEnabledKey = "invite-enabled";
     public const string MouseWakeModeKey = "mouse-wake-mode";
     public const string MouseWakeBindingKey = "mouse-wake-binding";
@@ -51,7 +57,7 @@ public sealed record SceneQuickActionsOptions
     public const int CooldownMinimum = 300;
     public const int CooldownMaximum = 10000;
 
-    /// <summary>场景一：识别到「邀请你牵手」的接受按钮时自动点「接受」。</summary>
+    /// <summary>自动接受邀请：识别到「邀请你牵手」的接受按钮时自动点「接受」。</summary>
     public bool InviteEnabled { get; init; } = true;
 
     /// <summary>「切出鼠标」的执行方式。</summary>
@@ -64,7 +70,7 @@ public sealed record SceneQuickActionsOptions
     /// <summary>切出鼠标后、移动指针前的等待时间。</summary>
     public int WakeDelayMilliseconds { get; init; } = 150;
 
-    /// <summary>场景二：识别到「可拾取」面板时自动「拾取全部」→「快捷替换」。</summary>
+    /// <summary>拾取相关：识别到「可拾取」面板时自动「拾取全部」→「快捷替换」。</summary>
     public bool PickupEnabled { get; init; } = true;
 
     /// <summary>「拾取全部」用的按键；未设置（none）时改为鼠标点击该提示。</summary>
@@ -77,7 +83,7 @@ public sealed record SceneQuickActionsOptions
     /// <summary>「拾取全部」与「快捷替换」两次动作之间的间隔。</summary>
     public int BetweenClicksMilliseconds { get; init; } = 260;
 
-    /// <summary>场景二是否也需要先切出鼠标（只有用鼠标点击时才需要）。</summary>
+    /// <summary>拾取相关是否也需要先切出鼠标（只有用鼠标点击时才需要）。</summary>
     public bool PickupWakeMouse { get; init; }
 
     /// <summary>两次检测之间的间隔。</summary>

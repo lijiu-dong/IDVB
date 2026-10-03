@@ -24,7 +24,7 @@ public static class PluginRegistration
             host.Register(new IDVBuff.Plugins.LiveMode.LiveModePlugin());
         using (StartupTimeline.Measure("Built-in construct and register: IDVBuff.Plugins.CustomPhrases.CustomPhrasePlugin"))
             host.Register(new IDVBuff.Plugins.CustomPhrases.CustomPhrasePlugin());
-        // 本修改版新增：场景快捷助手（牵手邀请自动接受 / 可拾取面板拾取全部 + 快捷替换）。
+        // 本修改版新增：背包辅助（牵手邀请自动接受 / 可拾取面板拾取全部 + 快捷替换）。
         using (StartupTimeline.Measure("Built-in construct and register: IDVBuff.Plugins.SceneQuickActions.SceneQuickActionsPlugin"))
             host.Register(new IDVBuff.Plugins.SceneQuickActions.SceneQuickActionsPlugin());
         // 本修改版新增：重新登记上游在 1.6.0-unstable 摘掉的「自动加特林」（源码与工程引用仍在），
