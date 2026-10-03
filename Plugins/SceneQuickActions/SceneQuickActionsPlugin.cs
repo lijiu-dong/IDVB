@@ -18,7 +18,7 @@ namespace IDVBuff.Plugins.SceneQuickActions;
     "scene-quick-actions",
     DisplayName = "背包辅助",
     Description = "自动识别「邀请你牵手」与「可拾取」两个界面，执行接受邀请、拾取全部、快捷替换。",
-    Version = "1.5.0",
+    Version = "1.6.0",
     AlwaysActive = true)]
 public sealed class SceneQuickActionsPlugin
     : PluginBase, IPluginSettingsProvider, IHandle<SessionStateChangedMessage>
@@ -129,23 +129,23 @@ public sealed class SceneQuickActionsPlugin
             StepFrequency = 100,
             DefaultValue = 1500
         },
-        new PluginChoiceSetting
+        new PluginKeyBindingSetting
         {
             Key = SceneQuickActionsOptions.DropBagHotkeyKey,
             DisplayName = "热键 · 丢光背包（6 格 → 屏幕中心）",
-            Description = "按下后依次把背包上排 3 格、中排 3 格的物品拖到屏幕正中心松手。需要背包已经打开。",
+            Description = "按下后先按 Tab 开背包切出鼠标，再把上排 3 格、中排 3 格依次拖到屏幕正中心松手，最后按 Tab 关背包。键盘键或鼠标键都能录（不支持组合键）。",
             Group = SceneQuickActionsOptions.KeyGroupTitle,
-            Options = [.. SceneQuickActionsOptions.HotkeyOptions],
-            DefaultIndex = 4
+            DefaultValue = PluginInputBinding.Keyboard(SceneQuickActionsOptions.DefaultDropBagVirtualKey).StorageValue,
+            AllowedKinds = PluginInputBindingKinds.All
         },
-        new PluginChoiceSetting
+        new PluginKeyBindingSetting
         {
             Key = SceneQuickActionsOptions.DropHotbarHotkeyKey,
             DisplayName = "热键 · 逐个丢道具栏（1 → 2 → 3 → 4）",
-            Description = "每按一次，把底部道具栏的下一个格子拖到屏幕正中心松手：第 1 次拖第 1 格，第 2 次拖第 2 格，依次循环。",
+            Description = "每按一次，先切出鼠标，再把底部道具栏的下一个格子拖到屏幕正中心松手：第 1 次拖第 1 格，第 2 次拖第 2 格，依次循环。键盘键或鼠标键都能录（不支持组合键）。",
             Group = SceneQuickActionsOptions.KeyGroupTitle,
-            Options = [.. SceneQuickActionsOptions.HotkeyOptions],
-            DefaultIndex = 5
+            DefaultValue = PluginInputBinding.Keyboard(SceneQuickActionsOptions.DefaultDropHotbarVirtualKey).StorageValue,
+            AllowedKinds = PluginInputBindingKinds.All
         },
         new PluginSliderSetting
         {
@@ -188,6 +188,9 @@ public sealed class SceneQuickActionsPlugin
             gameWindow,
             message => context.Logger.Info(message));
         _runner = new SceneQuickActionsRunner(grabber, _matcher, context.Logger);
+        _runner.AttachHotkeys(
+            context.GetService<IPluginInputService>(),
+            Id);
         _runner.SetOptions(_options);
     }
 
@@ -225,6 +228,9 @@ public sealed class SceneQuickActionsPlugin
         _matcher = null;
     }
 
+    /// <summary>热键键位在设置页改动后，重新注册到宿主输入通道。</summary>
+    public void RefreshHotkeys() => _runner?.RefreshHotkeyBindings();
+
     public void Handle(SessionStateChangedMessage message) =>
         _runner?.SetMapOpen(message.GameMapOpen);
 
@@ -240,12 +246,8 @@ public sealed class SceneQuickActionsPlugin
         SceneQuickActionsOptions.PollIntervalKey => (double)_options.PollIntervalMilliseconds,
         SceneQuickActionsOptions.ThresholdKey => (double)_options.MatchThresholdPercent,
         SceneQuickActionsOptions.CooldownKey => (double)_options.CooldownMilliseconds,
-        SceneQuickActionsOptions.DropBagHotkeyKey =>
-            SceneQuickActionsOptions.ToHotkeyOption(_options.DropBagHotkey)
-            ?? SceneQuickActionsOptions.HotkeyOptions[4],
-        SceneQuickActionsOptions.DropHotbarHotkeyKey =>
-            SceneQuickActionsOptions.ToHotkeyOption(_options.DropHotbarHotkey)
-            ?? SceneQuickActionsOptions.HotkeyOptions[5],
+        SceneQuickActionsOptions.DropBagHotkeyKey => _options.DropBagHotkey.StorageValue,
+        SceneQuickActionsOptions.DropHotbarHotkeyKey => _options.DropHotbarHotkey.StorageValue,
         SceneQuickActionsOptions.DropSilenceKey => (double)_options.DropSilenceSeconds,
         _ => null
     };
@@ -258,7 +260,10 @@ public sealed class SceneQuickActionsPlugin
 
         _options = updated;
         if (_enabled)
+        {
             _runner?.SetOptions(_options);
+            _runner?.RefreshHotkeyBindings();
+        }
     }
 
     private SceneQuickActionsOptions BuildOptions(string key, object? value)
@@ -325,15 +330,13 @@ public sealed class SceneQuickActionsPlugin
                         SceneQuickActionsOptions.CooldownMaximum)
                 };
             case SceneQuickActionsOptions.DropBagHotkeyKey when value is string bagHotkey:
-                {
-                    var bagKey = SceneQuickActionsOptions.ParseHotkey(bagHotkey);
-                    return bagKey == 0 ? _options : _options with { DropBagHotkey = bagKey };
-                }
+                return TryParseHotkey(bagHotkey, out var parsedBag)
+                    ? _options with { DropBagHotkey = parsedBag }
+                    : _options;
             case SceneQuickActionsOptions.DropHotbarHotkeyKey when value is string hotbarHotkey:
-                {
-                    var hotbarKey = SceneQuickActionsOptions.ParseHotkey(hotbarHotkey);
-                    return hotbarKey == 0 ? _options : _options with { DropHotbarHotkey = hotbarKey };
-                }
+                return TryParseHotkey(hotbarHotkey, out var parsedHotbar)
+                    ? _options with { DropHotbarHotkey = parsedHotbar }
+                    : _options;
             case SceneQuickActionsOptions.DropSilenceKey:
                 return _options with
                 {
@@ -350,4 +353,12 @@ public sealed class SceneQuickActionsPlugin
 
     private static bool TryParseBinding(string text, out PluginInputBinding binding) =>
         PluginInputBinding.TryParse(text, PluginInputBindingKinds.All, out binding);
+
+    /// <summary>热键只接受「单一按键」：组合键无法在钩子里可靠地当触发器，直接拒绝。</summary>
+    private static bool TryParseHotkey(string text, out PluginInputBinding hotkey)
+    {
+        hotkey = new PluginInputBinding();
+        return PluginInputBinding.TryParse(text, PluginInputBindingKinds.All, out var parsed)
+            && SceneQuickActionsOptions.TryAsHotkey(parsed, out hotkey);
+    }
 }

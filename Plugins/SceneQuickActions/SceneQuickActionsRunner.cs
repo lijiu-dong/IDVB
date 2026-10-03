@@ -35,13 +35,6 @@ internal sealed class SceneQuickActionsRunner : IDisposable
     private const int BagSlotIntervalMilliseconds = 400;
     private const int HotkeyDebounceMilliseconds = 400;
 
-    private const int WhKeyboardLl = 13;
-    private const int WmKeydown = 0x0100;
-    private const int WmKeyup = 0x0101;
-    private const int WmSyskeydown = 0x0104;
-    private const int WmSyskeyup = 0x0105;
-    private const int WmQuit = 0x0012;
-
     private const uint MouseeventfLeftdown = 0x0002;
     private const uint MouseeventfLeftup = 0x0004;
 
@@ -82,11 +75,8 @@ internal sealed class SceneQuickActionsRunner : IDisposable
     private DateTime _lastWarningAt = DateTime.MinValue;
     private bool _disposed;
 
-    // 热键状态
-    private LowLevelKeyboardProc? _hotkeyProc;
-    private IntPtr _hotkeyHook;
-    private Thread? _hotkeyThread;
-    private uint _hotkeyThreadId;
+    // 热键状态（走宿主的 IPluginInputService，键盘键与鼠标键都能绑）
+    private IPluginInputService? _hotkeyService;
     private int _hotkeyBusy;
     private int _hotbarCursor;
     private DateTime _lastHotkeyAt = DateTime.MinValue;
@@ -126,12 +116,16 @@ internal sealed class SceneQuickActionsRunner : IDisposable
         }
 
         _logger.Info($"背包辅助已启动（抓帧路径：{(_grabber.HasFastPath ? "宿主快速抓帧" : "PNG 截图")}）。");
-        StartHotkeyHook();
+        RegisterHotkeys();
     }
 
     public void Stop()
     {
-        StopHotkeyHook();
+        if (_hotkeyService is not null)
+        {
+            _hotkeyService.BindingInvoked -= OnHotkeyInvoked;
+            _hotkeyService = null;
+        }
 
         Thread? worker;
         CancellationTokenSource? cancellation;
@@ -506,112 +500,34 @@ internal sealed class SceneQuickActionsRunner : IDisposable
 
     // ==================== 拖拽热键 ====================
 
-    /// <summary>装上全局键盘热键钩子（只在游戏处于前台时才动手）。</summary>
-    private void StartHotkeyHook()
+    /// <summary>接入宿主的插件输入通道：热键的按键监听、注入过滤都由宿主负责。</summary>
+    public void AttachHotkeys(IPluginInputService? input, string pluginId)
     {
-        lock (_sync)
-        {
-            if (_hotkeyThread is not null)
-                return;
+        if (_hotkeyService is not null)
+            _hotkeyService.BindingInvoked -= OnHotkeyInvoked;
 
-            _hotkeyProc = HotkeyCallback;
-            var thread = new Thread(HotkeyThreadMain)
-            {
-                IsBackground = true,
-                Name = "IDVB scene-quick-actions hotkeys"
-            };
-            _hotkeyThread = thread;
-            thread.Start();
-        }
+        _hotkeyService = input;
+        _pluginId = pluginId;
+        if (_hotkeyService is not null)
+            _hotkeyService.BindingInvoked += OnHotkeyInvoked;
     }
 
-    /// <summary>卸掉热键钩子并结束钩子线程的消息循环。</summary>
-    private void StopHotkeyHook()
+    private string _pluginId = "scene-quick-actions";
+
+    private void OnHotkeyInvoked(object? sender, PluginInputEventArgs args)
     {
-        Thread? thread;
-        uint threadId;
-        IntPtr hook;
-        lock (_sync)
+        if (!args.IsDown
+            || !string.Equals(args.PluginId, _pluginId, StringComparison.OrdinalIgnoreCase))
         {
-            thread = _hotkeyThread;
-            threadId = _hotkeyThreadId;
-            hook = _hotkeyHook;
-            _hotkeyThread = null;
-            _hotkeyThreadId = 0;
-            _hotkeyHook = IntPtr.Zero;
-        }
-
-        if (threadId != 0)
-            PostThreadMessage(threadId, WmQuit, IntPtr.Zero, IntPtr.Zero);
-        if (thread is not null && thread != Thread.CurrentThread)
-            thread.Join(TimeSpan.FromSeconds(2));
-        if (hook != IntPtr.Zero)
-            UnhookWindowsHookEx(hook);
-    }
-
-    private void HotkeyThreadMain()
-    {
-        try
-        {
-            _hotkeyThreadId = GetCurrentThreadId();
-            // 先建消息队列，否则 SetWindowsHookEx 可能拿不到消息。
-            PeekMessage(out _, IntPtr.Zero, 0, 0, PmNoRemove);
-            _hotkeyHook = SetWindowsHookEx(
-                WhKeyboardLl,
-                _hotkeyProc!,
-                GetModuleHandle(null),
-                0);
-            if (_hotkeyHook == IntPtr.Zero)
-                throw new Win32Exception(
-                    Marshal.GetLastWin32Error(),
-                    "无法注册背包辅助热键钩子。");
-
-            _logger.Info("背包辅助热键已就绪。");
-            while (GetMessage(out var message, IntPtr.Zero, 0, 0) > 0)
-            {
-                TranslateMessage(ref message);
-                DispatchMessage(ref message);
-            }
-        }
-        catch (Exception exception)
-        {
-            _logger.Error($"背包辅助热键不可用：{exception.Message}");
-        }
-        finally
-        {
-            var hook = _hotkeyHook;
-            _hotkeyHook = IntPtr.Zero;
-            if (hook != IntPtr.Zero)
-                UnhookWindowsHookEx(hook);
-        }
-    }
-
-    private IntPtr HotkeyCallback(int code, IntPtr wParam, IntPtr lParam)
-    {
-        if (code < 0)
-            return CallNextHookEx(_hotkeyHook, code, wParam, lParam);
-
-        var message = wParam.ToInt32();
-        if (message is WmKeydown or WmSyskeydown)
-        {
-            var data = Marshal.PtrToStructure<KbdLlHookStruct>(lParam);
-            // 自己注入的键盘事件一律忽略，避免自触发。
-            if (!InputInjectionMarkers.IsHostGeneratedMouseInput(data.ExtraInfo))
-                HandleHotkey(data.VirtualKey);
-        }
-
-        return CallNextHookEx(_hotkeyHook, code, wParam, lParam);
-    }
-
-    private void HandleHotkey(uint virtualKey)
-    {
-        if (virtualKey == 0)
             return;
+        }
 
         var options = Volatile.Read(ref _options);
-        var isBagHotkey = options.DropBagHotkey != 0 && virtualKey == options.DropBagHotkey;
-        var isHotbarHotkey = options.DropHotbarHotkey != 0 && virtualKey == options.DropHotbarHotkey;
-        if (!isBagHotkey && !isHotbarHotkey)
+        var isBag = options.DropBagHotkey.IsConfigured
+            && string.Equals(args.BindingKey, SceneQuickActionsOptions.DropBagHotkeyKey, StringComparison.Ordinal);
+        var isHotbar = options.DropHotbarHotkey.IsConfigured
+            && string.Equals(args.BindingKey, SceneQuickActionsOptions.DropHotbarHotkeyKey, StringComparison.Ordinal);
+        if (!isBag && !isHotbar)
             return;
 
         // 防抖：按住不放时只认第一次
@@ -632,11 +548,6 @@ internal sealed class SceneQuickActionsRunner : IDisposable
             }
 
             var window = GetForegroundWindow();
-            if (!TryGetClientBounds(window, out _))
-            {
-                LogThrottled("热键已按下，但读不到游戏客户区尺寸，已忽略。");
-                return;
-            }
 
             // 暂停「拾取相关」：默认 30 秒，免得把刚丢出来的东西又捡回去。
             var silence = Math.Clamp(
@@ -646,25 +557,46 @@ internal sealed class SceneQuickActionsRunner : IDisposable
             _dropSilenceUntil = DateTime.UtcNow.AddSeconds(silence);
 
             string[] work;
-            if (isBagHotkey)
+            if (isBag)
             {
                 work = BuildBagDropWork();
-                _logger.Info($"热键「丢光背包」触发：{work.Length} 格依次拖到屏幕中心；「拾取相关」暂停 {silence} 秒。");
+                _logger.Info(
+                    $"热键「丢光背包」触发：先按 Tab 开背包，再依次拖 {work.Length} 格到屏幕中心；"
+                    + $"「拾取相关」暂停 {silence} 秒。");
             }
             else
             {
                 var cursor = Volatile.Read(ref _hotbarCursor);
                 work = BuildHotbarDropWork(ref cursor);
                 Volatile.Write(ref _hotbarCursor, cursor);
-                _logger.Info($"热键「逐个丢道具栏」触发：{work[0]}；「拾取相关」暂停 {silence} 秒。");
+                _logger.Info(
+                    $"热键「逐个丢道具栏」触发：{work[0]}（先切出鼠标）；"
+                    + $"「拾取相关」暂停 {silence} 秒。");
             }
 
-            _ = Task.Run(() => RunDropWork(work, window));
+            _ = Task.Run(() => RunDropWork(work, window, isBag));
         }
         finally
         {
             Interlocked.Exchange(ref _hotkeyBusy, 0);
         }
+    }
+
+    /// <summary>热键改动后重新注册（设置页改键位时调用）。</summary>
+    public void RefreshHotkeyBindings() => RegisterHotkeys();
+
+    /// <summary>把热键绑定注册到宿主（键位改动后要重新注册）。</summary>
+    private void RegisterHotkeys()
+    {
+        if (_hotkeyService is null)
+            return;
+
+        var options = Volatile.Read(ref _options);
+        _hotkeyService.SetBinding(_pluginId, SceneQuickActionsOptions.DropBagHotkeyKey, options.DropBagHotkey);
+        _hotkeyService.SetBinding(_pluginId, SceneQuickActionsOptions.DropHotbarHotkeyKey, options.DropHotbarHotkey);
+        _logger.Info(
+            $"热键已注册：丢光背包 {options.DropBagHotkey.DisplayName}，"
+            + $"逐个丢道具栏 {options.DropHotbarHotkey.DisplayName}。");
     }
 
     /// <summary>丢光背包：上排 3 格 + 中排 3 格，逐个拖到屏幕正中心松手。</summary>
@@ -683,15 +615,18 @@ internal sealed class SceneQuickActionsRunner : IDisposable
 
     private static string DescribeSlot(string kind, int index) => $"{kind}第 {index} 格";
 
-    /// <summary>后台执行拖拽：源格 → 按住左键 → 拖到屏幕中心 → 松手。</summary>
-    private void RunDropWork(string[] labels, IntPtr window)
+    /// <summary>后台执行：切出鼠标 → 逐个拖到屏幕中心 → 恢复。</summary>
+    private void RunDropWork(string[] labels, IntPtr window, bool isBag)
     {
         try
         {
             if (!TryGetClientBounds(window, out var bounds))
                 return;
 
-            var isBag = labels.Length > 1;
+            // 两个功能都少了这一步：不切出鼠标，游戏里根本没有可拖的指针。
+            // 功能一要先开背包（格子才在），功能二只要指针切出来。
+            WakeMouseForDrop(window);
+
             var source = isBag
                 ? BagSlots
                 : [HotbarSlots[(Volatile.Read(ref _hotbarCursor) + HotbarSlots.Length - 1) % HotbarSlots.Length]];
@@ -713,13 +648,32 @@ internal sealed class SceneQuickActionsRunner : IDisposable
                 var fromY = originY + (int)Math.Round(source[index].Y * bounds.Height);
                 DragOnce(fromX, fromY, targetX, targetY);
                 _logger.Info($"已把 {labels[index]} 拖到屏幕中心（{fromX},{fromY} → {targetX},{targetY}）。");
-                Thread.Sleep(BagSlotIntervalMilliseconds);
+
+                if (index < source.Length - 1)
+                    Thread.Sleep(BagSlotIntervalMilliseconds);
             }
         }
         catch (Exception exception)
         {
             _logger.Warning($"拖拽失败：{exception.Message}");
         }
+        finally
+        {
+            // 再把背包关回去，恢复游戏手势（再按一次 Tab 是开/关切换）。
+            CloseBackpack(window);
+        }
+    }
+
+    /// <summary>拖拽前切出鼠标：按一次 Tab 打开背包，等指针真正出现。</summary>
+    private void WakeMouseForDrop(IntPtr window)
+    {
+        EnsureForeground(window);
+        NativeInput.InjectKey(SceneQuickActionsOptions.WakeVirtualKey, WakeHoldMilliseconds);
+        _logger.Info("已按 Tab 打开背包切出鼠标（准备拖拽）。");
+
+        var options = Volatile.Read(ref _options);
+        var wait = Math.Max(options.WakeDelayMilliseconds, MinimumWakeDelayMilliseconds);
+        Thread.Sleep(wait);
     }
 
     /// <summary>按一次左键拖拽：移动 → 按下 → 缓动到目标 → 松手。</summary>
@@ -815,16 +769,6 @@ internal sealed class SceneQuickActionsRunner : IDisposable
     private readonly record struct ClientBounds(int X, int Y, int Width, int Height);
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct KbdLlHookStruct
-    {
-        public uint VirtualKey;
-        public uint ScanCode;
-        public uint Flags;
-        public uint Time;
-        public IntPtr ExtraInfo;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
     private struct NativeRect
     {
         public int Left;
@@ -832,8 +776,6 @@ internal sealed class SceneQuickActionsRunner : IDisposable
         public int Right;
         public int Bottom;
     }
-
-    private delegate IntPtr LowLevelKeyboardProc(int code, IntPtr wParam, IntPtr lParam);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct NativePoint
@@ -867,55 +809,6 @@ internal sealed class SceneQuickActionsRunner : IDisposable
         public uint Time;
         public IntPtr ExtraInfo;
     }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct Message
-    {
-        public IntPtr Window;
-        public uint Value;
-        public IntPtr WParam;
-        public IntPtr LParam;
-        public uint Time;
-        public NativePoint Point;
-    }
-
-    private const uint PmNoRemove = 0;
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern IntPtr SetWindowsHookEx(
-        int hookId, LowLevelKeyboardProc procedure, IntPtr module, uint threadId);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool UnhookWindowsHookEx(IntPtr hook);
-
-    [DllImport("user32.dll")]
-    private static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr wParam, IntPtr lParam);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern int GetMessage(out Message message, IntPtr window, uint filterMin, uint filterMax);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool PeekMessage(
-        out Message message, IntPtr window, uint filterMin, uint filterMax, uint remove);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool TranslateMessage(ref Message message);
-
-    [DllImport("user32.dll")]
-    private static extern IntPtr DispatchMessage(ref Message message);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool PostThreadMessage(uint threadId, uint message, IntPtr wParam, IntPtr lParam);
-
-    [DllImport("kernel32.dll")]
-    private static extern uint GetCurrentThreadId();
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
-    private static extern IntPtr GetModuleHandle(string? moduleName);
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
