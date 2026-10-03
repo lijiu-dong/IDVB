@@ -30,6 +30,31 @@ public sealed record SceneQuickActionsOptions
     public const string DropBagHotkeyKey = "drop-bag-hotkey";
     public const string DropHotbarHotkeyKey = "drop-hotbar-hotkey";
     public const string DropSilenceKey = "drop-silence-seconds";
+    public const string DropSpeedKey = "drop-speed";
+
+    /// <summary>拖拽速度档位文案。</summary>
+    public static IReadOnlyList<string> DropSpeedOptions { get; } = ["快", "标准", "慢（稳妥）"];
+
+    /// <summary>拖拽各段时长（毫秒）：整条轨迹时长 / 到位后停顿 / 每格之间间隔。</summary>
+    public static (int Move, int Settle, int Interval) GetDropTiming(int speedIndex) =>
+        speedIndex switch
+        {
+            0 => (150, 60, 180),
+            1 => (260, 90, 300),
+            _ => (400, 150, 600)
+        };
+
+    /// <summary>把设置页存下来的档位文案还原成下标；不认得的回退到「快」。</summary>
+    public static int ParseDropSpeed(string? option)
+    {
+        var index = DropSpeedOptions
+            .ToList()
+            .FindIndex(candidate => string.Equals(candidate, option, StringComparison.Ordinal));
+        return index < 0 ? 0 : index;
+    }
+
+    public static string ToDropSpeedOption(int speedIndex) =>
+        DropSpeedOptions[Math.Clamp(speedIndex, 0, DropSpeedOptions.Count - 1)];
 
     /// <summary>触发丢东西后暂停「拾取相关」检测的秒数范围。</summary>
     public const int DropSilenceMinimum = 5;
@@ -104,6 +129,9 @@ public sealed record SceneQuickActionsOptions
 
     /// <summary>触发丢东西后暂停「拾取相关」的秒数。</summary>
     public int DropSilenceSeconds { get; init; } = 30;
+
+    /// <summary>拖拽速度档位下标（0 快 / 1 标准 / 2 慢）。</summary>
+    public int DropSpeedIndex { get; init; }
 
     /// <summary>把一份绑定收敛成「单一按键」的热键：带修饰键或伴随键的一律不采用。</summary>
     public static bool TryAsHotkey(PluginInputBinding? binding, out PluginInputBinding hotkey)

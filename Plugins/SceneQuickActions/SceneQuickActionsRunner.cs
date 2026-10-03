@@ -30,9 +30,6 @@ internal sealed class SceneQuickActionsRunner : IDisposable
     private const int WarningThrottleSeconds = 20;
 
     // —— 拖拽热键相关 ——
-    private const int DragMoveDurationMilliseconds = 260;
-    private const int DragSettleMilliseconds = 120;
-    private const int BagSlotIntervalMilliseconds = 400;
     private const int HotkeyDebounceMilliseconds = 400;
 
     private const uint MouseeventfLeftdown = 0x0002;
@@ -636,6 +633,10 @@ internal sealed class SceneQuickActionsRunner : IDisposable
             var targetX = originX + (int)Math.Round(DropTargetX * bounds.Width);
             var targetY = originY + (int)Math.Round(DropTargetY * bounds.Height);
 
+            // 拖拽快慢由设置页的「拖拽速度」档位决定。
+            var timing = SceneQuickActionsOptions.GetDropTiming(
+                Volatile.Read(ref _options).DropSpeedIndex);
+
             for (var index = 0; index < source.Length; index++)
             {
                 if (!IsGameForeground())
@@ -646,11 +647,11 @@ internal sealed class SceneQuickActionsRunner : IDisposable
 
                 var fromX = originX + (int)Math.Round(source[index].X * bounds.Width);
                 var fromY = originY + (int)Math.Round(source[index].Y * bounds.Height);
-                DragOnce(fromX, fromY, targetX, targetY);
+                DragOnce(fromX, fromY, targetX, targetY, timing);
                 _logger.Info($"已把 {labels[index]} 拖到屏幕中心（{fromX},{fromY} → {targetX},{targetY}）。");
 
                 if (index < source.Length - 1)
-                    Thread.Sleep(BagSlotIntervalMilliseconds);
+                    Thread.Sleep(timing.Interval);
             }
         }
         catch (Exception exception)
@@ -676,17 +677,23 @@ internal sealed class SceneQuickActionsRunner : IDisposable
         Thread.Sleep(wait);
     }
 
-    /// <summary>按一次左键拖拽：移动 → 按下 → 缓动到目标 → 松手。</summary>
-    private static void DragOnce(int fromX, int fromY, int targetX, int targetY)
+    /// <summary>按一次左键拖拽：移动 → 按下 → 缓动到目标 → 松手。快慢由 timing 决定。</summary>
+    private static void DragOnce(
+        int fromX,
+        int fromY,
+        int targetX,
+        int targetY,
+        (int Move, int Settle, int Interval) timing)
     {
         SetCursor(fromX, fromY);
-        Thread.Sleep(DragSettleMilliseconds);
+        Thread.Sleep(timing.Settle);
 
         SendMouse(MouseeventfLeftdown);
         try
         {
-            Thread.Sleep(DragSettleMilliseconds);
-            var steps = 24;
+            Thread.Sleep(timing.Settle);
+            const int steps = 16;
+            var perStep = Math.Max(1, timing.Move / steps);
             for (var step = 1; step <= steps; step++)
             {
                 var progress = step / (double)steps;
@@ -694,7 +701,7 @@ internal sealed class SceneQuickActionsRunner : IDisposable
                 SetCursor(
                     (int)Math.Round(fromX + ((targetX - fromX) * eased)),
                     (int)Math.Round(fromY + ((targetY - fromY) * eased)));
-                Thread.Sleep(Math.Max(1, DragMoveDurationMilliseconds / steps));
+                Thread.Sleep(perStep);
             }
         }
         finally

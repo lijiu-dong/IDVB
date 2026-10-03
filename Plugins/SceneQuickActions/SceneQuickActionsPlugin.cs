@@ -18,7 +18,7 @@ namespace IDVBuff.Plugins.SceneQuickActions;
     "scene-quick-actions",
     DisplayName = "背包辅助",
     Description = "自动识别「邀请你牵手」与「可拾取」两个界面，执行接受邀请、拾取全部、快捷替换。",
-    Version = "1.6.0",
+    Version = "1.6.1",
     AlwaysActive = true)]
 public sealed class SceneQuickActionsPlugin
     : PluginBase, IPluginSettingsProvider, IHandle<SessionStateChangedMessage>
@@ -157,6 +157,15 @@ public sealed class SceneQuickActionsPlugin
             Maximum = SceneQuickActionsOptions.DropSilenceMaximum,
             StepFrequency = 5,
             DefaultValue = 30
+        },
+        new PluginChoiceSetting
+        {
+            Key = SceneQuickActionsOptions.DropSpeedKey,
+            DisplayName = "拖拽速度",
+            Description = "两个热键拖动时的快慢。嫌慢选「快」，如果丢不出去（拖拽太快游戏没吃到）就换「慢（稳妥）」。",
+            Group = SceneQuickActionsOptions.TimingGroupTitle,
+            Options = [.. SceneQuickActionsOptions.DropSpeedOptions],
+            DefaultIndex = 0
         }
     ];
 
@@ -249,6 +258,8 @@ public sealed class SceneQuickActionsPlugin
         SceneQuickActionsOptions.DropBagHotkeyKey => _options.DropBagHotkey.StorageValue,
         SceneQuickActionsOptions.DropHotbarHotkeyKey => _options.DropHotbarHotkey.StorageValue,
         SceneQuickActionsOptions.DropSilenceKey => (double)_options.DropSilenceSeconds,
+        SceneQuickActionsOptions.DropSpeedKey =>
+            SceneQuickActionsOptions.ToDropSpeedOption(_options.DropSpeedIndex),
         _ => null
     };
 
@@ -346,6 +357,8 @@ public sealed class SceneQuickActionsPlugin
                         SceneQuickActionsOptions.DropSilenceMinimum,
                         SceneQuickActionsOptions.DropSilenceMaximum)
                 };
+            case SceneQuickActionsOptions.DropSpeedKey when value is string dropSpeed:
+                return _options with { DropSpeedIndex = SceneQuickActionsOptions.ParseDropSpeed(dropSpeed) };
             default:
                 return _options;
         }
