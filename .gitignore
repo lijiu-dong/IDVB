@@ -23,6 +23,7 @@ Assets/*.ico
 Assets/Algorithms/
 Assets/FloorIndicators/
 Assets/Icons/
+Assets/Games/
 Assets/Markdown/
 
 # 全局配置与各分辨率调参预设（安装目录 IDVB_config.toml / IDVB_survey.toml /
