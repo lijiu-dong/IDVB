@@ -15,7 +15,7 @@ public sealed partial class SettingsPage
         string? githubLabel = null)
     {
         var content = new StackPanel { Spacing = 8 };
-        content.Children.Add(new SymbolIcon(icon) { Foreground = AccentBrush });
+        content.Children.Add(new SymbolIcon(icon) { Foreground = FluentTheme.Brush(this, "AccentTextFillColorPrimaryBrush") });
         content.Children.Add(new TextBlock { Text = label, FontSize = 13, Foreground = SecondaryTextBrush });
         content.Children.Add(new TextBlock
         {
@@ -73,7 +73,7 @@ public sealed partial class SettingsPage
         {
             Padding = new Thickness(18),
             MinHeight = 150,
-            Background = FluentTheme.CardBrush(),
+            Background = FluentTheme.CardBrush(this),
             BorderBrush = CardBorderBrush,
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(8),

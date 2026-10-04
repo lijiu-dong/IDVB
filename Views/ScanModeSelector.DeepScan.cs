@@ -69,12 +69,17 @@ public sealed partial class ScanModeSelector
     private void SelectAtPointer(PointerRoutedEventArgs args)
     {
         var x = args.GetCurrentPoint(_track).Position.X;
+        SelectAtTrackPosition(x);
+    }
+
+    private void SelectAtTrackPosition(double x)
+    {
         _dragTrackX = x;
+        UpdateGeometryPointer();
+        if (_appearanceAnimating) AdvanceAppearance();
         // Hit testing follows animated widths; no release is needed for DeepScan.
         _input.Value = ScanModeVisualRules.HitTest(x - _dragGrabOffset, _track.ActualWidth,
             _appearanceFrame.Expansion, _visibleSegments);
-        // Pointer pose is consumed synchronously, even inside the same segment;
-        // only the background/shape runs on the short easing clock.
         RenderAppearanceFrame();
     }
 
@@ -88,7 +93,7 @@ public sealed partial class ScanModeSelector
             if (Math.Abs(args.GetCurrentPoint(_track).Position.X - _pointerPressX) < 3) return;
             _isPointerDragging = true;
         }
-        SelectAtPointer(args);
+        SelectAtTrackPosition(args.GetCurrentPoint(_track).Position.X);
         args.Handled = true;
     }
 
@@ -103,18 +108,22 @@ public sealed partial class ScanModeSelector
         _expandedForGesture = false;
         _track.ReleasePointerCapture(args.Pointer);
         UpdateAppearance(true);
+        CommitMode();
         args.Handled = true;
     }
 
     private void TrackPointerCaptureLost(object sender, PointerRoutedEventArgs args)
     {
         if (!_dragPointer.HasValue) return;
+        if (_isPointerDragging && _dragTrackX.HasValue && _track.ActualWidth > 0)
+            SelectAtTrackPosition(_dragTrackX.Value);
         _dragPointer = null;
         _dragTrackX = null;
         _pointerNeedsSettle = _isPointerDragging;
         _isPointerDragging = false;
         _expandedForGesture = false;
         UpdateAppearance(true);
+        CommitMode();
     }
 
     private static LinearGradientBrush DeepGradient(params (uint Color, double Offset)[] stops)

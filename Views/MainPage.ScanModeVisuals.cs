@@ -3,6 +3,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
 using Windows.UI;
 using Windows.UI.ViewManagement;
+using IDVBuff.Presentation.Theming;
 
 namespace IDVBuff.Views;
 
@@ -12,7 +13,6 @@ public sealed partial class MainPage
         TimeSpan.FromMilliseconds(460);
 
     private readonly UISettings _scanVisualUiSettings = new();
-    private readonly SolidColorBrush _feedbackAccentBrush = new();
     private HomePage? _scanVisualHomePage;
     private Color _scanAccentCurrent = ScanModeSelector.GetAccentColor(
         Features.Maps.ScanPerformanceMode.Balanced);
@@ -25,8 +25,7 @@ public sealed partial class MainPage
     {
         _scanAccentStart = _scanAccentCurrent;
         _scanAccentTarget = _scanAccentCurrent;
-        _feedbackAccentBrush.Color = _scanAccentCurrent;
-        FeedbackButton.Background = _feedbackAccentBrush;
+        ThemeService.SetScanModeAccent(_scanAccentCurrent);
         Unloaded += (_, _) => StopScanAccentAnimation();
     }
 
@@ -50,6 +49,11 @@ public sealed partial class MainPage
 
     private void StartScanAccentTransition(Color target, bool animate)
     {
+        // Publish the semantic mode color once; palette refresh walks every theme owner.
+        // Intermediate ambient colors must never trigger a full application re-theme.
+        ThemeService.SetScanModeAccent(target);
+        if (animate && _scanAccentAnimationRunning && _scanAccentTarget.Equals(target))
+            return;
         var now = Stopwatch.GetTimestamp();
         if (_scanAccentAnimationRunning)
             UpdateScanAccentFrame(now);
@@ -98,7 +102,6 @@ public sealed partial class MainPage
 
     private void ApplyScanAccent(Color color)
     {
-        _feedbackAccentBrush.Color = color;
         _scanVisualHomePage?.SetAmbientAccent(color);
     }
 

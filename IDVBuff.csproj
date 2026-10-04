@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="UTF-8" ?>
+﻿<?xml version="1.0" encoding="UTF-8" ?>
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
         <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
@@ -30,11 +30,11 @@
         <Product>Identity Vision Bridge</Product>
         <Company>Identity Vision Bridge</Company>
         <!-- Canonical SemVer product identity. The UI adds the conventional v prefix. -->
-        <IDVBProductVersion>1.6.6-unstable</IDVBProductVersion>
-        <IDVBReleaseLine>b01.6</IDVBReleaseLine>
+        <IDVBProductVersion>1.7.0-preview</IDVBProductVersion>
+        <IDVBReleaseLine>b01.7</IDVBReleaseLine>
         <Version>$(IDVBProductVersion)</Version>
-        <AssemblyVersion>1.6.6.0</AssemblyVersion>
-        <FileVersion>1.6.6.0</FileVersion>
+        <AssemblyVersion>1.7.0.0</AssemblyVersion>
+        <FileVersion>1.7.0.0</FileVersion>
         <InformationalVersion>$(IDVBProductVersion)</InformationalVersion>
         <UseSystemDrawing>true</UseSystemDrawing>
         <Configurations>Debug;Release;Test</Configurations>
@@ -55,22 +55,28 @@
         <DefaultItemExcludes>$(DefaultItemExcludes);Tools\**;**\obj\**;**\bin\**</DefaultItemExcludes>
     </PropertyGroup>
 
+    <PropertyGroup Condition="'$(IDVBDevelopmentBuild)' == 'true'">
+        <DefineConstants>$(DefineConstants);IDVB_DEVELOPMENT_BUILD</DefineConstants>
+    </PropertyGroup>
+
     <PropertyGroup Condition="'$(Configuration)' == 'Test'">
         <DefineConstants>$(DefineConstants);IDVBUFF_TEST_BUILD</DefineConstants>
         <AssemblyName>IDVB.Test</AssemblyName>
     </PropertyGroup>
 
     <ItemGroup>
+        <Using Include="IDVBuff.Presentation.Theming" />
         <FrameworkReference Include="Microsoft.WindowsDesktop.App.WindowsForms" />
         <ProjectReference Include="Core\IDVBuff.Core.csproj" />
         <ProjectReference Include="IDVB.Vision\IDVB.Vision.csproj" Aliases="VisionEngine" />
+        <ProjectReference Include="IDVBuff.Appearance\IDVBuff.Appearance.csproj" />
         <ProjectReference Include="Infrastructure\IDVBuff.Infrastructure.csproj" />
         <ProjectReference Include="Services\IDVBuff.Services.csproj" />
         <ProjectReference Include="Pipeline\IDVBuff.Pipeline.csproj" />
         <ProjectReference Include="IDVBuff.ModuleContracts\IDVBuff.ModuleContracts.csproj" />
         <ProjectReference Include="UpdateCore\IDVBuff.UpdateCore.csproj" />
         <ProjectReference Include="Updater\IDVBuff.Updater.csproj"
-                          ReferenceOutputAssembly="false" />
+                          ReferenceOutputAssembly="false" Private="false" />
         <ProjectReference Include="Survey\Domain\IDVBuff.Survey.Domain.csproj" />
         <ProjectReference Include="Survey\Contracts\IDVBuff.Survey.Contracts.csproj" />
         <ProjectReference Include="Survey\Application\IDVBuff.Survey.Application.csproj" />
@@ -107,6 +113,7 @@
         <Content Include="Assets\Icons\*.png" CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Assets\Algorithms\structure-zongcai-native-reference-v1.idva"
                  CopyToOutputDirectory="PreserveNewest" />
+        <Content Include="Assets\Games\*.png" CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Assets\Algorithms\structure-native-observed-v2.idva"
                  CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Assets\Algorithms\structure-doom-girl-hard-wangqingxin-v1.idva"
@@ -143,6 +150,7 @@
         <Compile Remove="IDVB.Vision.Contracts\**\*.cs" />
         <Compile Remove="IDVB.Vision\**\*.cs" />
         <Compile Remove="IDVB.Vision.Tests\**\*.cs" />
+        <Compile Remove="IDVBuff.Appearance\**\*.cs" />
         <Compile Remove="Infrastructure\**\*.cs" />
         <Compile Remove="Services\**\*.cs" />
         <Compile Remove="Pipeline\**\*.cs" />

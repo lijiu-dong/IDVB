@@ -1,4 +1,6 @@
 using System.Numerics;
+using IDVBuff.Appearance;
+using IDVBuff.Presentation.Theming;
 using IDVBuff.Features.Maps;
 using Microsoft.UI.Composition;
 using Microsoft.UI.Windowing;
@@ -70,13 +72,13 @@ public sealed partial class ScanModeSelector : UserControl
     };
     private readonly Border _glowOuter = CreateEffectPill(88, 44);
     private readonly Border _glowInner = CreateEffectPill(72, 36);
-    private readonly Border _fastGlow = CreateEffectPill(46, 23);
+    private readonly Border _fastGlow = CreateEffectPill(50, 25);
     private readonly Border _qualityHaloOuter = CreateEffectPill(62, 31);
     private readonly Border _qualityHaloInner = CreateEffectPill(52, 26);
     private readonly Border _selection = new()
     {
-        Height = 46,
-        CornerRadius = new CornerRadius(23),
+        Height = 50,
+        CornerRadius = new CornerRadius(25),
         HorizontalAlignment = HorizontalAlignment.Left,
         VerticalAlignment = VerticalAlignment.Center,
         BorderThickness = new Thickness(1),
@@ -104,6 +106,9 @@ public sealed partial class ScanModeSelector : UserControl
     private double _segmentWidth;
 
     public event Action<ScanPerformanceMode>? ModeChanged;
+    public event Action<ScanPerformanceMode>? ModePreviewChanged;
+    private ScanPerformanceMode _committedMode = ScanPerformanceMode.Balanced;
+    public bool IsInteracting => _dragPointer.HasValue;
     public ScanPerformanceMode Mode => (ScanPerformanceMode)(int)Math.Round(_input.Value);
     public Color AccentColor => GetAccentColor(Mode);
 
@@ -176,29 +181,13 @@ public sealed partial class ScanModeSelector : UserControl
         root.Children.Add(BuildDeepLightHost());
         root.Children.Add(_card);
         root.Children.Add(_deepCardSurface);
-        root.Children.Add(new Border
-        {
-            Width = 354,
-            Height = 74,
-            Margin = new Thickness(0, 7, 0, 0),
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Top,
-            CornerRadius = new CornerRadius(23),
-            IsHitTestVisible = false,
-            Background = new LinearGradientBrush
-            {
-                StartPoint = new Windows.Foundation.Point(0, 0),
-                EndPoint = new Windows.Foundation.Point(0, 1),
-                GradientStops =
-                {
-                    new GradientStop { Color = Color.FromArgb(30, 255, 255, 255), Offset = 0 },
-                    new GradientStop { Color = Color.FromArgb(8, 255, 255, 255), Offset = .45 },
-                    new GradientStop { Color = Color.FromArgb(0, 255, 255, 255), Offset = 1 }
-                }
-            }
-        });
+        root.Children.Add(_sheen);
         root.Children.Add(layout);
         Content = root;
+        FluentTheme.Observe(this, theme =>
+        {
+            if (NeedsAppearanceRefresh(theme)) UpdateAppearance(false);
+        });
 
         foreach (var element in EnumerateTranslatedElements())
             ElementCompositionPreview.SetIsTranslationEnabled(element, true);
@@ -207,7 +196,8 @@ public sealed partial class ScanModeSelector : UserControl
         {
             if (_updating) return;
             UpdateAppearance(true);
-            ModeChanged?.Invoke(Mode);
+            ModePreviewChanged?.Invoke(Mode);
+            if (!IsInteracting) CommitMode();
         };
         _track.AddHandler(UIElement.PointerPressedEvent,
             new PointerEventHandler(TrackPointerPressed), true);
@@ -233,6 +223,7 @@ public sealed partial class ScanModeSelector : UserControl
     {
         if (!Enum.IsDefined(mode))
             mode = ScanPerformanceMode.Balanced;
+        _committedMode = mode;
         if (mode == Mode && tagOnly == _tagOnly)
             return;
 
@@ -253,6 +244,15 @@ public sealed partial class ScanModeSelector : UserControl
         _updating = false;
         UpdateAppearance(false);
     }
+
+    private void CommitMode()
+    {
+        if (_committedMode == Mode) return;
+        _committedMode = Mode;
+        ModeChanged?.Invoke(Mode);
+    }
+
+    internal void SetCommittedMode(ScanPerformanceMode mode) => _committedMode = mode;
 
     private static Border CreateEffectPill(double height, double radius) => new()
     {
@@ -295,8 +295,6 @@ public sealed partial class ScanModeSelector : UserControl
         var labels = _segmentLabels;
         for (var index = 0; index < ModeNames.Length; index++)
         {
-            labels.ColumnDefinitions.Add(new ColumnDefinition
-                { Width = new GridLength(1, GridUnitType.Star) });
             var label = new TextBlock
             {
                 Text = ModeNames[index],
@@ -308,7 +306,6 @@ public sealed partial class ScanModeSelector : UserControl
             };
             _labels[index] = label;
             ElementCompositionPreview.SetIsTranslationEnabled(label, true);
-            Grid.SetColumn(label, index);
             labels.Children.Add(label);
 
             if (index == 0)
@@ -322,13 +319,11 @@ public sealed partial class ScanModeSelector : UserControl
                 Background = new SolidColorBrush(Color.FromArgb(48, 128, 128, 128)),
                 IsHitTestVisible = false
             };
-            Grid.SetColumn(divider, index);
             _dividers[index - 1] = divider;
             labels.Children.Add(divider);
         }
-        _segmentLabels.ColumnDefinitions[3].Width = new GridLength(0);
-        _labels[3].Visibility = Visibility.Collapsed;
-        _dividers[2].Visibility = Visibility.Collapsed;
+        _labels[3].Opacity = 0;
+        _dividers[2].Opacity = 0;
         return labels;
     }
 
@@ -351,8 +346,10 @@ public sealed partial class ScanModeSelector : UserControl
         var pointerX = args.GetCurrentPoint(_track).Position.X;
         _pointerPressX = pointerX;
         _isPointerDragging = false;
-        _dragGrabOffset = pointerX >= _selectedPosition && pointerX <= _selectedPosition + _selection.Width
-            ? pointerX - (_selectedPosition + _selection.Width / 2) : 0;
+        if (_appearanceAnimating) AdvanceAppearance();
+        var selectionWidth = Math.Max(1, _segmentWidth - 8);
+        _dragGrabOffset = pointerX >= _selectedPosition && pointerX <= _selectedPosition + selectionWidth
+            ? pointerX - (_selectedPosition + selectionWidth / 2) : 0;
         _expandedForGesture = _visibleSegments == 4;
         _track.CapturePointer(args.Pointer);
         SelectAtPointer(args);
@@ -362,6 +359,7 @@ public sealed partial class ScanModeSelector : UserControl
 
     private void UpdateAppearance(bool animate)
     {
+        UpdateGlassSurface(FluentTheme.Snapshot(this));
         var index = Math.Clamp((int)Mode, 0, 3);
         var enterDeepScan = animate && index == 3 && _lastAppearanceMode != ScanPerformanceMode.DeepScan;
         _lastAppearanceMode = Mode;
@@ -394,13 +392,6 @@ public sealed partial class ScanModeSelector : UserControl
         var visual = ElementCompositionPreview.GetElementVisual(element);
         visual.CenterPoint = new Vector3((float)(element.Width / 2),
             (float)(element.Height / 2), 0);
-    }
-
-    private static void SetTranslation(UIElement element, double x)
-    {
-        var visual = ElementCompositionPreview.GetElementVisual(element);
-        visual.StopAnimation("Translation.X");
-        visual.Properties.InsertVector3("Translation", new Vector3((float)x, 0, 0));
     }
 
 }

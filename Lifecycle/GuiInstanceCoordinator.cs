@@ -1,30 +1,34 @@
 using System.IO.Pipes;
 using System.Text;
+using System.Security.Cryptography;
 
 namespace IDVBuff.Lifecycle;
 
 internal sealed class GuiInstanceCoordinator : IDisposable
 {
     private const string StandardMutexName = "Local\\IdentityVisionBridge.Gui";
-    private const string DevMutexName = "Local\\IdentityVisionBridge.Gui.Dev";
+    private const string DevMutexName = "Local\\IdentityVisionBridge.Gui.Dev.v2";
     private const string StandardActivationPipeName = "IdentityVisionBridge.GuiActivation.v1";
-    private const string DevActivationPipeName = "IdentityVisionBridge.GuiActivation.Dev.v1";
+    private const string DevActivationPipeName = "IdentityVisionBridge.GuiActivation.Dev.v2";
 
-    private readonly bool _isDevelopmentInstance;
     private readonly string _primaryMutexName;
     private readonly string _activationPipeName;
     private readonly CancellationTokenSource _shutdown = new();
     private Mutex? _mutex;
-    private Mutex? _companionMutex;
     private Task? _listener;
 
     public static event EventHandler? ActivationRequested;
 
     public GuiInstanceCoordinator(bool isDevelopmentInstance = false)
     {
-        _isDevelopmentInstance = isDevelopmentInstance;
         _primaryMutexName = isDevelopmentInstance ? DevMutexName : StandardMutexName;
-        _activationPipeName = isDevelopmentInstance ? DevActivationPipeName : StandardActivationPipeName;
+        // The one development mutex rejects concurrent builds, while activation
+        // can only reach this exact deployment and compiled assembly.
+        var buildIdentity = Path.GetFullPath(AppContext.BaseDirectory).ToUpperInvariant()
+            + typeof(GuiInstanceCoordinator).Assembly.ManifestModule.ModuleVersionId;
+        var buildKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(buildIdentity)));
+        _activationPipeName = isDevelopmentInstance
+            ? $"{DevActivationPipeName}.{buildKey}" : StandardActivationPipeName;
     }
 
     public bool TryAcquirePrimary()
@@ -34,24 +38,6 @@ internal sealed class GuiInstanceCoordinator : IDisposable
             _mutex = new Mutex(true, _primaryMutexName, out var ownsPrimary);
             if (!ownsPrimary)
                 return false;
-
-            // 开发模式启动时，同时占位标准互斥体，防止用户同时拉起正式版造成双开；
-            // 正式版启动时，同时占位开发互斥体，彻底保证全系统最多只有一个 GUI 进程。
-            var companionName = _isDevelopmentInstance ? StandardMutexName : DevMutexName;
-            try
-            {
-                _companionMutex = new Mutex(true, companionName, out var ownsCompanion);
-                if (!ownsCompanion)
-                {
-                    _mutex.Dispose();
-                    _mutex = null;
-                    return false;
-                }
-            }
-            catch (AbandonedMutexException)
-            {
-                // 前序进程异常退出已遗弃互斥体，当前线程成功接管
-            }
 
             return true;
         }
@@ -70,14 +56,10 @@ internal sealed class GuiInstanceCoordinator : IDisposable
         _listener ??= Task.Run(() => ListenAsync(_shutdown.Token));
     }
 
-    public void NotifyPrimaryInstance()
+    public bool NotifyPrimaryInstance()
     {
-        // 尝试唤醒主实例（先尝试自身通道，若连不上再尝试伴生通道）
-        if (TryNotifyPipe(_activationPipeName))
-            return;
-
-        var companionPipe = _isDevelopmentInstance ? StandardActivationPipeName : DevActivationPipeName;
-        TryNotifyPipe(companionPipe);
+        // An installed application must never consume a development activation.
+        return TryNotifyPipe(_activationPipeName);
     }
 
     private static bool TryNotifyPipe(string pipeName)
@@ -138,7 +120,6 @@ internal sealed class GuiInstanceCoordinator : IDisposable
         _shutdown.Cancel();
         try { _listener?.Wait(TimeSpan.FromSeconds(1)); } catch { }
         _shutdown.Dispose();
-        _companionMutex?.Dispose();
         _mutex?.Dispose();
     }
 }
