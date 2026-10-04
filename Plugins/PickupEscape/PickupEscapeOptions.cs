@@ -19,7 +19,7 @@ public sealed record PickupEscapeOptions
     public const string ToggleHotkeyKey = "toggle-hotkey";
     public const string PickupListBindingKey = "pickup-list-binding";
     public const string PauseAfterPickupListKey = "pause-after-pickup-list-seconds";
-    public const string EscapeSettingsKey = "escape-settings-enabled";
+    public const string MinimumVisibleKey = "minimum-visible-ms";
     public const string ActionBindingKey = "action-binding";
     public const string PollIntervalKey = "poll-interval-ms";
     public const string ThresholdKey = "match-threshold-percent";
@@ -51,6 +51,8 @@ public sealed record PickupEscapeOptions
     public const int MaximumRandomDelayMillisecondsAllowed = 10000;
     public const int PauseSecondsMinimum = 1;
     public const int PauseSecondsMaximum = 60;
+    public const int MinimumVisibleMinimum = 0;
+    public const int MinimumVisibleMaximum = 2000;
 
     /// <summary>两次检测之间的间隔。</summary>
     public int PollIntervalMilliseconds { get; init; } = 400;
@@ -78,8 +80,11 @@ public sealed record PickupEscapeOptions
     /// <summary>按下「展开拾取列表」后暂停「按 ESC」的秒数。</summary>
     public int PauseAfterPickupListSeconds { get; init; } = 10;
 
-    /// <summary>识别到误开的游戏设置界面时，是否再补按一下 ESC 退回上一界面。</summary>
-    public bool EscapeSettingsEnabled { get; init; } = true;
+    /// <summary>
+    /// 「可拾取」面板要**连续出现**这么久（毫秒）才按 ESC —— 一闪而过的不算，
+    /// 免得人已经走开、ESC 没东西可关时反而把游戏设置界面开出来。0 = 不设门槛（一认出就按）。
+    /// </summary>
+    public int MinimumVisibleMilliseconds { get; init; } = 250;
 
     /// <summary>识别到面板时要按下的键；默认 Esc。</summary>
     public PluginInputBinding ActionBinding { get; init; } =

@@ -5,13 +5,16 @@ using IDVBuff.PluginHostMessages;
 namespace IDVBuff.Plugins.PickupEscape;
 
 /// <summary>
-/// 「九歌自用」的工作线程：按检测间隔抓一帧 →
-///   ① 先用「退出战斗」模板认游戏设置界面（误开出来的那层）：认出就补按一下 ESC 退回去；
-///   ② 再判断是不是刚按过「展开拾取列表」（默认 H）：是的话这段时间不按 ESC；
-///   ③ 最后才用「背包辅助」那两张模板确认「可拾取」面板在不在 —— 在（且是刚出现）就按一下 ESC。
+/// 「九歌自用」的工作线程：按检测间隔抓一帧 → 用「背包辅助」那两张模板确认「可拾取」面板在不在。
 ///
-/// 只有 dwrg.exe 是前台窗口时才抓帧；宿主地图界面打开时暂停检测；
-/// 每次注入前重新校验前台，游戏切走了就放弃这一次。
+/// 会按 ESC 的前提有三个：
+///   ① 面板**连续存在**够久（默认 250ms，可调）—— 一闪而过的不算。那种情况人已经走开、
+///      ESC 没东西可关，按下去反而会把游戏设置界面开出来；
+///   ② 不在「展开拾取列表」（默认 H）之后的让路期里；
+///   ③ 这一轮面板算「刚出现」（面板消失后才会重新武装，同一块面板不连按）。
+///
+/// 让路期内连帧都不抓（省资源）。只有 dwrg.exe 是前台窗口时才抓帧；
+/// 宿主地图界面打开时暂停检测；每次注入前重新校验前台，游戏切走了就放弃这一次。
 ///
 /// 另外负责那个开关热键：按一下暂停检测、再按一下恢复（默认未设置键位）。
 /// 线程只在插件启用期间存在，暂停检测时只空转等待、不抓帧。
@@ -35,9 +38,8 @@ internal sealed class PickupEscapeRunner : IDisposable
     /// <summary>「面板刚出现」才动作：面板消失后重新武装，避免面板还在时被反复按 ESC。</summary>
     private bool _armed = true;
     private DateTime _readyAt = DateTime.MinValue;
-    /// <summary>「误开设置界面 → 补一下 ESC」的武装状态与冷却。</summary>
-    private bool _settingsEscapeArmed = true;
-    private DateTime _settingsEscapeReadyAt = DateTime.MinValue;
+    /// <summary>本次「可拾取」面板第一次被认出来的时刻（UTC ticks；0 = 当前没看到面板）。</summary>
+    private long _panelFirstSeenTicks;
     /// <summary>「展开拾取列表」后的暂停截止时刻（UTC ticks；0 = 没在暂停）。</summary>
     private long _escapePausedUntilTicks;
     private int _pauseGate;
@@ -153,7 +155,8 @@ internal sealed class PickupEscapeRunner : IDisposable
             var options = Volatile.Read(ref _options);
             try
             {
-                if (DetectionEnabled && !_mapOpen)
+                // 「展开拾取列表」后的让路期内连帧都不抓：省资源，也不可能误按 ESC。
+                if (DetectionEnabled && !_mapOpen && !IsEscapePaused)
                     ProcessOnce(options, token);
             }
             catch (OperationCanceledException)
@@ -184,39 +187,6 @@ internal sealed class PickupEscapeRunner : IDisposable
         {
             var now = DateTime.UtcNow;
 
-            // ① 误开的游戏设置界面优先处理：出现「可拾取」时人已经走开、那一下 ESC 没东西可关，
-            //    就会开到设置界面 —— 认出它再补一下 ESC 退回去。
-            if (options.EscapeSettingsEnabled)
-            {
-                var hasSettings = _matcher.TryMatch(
-                    frame.Gray,
-                    PickupEscapeTemplates.SettingsScreen,
-                    options.MatchThreshold,
-                    out var settingsHit);
-                if (hasSettings)
-                {
-                    if (_settingsEscapeArmed && now >= _settingsEscapeReadyAt)
-                    {
-                        _settingsEscapeArmed = false;
-                        _settingsEscapeReadyAt = now.AddMilliseconds(options.CooldownMilliseconds);
-                        PerformEscape(frame, settingsHit, "游戏设置界面", options, token);
-                    }
-                    return;
-                }
-
-                // 设置界面不在了：重新武装，等它下次出现再补一下。
-                _settingsEscapeArmed = true;
-            }
-
-            // ② 刚按过「展开拾取列表」的键：这段时间里一律不按 ESC；
-            //    暂停结束后不补动作，要等面板消失再重新出现（_armed 保持 false）。
-            if (now.Ticks < Volatile.Read(ref _escapePausedUntilTicks))
-            {
-                _armed = false;
-                LogThrottled("在「展开拾取列表」后的暂停期内，不按 ESC。");
-                return;
-            }
-
             // 「拾取全部」文案在任何键位下都成立（模板已去掉按键框）；「快捷替换」按钮也算面板存在的证据。
             var hasAnchor = _matcher.TryMatch(
                 frame.Gray,
@@ -231,11 +201,30 @@ internal sealed class PickupEscapeRunner : IDisposable
 
             if (!hasAnchor && !hasQuickReplace)
             {
-                // 面板不在了：重新武装，等它下次出现再动作。
+                // 面板不在了：重新武装、重新计时，等它下次出现再说。
                 _armed = true;
+                _panelFirstSeenTicks = 0;
                 return;
             }
 
+            // ① 面板得「连续存在够久」才算数：一闪而过（人已经走开）就不按 ESC ——
+            //    那种情况下 ESC 没东西可关，按下去反而会把游戏设置界面开出来。
+            if (_panelFirstSeenTicks == 0)
+                _panelFirstSeenTicks = now.Ticks;
+            if (!HasBeenVisibleLongEnough(
+                    _panelFirstSeenTicks,
+                    now,
+                    options.MinimumVisibleMilliseconds))
+            {
+                var visibleMilliseconds =
+                    (now.Ticks - _panelFirstSeenTicks) / (double)TimeSpan.TicksPerMillisecond;
+                LogThrottled(
+                    $"「可拾取」面板才出现 {visibleMilliseconds:F0}ms，"
+                    + $"还没到 {options.MinimumVisibleMilliseconds}ms，本次不按 ESC。");
+                return;
+            }
+
+            // ② 面板稳定存在够久了，而且是这一轮刚出现的：按 ESC 关掉它。
             if (!_armed || now < _readyAt)
                 return;
 
@@ -248,6 +237,23 @@ internal sealed class PickupEscapeRunner : IDisposable
                 options,
                 token);
         }
+    }
+
+    /// <summary>
+    /// 面板是否已经连续存在够久（毫秒）。<paramref name="minimumVisibleMilliseconds"/> = 0 表示不设门槛；
+    /// <paramref name="firstSeenTicks"/> = 0 表示「当前没看到面板」。
+    /// </summary>
+    internal static bool HasBeenVisibleLongEnough(
+        long firstSeenTicks,
+        DateTime now,
+        int minimumVisibleMilliseconds)
+    {
+        if (firstSeenTicks == 0)
+            return false;
+
+        var visibleMilliseconds =
+            (now.Ticks - firstSeenTicks) / (double)TimeSpan.TicksPerMillisecond;
+        return visibleMilliseconds >= Math.Max(0, minimumVisibleMilliseconds);
     }
 
     /// <summary>目标确认在（「可拾取」面板或设置界面）→ 按一下 ESC（或用户在设置页录的键）。</summary>
@@ -458,6 +464,7 @@ internal sealed class PickupEscapeRunner : IDisposable
                 DateTime.UtcNow.AddSeconds(seconds).Ticks);
             // 暂停期内已经认出的面板不补动作：恢复后要等它消失再出现。
             _armed = false;
+            _panelFirstSeenTicks = 0;
             _logger.Info(
                 $"检测到「展开拾取列表」（{options.PickupListBinding.DisplayName}）："
                 + $"{seconds} 秒内不按 ESC。");
