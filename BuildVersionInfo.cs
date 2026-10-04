@@ -17,18 +17,17 @@ internal static class BuildVersionInfo
 {
     /// <summary>
     /// 在上游版本号后显式标注修改，满足 LICENSE 第一条的要求：
-    /// 应用内「关于 / 设置」会显示为 v1.6.6-unstable（背包辅助+自动加特林版·非官方+开火延迟）。
+    /// 应用内「关于 / 设置」会显示为 v1.6.6-unstable（背包辅助版·非官方）。
     /// </summary>
     public const string ProductVersion =
-        "1.6.6-unstable（背包辅助+自动加特林版·非官方+开火延迟）";
+        "1.6.6-unstable（背包辅助版·非官方）";
 
     /// <summary>
-    /// 标明这是本地从源码构建，且带：背包辅助、自动加特林（含仅游戏内生效护栏、
-    /// 关背包后开火前延迟）与构建桩。
+    /// 标明这是本地从源码构建，且带：背包辅助（自动加特林与无后摇信仰两个自动开火类
+    /// 插件均已注销、源码保留）与构建桩。
     /// </summary>
     public const string BuildVersion =
-        "1.6.6-unstable+scene-quick-actions+auto-gatling-guard"
-        + "+auto-gatling-fire-delay+codeonlyfill";
+        "1.6.6-unstable+scene-quick-actions+codeonlyfill";
 
     public const string NumericVersion = "1.6.6.0";
 }

@@ -14,6 +14,10 @@ public sealed class NoRecoveryDelayService : IDisposable
     private const uint InputMouse = 0, InputKeyboard = 1, KeyeventfKeyup = 2;
     private const uint MouseeventfLeftdown = 2, MouseeventfLeftup = 4;
     private static readonly IntPtr InjectionMarker = new(InputInjectionMarkers.HostGeneratedInput);
+    /// <summary>被监测的游戏进程名（与宿主抓帧所用的 dwrg 保持一致）。</summary>
+    private const string GameProcessName = "dwrg";
+    /// <summary>前台进程判定的缓存时长：钩子回调很频繁，避免每次都去查进程。</summary>
+    private static readonly TimeSpan ForegroundCheckCacheDuration = TimeSpan.FromMilliseconds(250);
     private readonly object _sync = new();
     private readonly NoRecoveryDelayOptions _options;
     private readonly Action<string> _log;
@@ -27,6 +31,10 @@ public sealed class NoRecoveryDelayService : IDisposable
     private CancellationTokenSource? _stopCancellation;
     private volatile bool _activateKeyDown;
     private bool _started, _disposed;
+    // 本修改版新增的护栏缓存：键盘/鼠标钩子据此决定要不要接管触发键。
+    private IntPtr _lastForegroundWindow;
+    private bool _lastForegroundIsGame;
+    private DateTime _lastForegroundCheckedAt = DateTime.MinValue;
 
     public NoRecoveryDelayService(NoRecoveryDelayOptions options, Action<string> log)
     { _options = options; _log = log; _keyboardProc = KeyboardHookCallback; _mouseProc = MouseHookCallback; }
@@ -101,8 +109,20 @@ public sealed class NoRecoveryDelayService : IDisposable
         if (code >= 0)
         {
             var data = Marshal.PtrToStructure<KbdLlHookStruct>(lParam);
-            if (data.ExtraInfo != InjectionMarker && _activateBinding.Kind == PluginInputBindingKind.Keyboard && data.VirtualKey == _activateBinding.VirtualKey)
+            if (data.ExtraInfo != InjectionMarker
+                && _activateBinding.Kind == PluginInputBindingKind.Keyboard
+                && data.VirtualKey == _activateBinding.VirtualKey)
             {
+                // 本修改版新增的护栏：只有游戏在前台时才接管触发键。
+                // 在浏览器等其它窗口按同样的键，既不吞键、也不会误操作别的程序。
+                if (!IsGameForeground())
+                {
+                    // 顺手清掉按下状态，避免"在游戏里按下 → 切出去松开"之后
+                    // 回到游戏时第一次按键被当成仍在按住而不触发。
+                    _activateKeyDown = false;
+                    return CallNextHookEx(_keyboardHook, code, wParam, lParam);
+                }
+
                 var message = (uint)wParam.ToInt64();
                 if (message is WmKeyDown or WmSysKeyDown)
                 {
@@ -130,6 +150,13 @@ public sealed class NoRecoveryDelayService : IDisposable
                     out var button, out var down)
                 && button == _activateBinding.MouseButton)
             {
+                // 本修改版新增的护栏：只有游戏在前台时才接管绑定的鼠标键。
+                if (!IsGameForeground())
+                {
+                    _activateKeyDown = false;
+                    return CallNextHookEx(_mouseHook, code, wParam, lParam);
+                }
+
                 if (!down && !_activateKeyDown)
                     return CallNextHookEx(_mouseHook, code, wParam, lParam);
                 var firstDown = down && !_activateKeyDown;
@@ -241,6 +268,13 @@ public sealed class NoRecoveryDelayService : IDisposable
     {
         layout = default; var window = GetForegroundWindow();
         if (window == IntPtr.Zero || !GetClientRect(window, out var rect)) return false;
+        // 本修改版新增的护栏：前台窗口必须属于游戏进程，否则一律不操作。
+        if (!IsGameProcess(window))
+        {
+            _log("无后摇信仰未执行：前台窗口不是游戏进程（dwrg.exe）。");
+            return false;
+        }
+
         var origin = new NativePoint(); if (!ClientToScreen(window, ref origin)) return false;
         var width = rect.Right - rect.Left; var height = rect.Bottom - rect.Top;
         if (!NoRecoveryDelayPlan.TryGetCoordinates(width, height, out var coordinates) || coordinates is null) return false;
@@ -279,6 +313,51 @@ public sealed class NoRecoveryDelayService : IDisposable
         (!modifiers.HasFlag(PluginInputModifiers.Control) || AnyDown(0x11, 0xA2, 0xA3)) && (!modifiers.HasFlag(PluginInputModifiers.Alt) || AnyDown(0x12, 0xA4, 0xA5)) &&
         (!modifiers.HasFlag(PluginInputModifiers.Shift) || AnyDown(0x10, 0xA0, 0xA1)) && (!modifiers.HasFlag(PluginInputModifiers.Windows) || AnyDown(0x5B, 0x5C));
     private static bool AnyDown(params int[] keys) => keys.Any(key => (GetAsyncKeyState(key) & 0x8000) != 0);
+
+    /// <summary>
+    /// 前台窗口是否属于游戏进程（带短时缓存）。键盘/鼠标钩子据此决定要不要接管触发键。
+    /// </summary>
+    private bool IsGameForeground()
+    {
+        var window = GetForegroundWindow();
+        if (window == IntPtr.Zero)
+            return false;
+
+        var now = DateTime.UtcNow;
+        if (window == _lastForegroundWindow
+            && now - _lastForegroundCheckedAt < ForegroundCheckCacheDuration)
+        {
+            return _lastForegroundIsGame;
+        }
+
+        var isGame = IsGameProcess(window);
+        _lastForegroundWindow = window;
+        _lastForegroundIsGame = isGame;
+        _lastForegroundCheckedAt = now;
+        return isGame;
+    }
+
+    /// <summary>指定窗口是否属于被监测的游戏进程。</summary>
+    private static bool IsGameProcess(IntPtr window)
+    {
+        if (window == IntPtr.Zero
+            || GetWindowThreadProcessId(window, out var processId) == 0
+            || processId == 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            using var process = Process.GetProcessById((int)processId);
+            return string.Equals(process.ProcessName, GameProcessName, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception)
+        {
+            // 进程已退出或没有查询权限时按“不是游戏”处理：宁可放行按键，也不误吞。
+            return false;
+        }
+    }
     private readonly record struct GameLayout(int X, int Y, int Width, int Height, IReadOnlyList<PluginInventoryCoordinate> Coordinates);
 
     [StructLayout(LayoutKind.Sequential)] private struct NativeInput { public uint Type; public NativeInputUnion Data; }
@@ -303,6 +382,7 @@ public sealed class NoRecoveryDelayService : IDisposable
     [DllImport("user32.dll")] private static extern IntPtr DispatchMessage(ref NativeMessage message);
     [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int key);
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll", SetLastError = true)] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
     [DllImport("user32.dll", SetLastError = true)] private static extern bool GetClientRect(IntPtr window, out Rect rect);
     [DllImport("user32.dll", SetLastError = true)] private static extern bool ClientToScreen(IntPtr window, ref NativePoint point);
     [DllImport("user32.dll", SetLastError = true)] private static extern bool SetCursorPos(int x, int y);

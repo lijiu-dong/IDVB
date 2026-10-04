@@ -27,10 +27,16 @@ public static class PluginRegistration
         // 本修改版新增：背包辅助（牵手邀请自动接受 / 可拾取面板拾取全部 + 快捷替换）。
         using (StartupTimeline.Measure("Built-in construct and register: IDVBuff.Plugins.SceneQuickActions.SceneQuickActionsPlugin"))
             host.Register(new IDVBuff.Plugins.SceneQuickActions.SceneQuickActionsPlugin());
-        // 本修改版新增：重新登记上游在 1.6.0-unstable 摘掉的「自动加特林」（源码与工程引用仍在），
-        // 并给它加了护栏：只有 dwrg.exe 在前台时才接管绑定的开火/装弹键。
-        // 它执行的是自动开火与装弹，请自行确认使用场景符合游戏用户协议与 IDVB LICENSE 第三条。
-        using (StartupTimeline.Measure("Built-in construct and register: IDVBuff.Plugins.AutoGatling.AutoGatlingPlugin"))
-            host.Register(new IDVBuff.Plugins.AutoGatling.AutoGatlingPlugin());
+        // 本修改版已注销「自动加特林」（Id auto-gatling）：它的源码与工程引用仍留在
+        // Plugins\AutoGatling\，只是不再登记，回到与上游 1.6.6 一致的状态（上游自
+        // 1.6.0-unstable 起就没登记它）。需要时把下面两行注释放开即可恢复。
+        // using (StartupTimeline.Measure("Built-in construct and register: IDVBuff.Plugins.AutoGatling.AutoGatlingPlugin"))
+        //     host.Register(new IDVBuff.Plugins.AutoGatling.AutoGatlingPlugin());
+        // 本修改版已注销「无后摇信仰」（Id no-recovery-delay）：上游一直没登记它，
+        // 我们试着登记过一版、确认不需要，于是同样回到「源码保留、不登记」的状态。
+        // 它的源码与工程引用仍在 Plugins\NoRecoveryDelay\（并且已带上「仅游戏内生效」护栏），
+        // 需要时把下面两行注释放开即可恢复。
+        // using (StartupTimeline.Measure("Built-in construct and register: IDVBuff.Plugins.NoRecoveryDelay.NoRecoveryDelayPlugin"))
+        //     host.Register(new IDVBuff.Plugins.NoRecoveryDelay.NoRecoveryDelayPlugin());
     }
 }
