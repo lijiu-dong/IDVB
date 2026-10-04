@@ -5,16 +5,17 @@ using IDVBuff.PluginHostMessages;
 namespace IDVBuff.Plugins.PickupEscape;
 
 /// <summary>
-/// 「九歌自用」的工作线程：按检测间隔抓一帧 → 用「背包辅助」那两张模板确认「可拾取」面板在不在。
+/// 「九歌自用」的工作线程：按检测间隔抓一帧，然后
+///   ① 先用「退出战斗」模板认游戏设置界面（误开出来的那层）：认出就补按一下 ESC 退回去；
+///   ② 再用「背包辅助」那两张模板确认「可拾取」面板在不在 —— 在、并且**连续存在够久**
+///      （默认 250ms，一闪而过的不算）、且这一轮还没按过，才按一下 ESC。
 ///
-/// 会按 ESC 的前提有三个：
-///   ① 面板**连续存在**够久（默认 250ms，可调）—— 一闪而过的不算。那种情况人已经走开、
-///      ESC 没东西可关，按下去反而会把游戏设置界面开出来；
-///   ② 不在「展开拾取列表」（默认 H）之后的让路期里；
-///   ③ 这一轮面板算「刚出现」（面板消失后才会重新武装，同一块面板不连按）。
+/// 「面板连续出现够久」是第一道防线（人已经走开时那一下 ESC 根本不发出去），
+/// 「认出设置界面补按 ESC」是第二道防线（万一还是开出来了，替你退回去）。
+/// 「展开拾取列表」（默认 H）之后的让路期内连帧都不抓（省资源、也不会误按）。
 ///
-/// 让路期内连帧都不抓（省资源）。只有 dwrg.exe 是前台窗口时才抓帧；
-/// 宿主地图界面打开时暂停检测；每次注入前重新校验前台，游戏切走了就放弃这一次。
+/// 只有 dwrg.exe 是前台窗口时才抓帧；宿主地图界面打开时暂停检测；
+/// 每次注入前重新校验前台，游戏切走了就放弃这一次。
 ///
 /// 另外负责那个开关热键：按一下暂停检测、再按一下恢复（默认未设置键位）。
 /// 线程只在插件启用期间存在，暂停检测时只空转等待、不抓帧。
@@ -40,6 +41,9 @@ internal sealed class PickupEscapeRunner : IDisposable
     private DateTime _readyAt = DateTime.MinValue;
     /// <summary>本次「可拾取」面板第一次被认出来的时刻（UTC ticks；0 = 当前没看到面板）。</summary>
     private long _panelFirstSeenTicks;
+    /// <summary>「误开设置界面 → 补一下 ESC」的武装状态与冷却。</summary>
+    private bool _settingsEscapeArmed = true;
+    private DateTime _settingsEscapeReadyAt = DateTime.MinValue;
     /// <summary>「展开拾取列表」后的暂停截止时刻（UTC ticks；0 = 没在暂停）。</summary>
     private long _escapePausedUntilTicks;
     private int _pauseGate;
@@ -187,7 +191,32 @@ internal sealed class PickupEscapeRunner : IDisposable
         {
             var now = DateTime.UtcNow;
 
-            // 「拾取全部」文案在任何键位下都成立（模板已去掉按键框）；「快捷替换」按钮也算面板存在的证据。
+            // ① 误开的游戏设置界面优先处理：那一下 ESC 没东西可关时游戏会开到这一层 ——
+            //    认出它再补一下 ESC 退回去（面板稳定门槛是第一道防线，这里是第二道）。
+            if (options.EscapeSettingsEnabled)
+            {
+                var hasSettings = _matcher.TryMatch(
+                    frame.Gray,
+                    PickupEscapeTemplates.SettingsScreen,
+                    options.MatchThreshold,
+                    out var settingsHit);
+                if (hasSettings)
+                {
+                    if (_settingsEscapeArmed && now >= _settingsEscapeReadyAt)
+                    {
+                        _settingsEscapeArmed = false;
+                        _settingsEscapeReadyAt = now.AddMilliseconds(options.CooldownMilliseconds);
+                        PerformEscape(frame, settingsHit, "游戏设置界面", options, token);
+                    }
+                    // 设置界面还在的时候，不去碰「可拾取」那条线。
+                    return;
+                }
+
+                // 设置界面不在了：重新武装，等它下次出现再补一下。
+                _settingsEscapeArmed = true;
+            }
+
+            // ② 「拾取全部」文案在任何键位下都成立（模板已去掉按键框）；「快捷替换」按钮也算面板存在的证据。
             var hasAnchor = _matcher.TryMatch(
                 frame.Gray,
                 PickupEscapeTemplates.PickupAll,
@@ -207,7 +236,7 @@ internal sealed class PickupEscapeRunner : IDisposable
                 return;
             }
 
-            // ① 面板得「连续存在够久」才算数：一闪而过（人已经走开）就不按 ESC ——
+            // ③ 面板得「连续存在够久」才算数：一闪而过（人已经走开）就不按 ESC ——
             //    那种情况下 ESC 没东西可关，按下去反而会把游戏设置界面开出来。
             if (_panelFirstSeenTicks == 0)
                 _panelFirstSeenTicks = now.Ticks;
@@ -224,7 +253,7 @@ internal sealed class PickupEscapeRunner : IDisposable
                 return;
             }
 
-            // ② 面板稳定存在够久了，而且是这一轮刚出现的：按 ESC 关掉它。
+            // ④ 面板稳定存在够久了，而且是这一轮刚出现的：按 ESC 关掉它。
             if (!_armed || now < _readyAt)
                 return;
 

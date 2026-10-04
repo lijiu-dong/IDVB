@@ -11,12 +11,12 @@ namespace IDVBuff.Plugins.PickupEscape;
 /// 本插件用「背包辅助」那两张现成模板（「拾取全部」文案 / 「快捷替换」按钮）判断面板在不在，
 /// 面板刚出现时按一下 ESC 把它关掉 —— 与手点那个 ✕ 等价。
 ///
-/// 除此之外还管两件事：
-///   ① 按下游戏里「展开拾取列表」的键（默认 H）之后若干秒内不按 ESC，
-///      免得把你刚手动展开的列表立刻关掉；
-///   ② 只有面板**连续出现够久**（默认 250ms）才按 ESC —— 一闪而过的不算。
-///      那种情况人已经走开、ESC 没东西可关，按下去反而会把游戏设置界面开出来，
-///      所以从源头卡住它（而不是事后补按一次 ESC 去退界面）。
+/// 除此之外还管三件事：
+///   ① 只有面板**连续出现够久**（默认 250ms）才按 ESC —— 一闪而过的不算（第一道防线）；
+///   ② 万一还是把游戏设置界面开出来了（那一下 ESC 没东西可关），
+///      认出设置界面后再补一下 ESC 退回上一界面（第二道防线）；
+///   ③ 按下游戏里「展开拾取列表」的键（默认 H）之后若干秒内完全不动作，
+///      免得把你刚手动展开的列表立刻关掉。
 ///
 /// 与「背包辅助」的区别只有动作：背包辅助是「拾取全部（默认 B）+ 快捷替换」，
 /// 本插件是「直接关掉面板、什么都不捡」。两者会盯同一块面板，建议只开一个。
@@ -29,8 +29,8 @@ namespace IDVBuff.Plugins.PickupEscape;
 [Plugin(
     PickupEscapeOptions.PluginId,
     DisplayName = "九歌自用",
-    Description = "「可拾取」面板连续出现够久时自动按一下 ESC 关掉它（一闪而过的不按）；按「展开拾取列表」（默认 H）后短暂让路。",
-    Version = "1.2.0",
+    Description = "「可拾取」面板连续出现够久时自动按一下 ESC 关掉它（一闪而过的不按）；误开设置界面时补按 ESC 退回；按「展开拾取列表」（默认 H）后短暂让路。",
+    Version = "1.3.0",
     AlwaysActive = true)]
 public sealed class PickupEscapePlugin
     : PluginBase, IPluginSettingsProvider, IHandle<SessionStateChangedMessage>
@@ -82,6 +82,14 @@ public sealed class PickupEscapePlugin
             Maximum = PickupEscapeOptions.PauseSecondsMaximum,
             StepFrequency = 1,
             DefaultValue = 10
+        },
+        new PluginToggleSetting
+        {
+            Key = PickupEscapeOptions.EscapeSettingsKey,
+            DisplayName = "误开设置界面时补按 ESC 退回",
+            Description = "那一下 ESC 没东西可关时会开到游戏设置界面；打开本项后，认出设置界面会再补一下 ESC 退回去（第二道防线）。",
+            Group = PickupEscapeOptions.ActionGroupTitle,
+            DefaultValue = true
         },
         new PluginSliderSetting
         {
@@ -208,7 +216,8 @@ public sealed class PickupEscapePlugin
             + $"动作冷却 {_options.CooldownMilliseconds}ms，"
             + $"开关热键 {(_options.ToggleHotkey.IsConfigured ? _options.ToggleHotkey.DisplayName : "未设置")}；"
             + $"「{_options.PickupListBinding.DisplayName}」后暂停 {_options.PauseAfterPickupListSeconds} 秒，"
-            + $"面板需连续出现 {_options.MinimumVisibleMilliseconds}ms 才按。");
+            + $"面板需连续出现 {_options.MinimumVisibleMilliseconds}ms 才按，"
+            + $"误开设置界面补按 ESC {(_options.EscapeSettingsEnabled ? "开" : "关")}。");
     }
 
     public override void OnDisable()
@@ -256,6 +265,7 @@ public sealed class PickupEscapePlugin
         PickupEscapeOptions.PickupListBindingKey => _options.PickupListBinding.StorageValue,
         PickupEscapeOptions.PauseAfterPickupListKey => (double)_options.PauseAfterPickupListSeconds,
         PickupEscapeOptions.MinimumVisibleKey => (double)_options.MinimumVisibleMilliseconds,
+        PickupEscapeOptions.EscapeSettingsKey => _options.EscapeSettingsEnabled,
         PickupEscapeOptions.ActionBindingKey => _options.ActionBinding.StorageValue,
         PickupEscapeOptions.PollIntervalKey => (double)_options.PollIntervalMilliseconds,
         PickupEscapeOptions.ThresholdKey => (double)_options.MatchThresholdPercent,
@@ -315,6 +325,8 @@ public sealed class PickupEscapePlugin
                         PickupEscapeOptions.MinimumVisibleMinimum,
                         PickupEscapeOptions.MinimumVisibleMaximum)
                 };
+            case PickupEscapeOptions.EscapeSettingsKey when value is bool escapeSettings:
+                return _options with { EscapeSettingsEnabled = escapeSettings };
             case PickupEscapeOptions.ActionBindingKey when value is string action:
                 return TryParseBinding(action, out var parsedAction)
                     ? _options with { ActionBinding = parsedAction }
