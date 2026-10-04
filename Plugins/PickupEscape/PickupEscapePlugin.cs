@@ -5,11 +5,16 @@ using IDVBuff.PluginHostMessages;
 namespace IDVBuff.Plugins.PickupEscape;
 
 /// <summary>
-/// 拾取 ESC：把「可拾取」面板的关闭动作自动化。
+/// 九歌自用（内部 Id 仍是 <c>pickup-escape</c>）：把「可拾取」面板的关闭动作自动化。
 ///
 /// 探索模式里走到箱子前，右上角会弹出「可拾取」面板（标题栏右侧写着 ESC，右上角一个 ✕）。
 /// 本插件用「背包辅助」那两张现成模板（「拾取全部」文案 / 「快捷替换」按钮）判断面板在不在，
 /// 面板刚出现时按一下 ESC 把它关掉 —— 与手点那个 ✕ 等价。
+///
+/// 除了这件事，还管两种情况：
+///   ① 按下游戏里「展开拾取列表」的键（默认 H）之后若干秒内不按 ESC，
+///      免得把你刚手动展开的列表立刻关掉；
+///   ② 那一下 ESC 要是因为人已经走开而误开了游戏设置界面，认出设置界面后再补一下 ESC 退回去。
 ///
 /// 与「背包辅助」的区别只有动作：背包辅助是「拾取全部（默认 B）+ 快捷替换」，
 /// 本插件是「直接关掉面板、什么都不捡」。两者会盯同一块面板，建议只开一个。
@@ -17,13 +22,13 @@ namespace IDVBuff.Plugins.PickupEscape;
 /// 识别方式是对宿主抓到的客户区画面做多尺度模板匹配，模板来自 1920×1080 游戏截图；
 /// 命中后才注入输入，注入前会再次确认游戏仍在前台。不读内存、不注入进程、不改游戏文件。
 ///
-/// 常驻（<c>AlwaysActive</c>）：热键要在局外也按得动，与「背包辅助」保持一致。
+/// 常驻（<c>AlwaysActive</c>）：热键与「展开拾取列表」键要在局外也按得动，与「背包辅助」一致。
 /// </summary>
 [Plugin(
     PickupEscapeOptions.PluginId,
-    DisplayName = "拾取 ESC",
-    Description = "识别到「可拾取」面板出现时自动按一下 ESC 关掉它；可用热键随时暂停 / 恢复检测。",
-    Version = "1.0.0",
+    DisplayName = "九歌自用",
+    Description = "识别到「可拾取」面板出现时自动按一下 ESC 关掉它；按「展开拾取列表」（默认 H）后短暂让路；误开设置界面时补按 ESC 退回。",
+    Version = "1.1.0",
     AlwaysActive = true)]
 public sealed class PickupEscapePlugin
     : PluginBase, IPluginSettingsProvider, IHandle<SessionStateChangedMessage>
@@ -36,7 +41,7 @@ public sealed class PickupEscapePlugin
 
     public override string Id => PickupEscapeOptions.PluginId;
 
-    public override string DisplayName => "拾取 ESC";
+    public override string DisplayName => "九歌自用";
 
     public IReadOnlyList<IPluginSetting> Settings { get; } =
     [
@@ -50,12 +55,39 @@ public sealed class PickupEscapePlugin
         },
         new PluginKeyBindingSetting
         {
+            Key = PickupEscapeOptions.PickupListBindingKey,
+            DisplayName = "展开拾取列表 · 按键",
+            Description = "游戏里展开拾取列表的那个键（默认 H）。按下它之后的若干秒内，本插件不按 ESC。",
+            DefaultValue = PluginInputBinding.Keyboard(PickupEscapeOptions.DefaultPickupListVirtualKey).StorageValue,
+            AllowedKinds = PluginInputBindingKinds.All
+        },
+        new PluginKeyBindingSetting
+        {
             Key = PickupEscapeOptions.ActionBindingKey,
             DisplayName = "识别到面板时按下的键",
             Description = "游戏里「可拾取」面板标题右边的提示键（默认 Esc，等价于点右上角的 ✕）。",
             Group = PickupEscapeOptions.ActionGroupTitle,
             DefaultValue = PluginInputBinding.Keyboard(PickupEscapeOptions.DefaultActionVirtualKey).StorageValue,
             AllowedKinds = PluginInputBindingKinds.All
+        },
+        new PluginSliderSetting
+        {
+            Key = PickupEscapeOptions.PauseAfterPickupListKey,
+            DisplayName = "按「展开拾取列表」后暂停（秒）",
+            Description = "按下上面那个键之后，这么多秒内不按 ESC —— 免得把你刚展开的列表立刻关掉。",
+            Group = PickupEscapeOptions.ActionGroupTitle,
+            Minimum = PickupEscapeOptions.PauseSecondsMinimum,
+            Maximum = PickupEscapeOptions.PauseSecondsMaximum,
+            StepFrequency = 1,
+            DefaultValue = 10
+        },
+        new PluginToggleSetting
+        {
+            Key = PickupEscapeOptions.EscapeSettingsKey,
+            DisplayName = "误开设置界面时补按 ESC 退回",
+            Description = "那一下 ESC 没东西可关时会开到游戏设置界面；打开本项后，认出设置界面会再补一下 ESC 退回去。",
+            Group = PickupEscapeOptions.ActionGroupTitle,
+            DefaultValue = true
         },
         new PluginSliderSetting
         {
@@ -126,7 +158,7 @@ public sealed class PickupEscapePlugin
         }
         catch (Exception exception)
         {
-            context.Logger.Error($"拾取 ESC 加载识别模板失败，插件不可用：{exception.Message}");
+            context.Logger.Error($"九歌自用加载识别模板失败，插件不可用：{exception.Message}");
             return;
         }
 
@@ -134,7 +166,7 @@ public sealed class PickupEscapePlugin
         var gameWindow = context.GetService<IPluginGameWindowService>();
         if (screenshot is null && gameWindow is null)
         {
-            context.Logger.Error("宿主没有提供截图能力，拾取 ESC 不可用。");
+            context.Logger.Error("宿主没有提供截图能力，九歌自用不可用。");
             return;
         }
 
@@ -158,7 +190,7 @@ public sealed class PickupEscapePlugin
         _enabled = true;
         if (_runner is null)
         {
-            Context.Logger.Error("拾取 ESC 未成功初始化，无法启动检测。");
+            Context.Logger.Error("九歌自用未成功初始化，无法启动检测。");
             return;
         }
 
@@ -169,7 +201,9 @@ public sealed class PickupEscapePlugin
             $"参数：检测间隔 {_options.PollIntervalMilliseconds}ms，阈值 {_options.MatchThresholdPercent}%，"
             + $"识别到「可拾取」面板时按 {_options.ActionBinding.DisplayName}，"
             + $"动作冷却 {_options.CooldownMilliseconds}ms，"
-            + $"开关热键 {(_options.ToggleHotkey.IsConfigured ? _options.ToggleHotkey.DisplayName : "未设置")}。");
+            + $"开关热键 {(_options.ToggleHotkey.IsConfigured ? _options.ToggleHotkey.DisplayName : "未设置")}；"
+            + $"「{_options.PickupListBinding.DisplayName}」后暂停 {_options.PauseAfterPickupListSeconds} 秒，"
+            + $"误开设置界面补按 ESC {(_options.EscapeSettingsEnabled ? "开" : "关")}。");
     }
 
     public override void OnDisable()
@@ -201,9 +235,9 @@ public sealed class PickupEscapePlugin
         try
         {
             if (enabled)
-                _toast?.Notice("拾取 ESC：检测已开启");
+                _toast?.Notice("九歌自用：检测已开启");
             else
-                _toast?.Warning("拾取 ESC：检测已暂停");
+                _toast?.Warning("九歌自用：检测已暂停");
         }
         catch (Exception exception)
         {
@@ -214,6 +248,9 @@ public sealed class PickupEscapePlugin
     public object? GetSettingValue(string key) => key switch
     {
         PickupEscapeOptions.ToggleHotkeyKey => _options.ToggleHotkey.StorageValue,
+        PickupEscapeOptions.PickupListBindingKey => _options.PickupListBinding.StorageValue,
+        PickupEscapeOptions.PauseAfterPickupListKey => (double)_options.PauseAfterPickupListSeconds,
+        PickupEscapeOptions.EscapeSettingsKey => _options.EscapeSettingsEnabled,
         PickupEscapeOptions.ActionBindingKey => _options.ActionBinding.StorageValue,
         PickupEscapeOptions.PollIntervalKey => (double)_options.PollIntervalMilliseconds,
         PickupEscapeOptions.ThresholdKey => (double)_options.MatchThresholdPercent,
@@ -248,6 +285,24 @@ public sealed class PickupEscapePlugin
                 return TryParseHotkey(hotkey, out var parsedHotkey)
                     ? _options with { ToggleHotkey = parsedHotkey }
                     : _options;
+            case PickupEscapeOptions.PickupListBindingKey when value is string pickupList:
+                // 「展开拾取列表」也允许清空（清空后就没有"按 H 让路"这回事了）。
+                if (string.Equals(pickupList, PickupEscapeOptions.NoBindingStorageValue, StringComparison.Ordinal))
+                    return _options with { PickupListBinding = new PluginInputBinding() };
+                return TryParseBinding(pickupList, out var parsedPickupList)
+                    ? _options with { PickupListBinding = parsedPickupList }
+                    : _options;
+            case PickupEscapeOptions.PauseAfterPickupListKey:
+                return _options with
+                {
+                    PauseAfterPickupListSeconds = PickupEscapeOptions.FromDouble(
+                        value,
+                        _options.PauseAfterPickupListSeconds,
+                        PickupEscapeOptions.PauseSecondsMinimum,
+                        PickupEscapeOptions.PauseSecondsMaximum)
+                };
+            case PickupEscapeOptions.EscapeSettingsKey when value is bool escapeSettings:
+                return _options with { EscapeSettingsEnabled = escapeSettings };
             case PickupEscapeOptions.ActionBindingKey when value is string action:
                 return TryParseBinding(action, out var parsedAction)
                     ? _options with { ActionBinding = parsedAction }

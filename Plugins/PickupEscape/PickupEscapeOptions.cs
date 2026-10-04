@@ -17,6 +17,9 @@ public sealed record PickupEscapeOptions
     public const string TimingGroupTitle = "间隔设置";
 
     public const string ToggleHotkeyKey = "toggle-hotkey";
+    public const string PickupListBindingKey = "pickup-list-binding";
+    public const string PauseAfterPickupListKey = "pause-after-pickup-list-seconds";
+    public const string EscapeSettingsKey = "escape-settings-enabled";
     public const string ActionBindingKey = "action-binding";
     public const string PollIntervalKey = "poll-interval-ms";
     public const string ThresholdKey = "match-threshold-percent";
@@ -33,6 +36,12 @@ public sealed record PickupEscapeOptions
     /// </summary>
     public const uint DefaultActionVirtualKey = 0x1B;
 
+    /// <summary>
+    /// 「展开拾取列表」的默认按键：H（VK 0x48）。
+    /// 游戏里按它会把拾取列表展开出来；按下之后的一段时间内本插件不按 ESC。
+    /// </summary>
+    public const uint DefaultPickupListVirtualKey = 0x48;
+
     public const int PollIntervalMinimum = 200;
     public const int PollIntervalMaximum = 2000;
     public const int ThresholdMinimum = 60;
@@ -40,6 +49,8 @@ public sealed record PickupEscapeOptions
     public const int CooldownMinimum = 300;
     public const int CooldownMaximum = 10000;
     public const int MaximumRandomDelayMillisecondsAllowed = 10000;
+    public const int PauseSecondsMinimum = 1;
+    public const int PauseSecondsMaximum = 60;
 
     /// <summary>两次检测之间的间隔。</summary>
     public int PollIntervalMilliseconds { get; init; } = 400;
@@ -56,6 +67,19 @@ public sealed record PickupEscapeOptions
 
     /// <summary>切换「检测运行 / 暂停」的热键；默认「未设置」，需要用户在设置页自己录。</summary>
     public PluginInputBinding ToggleHotkey { get; init; } = new();
+
+    /// <summary>
+    /// 游戏里「展开拾取列表」的按键（默认 H）：按下它之后的若干秒内不按 ESC，
+    /// 免得把你刚手动展开的列表立刻关掉。
+    /// </summary>
+    public PluginInputBinding PickupListBinding { get; init; } =
+        PluginInputBinding.Keyboard(DefaultPickupListVirtualKey);
+
+    /// <summary>按下「展开拾取列表」后暂停「按 ESC」的秒数。</summary>
+    public int PauseAfterPickupListSeconds { get; init; } = 10;
+
+    /// <summary>识别到误开的游戏设置界面时，是否再补按一下 ESC 退回上一界面。</summary>
+    public bool EscapeSettingsEnabled { get; init; } = true;
 
     /// <summary>识别到面板时要按下的键；默认 Esc。</summary>
     public PluginInputBinding ActionBinding { get; init; } =

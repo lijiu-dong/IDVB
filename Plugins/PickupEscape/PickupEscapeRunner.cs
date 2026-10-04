@@ -5,8 +5,10 @@ using IDVBuff.PluginHostMessages;
 namespace IDVBuff.Plugins.PickupEscape;
 
 /// <summary>
-/// 「拾取 ESC」的工作线程：按检测间隔抓一帧 → 用「背包辅助」那两张模板确认
-/// 「可拾取」面板在不在 → 在（且是刚出现）就按一下 ESC 把面板关掉。
+/// 「九歌自用」的工作线程：按检测间隔抓一帧 →
+///   ① 先用「退出战斗」模板认游戏设置界面（误开出来的那层）：认出就补按一下 ESC 退回去；
+///   ② 再判断是不是刚按过「展开拾取列表」（默认 H）：是的话这段时间不按 ESC；
+///   ③ 最后才用「背包辅助」那两张模板确认「可拾取」面板在不在 —— 在（且是刚出现）就按一下 ESC。
 ///
 /// 只有 dwrg.exe 是前台窗口时才抓帧；宿主地图界面打开时暂停检测；
 /// 每次注入前重新校验前台，游戏切走了就放弃这一次。
@@ -33,6 +35,12 @@ internal sealed class PickupEscapeRunner : IDisposable
     /// <summary>「面板刚出现」才动作：面板消失后重新武装，避免面板还在时被反复按 ESC。</summary>
     private bool _armed = true;
     private DateTime _readyAt = DateTime.MinValue;
+    /// <summary>「误开设置界面 → 补一下 ESC」的武装状态与冷却。</summary>
+    private bool _settingsEscapeArmed = true;
+    private DateTime _settingsEscapeReadyAt = DateTime.MinValue;
+    /// <summary>「展开拾取列表」后的暂停截止时刻（UTC ticks；0 = 没在暂停）。</summary>
+    private long _escapePausedUntilTicks;
+    private int _pauseGate;
     private string _lastWarning = string.Empty;
     private DateTime _lastWarningAt = DateTime.MinValue;
     private bool _disposed;
@@ -92,7 +100,7 @@ internal sealed class PickupEscapeRunner : IDisposable
             StartHotkeys();
         }
 
-        _logger.Info($"拾取 ESC 已启动（抓帧路径：{(_grabber.HasFastPath ? "宿主快速抓帧" : "PNG 截图")}）。");
+        _logger.Info($"九歌自用已启动（抓帧路径：{(_grabber.HasFastPath ? "宿主快速抓帧" : "PNG 截图")}）。");
     }
 
     public void Stop()
@@ -174,6 +182,41 @@ internal sealed class PickupEscapeRunner : IDisposable
 
         using (frame)
         {
+            var now = DateTime.UtcNow;
+
+            // ① 误开的游戏设置界面优先处理：出现「可拾取」时人已经走开、那一下 ESC 没东西可关，
+            //    就会开到设置界面 —— 认出它再补一下 ESC 退回去。
+            if (options.EscapeSettingsEnabled)
+            {
+                var hasSettings = _matcher.TryMatch(
+                    frame.Gray,
+                    PickupEscapeTemplates.SettingsScreen,
+                    options.MatchThreshold,
+                    out var settingsHit);
+                if (hasSettings)
+                {
+                    if (_settingsEscapeArmed && now >= _settingsEscapeReadyAt)
+                    {
+                        _settingsEscapeArmed = false;
+                        _settingsEscapeReadyAt = now.AddMilliseconds(options.CooldownMilliseconds);
+                        PerformEscape(frame, settingsHit, "游戏设置界面", options, token);
+                    }
+                    return;
+                }
+
+                // 设置界面不在了：重新武装，等它下次出现再补一下。
+                _settingsEscapeArmed = true;
+            }
+
+            // ② 刚按过「展开拾取列表」的键：这段时间里一律不按 ESC；
+            //    暂停结束后不补动作，要等面板消失再重新出现（_armed 保持 false）。
+            if (now.Ticks < Volatile.Read(ref _escapePausedUntilTicks))
+            {
+                _armed = false;
+                LogThrottled("在「展开拾取列表」后的暂停期内，不按 ESC。");
+                return;
+            }
+
             // 「拾取全部」文案在任何键位下都成立（模板已去掉按键框）；「快捷替换」按钮也算面板存在的证据。
             var hasAnchor = _matcher.TryMatch(
                 frame.Gray,
@@ -193,7 +236,6 @@ internal sealed class PickupEscapeRunner : IDisposable
                 return;
             }
 
-            var now = DateTime.UtcNow;
             if (!_armed || now < _readyAt)
                 return;
 
@@ -202,21 +244,23 @@ internal sealed class PickupEscapeRunner : IDisposable
             PerformEscape(
                 frame,
                 hasAnchor ? anchorHit : quickReplaceHit,
+                "「可拾取」面板",
                 options,
                 token);
         }
     }
 
-    /// <summary>面板确认在 → 按一下 ESC（或用户在设置页录的键）。</summary>
+    /// <summary>目标确认在（「可拾取」面板或设置界面）→ 按一下 ESC（或用户在设置页录的键）。</summary>
     private void PerformEscape(
         GrabbedFrame frame,
         MatchHit hit,
+        string label,
         PickupEscapeOptions options,
         CancellationToken token)
     {
         if (!options.ActionBinding.IsConfigured)
         {
-            LogThrottled("识别到「可拾取」面板，但设置页里没有可用的按键，本次不动作。");
+            LogThrottled($"识别到{label}，但设置页里没有可用的按键，本次不动作。");
             return;
         }
 
@@ -225,7 +269,7 @@ internal sealed class PickupEscapeRunner : IDisposable
         token.ThrowIfCancellationRequested();
         PickupEscapeNativeInput.Sleep(options.GetDelayAfterStep(0), token);
         _logger.Info(
-            $"识别到「可拾取」面板（相似度 {hit.Score:P0}），已按下 {options.ActionBinding.DisplayName}。");
+            $"识别到{label}（相似度 {hit.Score:P0}），已按下 {options.ActionBinding.DisplayName}。");
     }
 
     private static void EnsureForeground(IntPtr windowHandle)
@@ -307,14 +351,24 @@ internal sealed class PickupEscapeRunner : IDisposable
             || _cancellation is null
             || !ReferenceEquals(sender, _hotkeyService)
             || args.Timestamp < _hotkeyBindingsUpdatedAt
-            || !args.IsDown
             || !string.Equals(args.PluginId, _pluginId, StringComparison.OrdinalIgnoreCase))
         {
             return;
         }
 
         var options = Volatile.Read(ref _options);
-        if (!options.ToggleHotkey.IsConfigured
+
+        // 「展开拾取列表」的按键：按下后暂停「按 ESC」若干秒（抬起不处理）。
+        if (string.Equals(args.BindingKey, PickupEscapeOptions.PickupListBindingKey, StringComparison.Ordinal)
+            && options.PickupListBinding.IsConfigured)
+        {
+            if (args.IsDown)
+                PauseEscapeForPickupList();
+            return;
+        }
+
+        if (!args.IsDown
+            || !options.ToggleHotkey.IsConfigured
             || !string.Equals(args.BindingKey, PickupEscapeOptions.ToggleHotkeyKey, StringComparison.Ordinal))
         {
             return;
@@ -358,11 +412,59 @@ internal sealed class PickupEscapeRunner : IDisposable
 
             var options = Volatile.Read(ref _options);
             _hotkeyService.SetBinding(_pluginId, PickupEscapeOptions.ToggleHotkeyKey, options.ToggleHotkey);
+            _hotkeyService.SetBinding(_pluginId, PickupEscapeOptions.PickupListBindingKey, options.PickupListBinding);
             // 宿主事件使用 Stopwatch 时间戳，可能仍在 UI 队列中等待分发。
             _hotkeyBindingsUpdatedAt = Stopwatch.GetTimestamp();
             _logger.Info(options.ToggleHotkey.IsConfigured
                 ? $"开关检测热键已注册：{options.ToggleHotkey.DisplayName}。"
                 : "开关检测热键尚未设置（去插件设置里录一个键，就能随时暂停/恢复检测）。");
+            if (options.PickupListBinding.IsConfigured)
+            {
+                _logger.Info(
+                    $"「展开拾取列表」按键已注册：{options.PickupListBinding.DisplayName}"
+                    + $"（按下后 {options.PauseAfterPickupListSeconds} 秒内不按 ESC）。");
+            }
+        }
+    }
+
+    // ════════════════ 「展开拾取列表」后的暂停 ════════════════
+
+    /// <summary>「展开拾取列表」后的暂停截止时刻（UTC）。</summary>
+    internal DateTime EscapePausedUntil =>
+        new(Volatile.Read(ref _escapePausedUntilTicks), DateTimeKind.Utc);
+
+    /// <summary>当前是否处在「展开拾取列表」后的暂停期内。</summary>
+    internal bool IsEscapePaused =>
+        DateTime.UtcNow.Ticks < Volatile.Read(ref _escapePausedUntilTicks);
+
+    /// <summary>
+    /// 用户按下了「展开拾取列表」（默认 H）：接下来若干秒内不按 ESC，
+    /// 免得把你刚展开的列表立刻关掉。暂停结束后不补动作，要等面板消失再出现才会动作。
+    /// </summary>
+    internal void PauseEscapeForPickupList()
+    {
+        if (Interlocked.CompareExchange(ref _pauseGate, 1, 0) != 0)
+            return;
+
+        try
+        {
+            var options = Volatile.Read(ref _options);
+            var seconds = Math.Clamp(
+                options.PauseAfterPickupListSeconds,
+                PickupEscapeOptions.PauseSecondsMinimum,
+                PickupEscapeOptions.PauseSecondsMaximum);
+            Volatile.Write(
+                ref _escapePausedUntilTicks,
+                DateTime.UtcNow.AddSeconds(seconds).Ticks);
+            // 暂停期内已经认出的面板不补动作：恢复后要等它消失再出现。
+            _armed = false;
+            _logger.Info(
+                $"检测到「展开拾取列表」（{options.PickupListBinding.DisplayName}）："
+                + $"{seconds} 秒内不按 ESC。");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _pauseGate, 0);
         }
     }
 }

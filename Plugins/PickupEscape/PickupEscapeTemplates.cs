@@ -3,15 +3,22 @@ using OpenCvSharp;
 namespace IDVBuff.Plugins.PickupEscape;
 
 /// <summary>
-/// 「可拾取」面板的识别模板。两张 PNG 与「背包辅助」用的是同一批 1920×1080 游戏截图裁剪：
-///   pickup_all   —— 面板下方的「拾取全部」文案（刻意不带左边的按键框，改键后照样认得出）；
-///   quick_replace —— 面板第一行右侧的「快捷替换」按钮。
-/// 只要认出其中任意一张，就说明「可拾取」面板已经打开了。
+/// 「可拾取」面板与「误开的设置界面」的识别模板。三张 PNG 都是 1920×1080 游戏截图裁剪：
+///   pickup_all      —— 面板下方的「拾取全部」文案（刻意不带左边的按键框，改键后照样认得出）；
+///   quick_replace   —— 面板第一行右侧的「快捷替换」按钮；
+///   settings_screen —— 设置界面底部按钮上的「退出战斗」文字。
+/// 「可拾取」面板认出前两张里的任意一张即算打开；设置界面单独认第三张。
 /// </summary>
 internal static class PickupEscapeTemplates
 {
     public const string PickupAll = "pickup_all";
     public const string QuickReplace = "quick_replace";
+
+    /// <summary>
+    /// 误开出来的游戏设置界面：出现「可拾取」时人已经走开、那一下 ESC 没东西可关，
+    /// 就会开到这一层。认出它就再补按一下 ESC 退回上一界面。
+    /// </summary>
+    public const string SettingsScreen = "settings_screen";
 
     public const int ReferenceWidth = 1920;
     public const int ReferenceHeight = 1080;
@@ -20,7 +27,8 @@ internal static class PickupEscapeTemplates
     private static readonly Dictionary<string, Rect> ReferenceBoxes = new(StringComparer.Ordinal)
     {
         [PickupAll] = new(1432, 564, 146, 52),
-        [QuickReplace] = new(1418, 342, 144, 52)
+        [QuickReplace] = new(1418, 342, 144, 52),
+        [SettingsScreen] = new(1322, 858, 150, 52)
     };
 
     /// <summary>搜索区域（相对客户区归一化），把匹配范围限制在面板实际出现的区域内。</summary>
@@ -28,10 +36,13 @@ internal static class PickupEscapeTemplates
         new(StringComparer.Ordinal)
         {
             [PickupAll] = (0.60, 0.24, 0.95, 0.66),
-            [QuickReplace] = (0.60, 0.24, 0.95, 0.66)
+            [QuickReplace] = (0.60, 0.24, 0.95, 0.66),
+            // 设置界面的「退出战斗」在底部那一排按钮上。
+            [SettingsScreen] = (0.60, 0.72, 0.98, 0.90)
         };
 
-    public static IReadOnlyCollection<string> All { get; } = [PickupAll, QuickReplace];
+    public static IReadOnlyCollection<string> All { get; } =
+        [PickupAll, QuickReplace, SettingsScreen];
 
     public static Rect GetReferenceBox(string name) => ReferenceBoxes[name];
 
