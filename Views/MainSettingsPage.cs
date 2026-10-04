@@ -183,6 +183,7 @@ public sealed partial class MainSettingsPage : Page
             "下次启动 IDVB 时使用传统实色主题；颜色仍跟随上方的主题设置",
             _preferences.UseLegacyTheme,
             value => SavePreferenceAsync(() => _preferences.UseLegacyTheme = value)));
+        content.Children.Add(CreateSponsorCard());
 
         return new Border
         {
