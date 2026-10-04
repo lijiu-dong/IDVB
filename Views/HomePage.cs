@@ -17,14 +17,10 @@ public sealed partial class HomePage : Page
     private Brush SecondaryTextBrush => FluentTheme.Brush(this, "TextFillColorSecondaryBrush");
 
     private readonly MapRepository _mapRepository = new();
-    private readonly MapRecognitionStatisticsRepository _statisticsRepository = new();
     private readonly TaskCompletionSource _initialReady =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TextBlock _mapCountValue = CreateMetricValue();
-    private readonly TextBlock _successRateValue = CreateMetricValue();
-    private readonly TextBlock _successRateDetail = CreateMetricDetail();
     private readonly TextBlock _usageDurationValue = CreateMetricValue();
-    private readonly TextBlock _usageDurationDetail = CreateMetricDetail();
     private readonly Button _launchGameButton;
     private readonly SymbolIcon _launchGameIcon;
     private readonly TextBlock _launchGameLabel;
@@ -49,8 +45,8 @@ public sealed partial class HomePage : Page
         _gameStatusTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         _gameStatusTimer.Tick += (_, _) =>
         {
-            UpdateGameStatus();
             UpdateUsageDuration();
+            UpdateGameStatus();
         };
         _scanModeSaveError = new TextBlock
         {
@@ -74,6 +70,7 @@ public sealed partial class HomePage : Page
         Loaded += HomePage_Loaded;
         Unloaded += (_, _) =>
         {
+            _gameStatusGeneration++;
             _gameStatusTimer.Stop();
         };
     }
@@ -165,17 +162,10 @@ public sealed partial class HomePage : Page
             Symbol.Library,
             _mapCountValue));
         cards.Children.Add(CreateMetricCard(
-            "识别成功率",
-            "产生有效对齐的识别会话占比",
-            Symbol.Accept,
-            _successRateValue,
-            _successRateDetail));
-        cards.Children.Add(CreateMetricCard(
             "使用时长",
             "累计运行 IDVB 的时间",
             Symbol.Clock,
-            _usageDurationValue,
-            _usageDurationDetail));
+            _usageDurationValue));
 
         var section = new StackPanel { Spacing = 14 };
         section.Children.Add(new TextBlock
@@ -305,12 +295,11 @@ public sealed partial class HomePage : Page
     {
         try
         {
+            _gameStatusGeneration++;
             UpdateGameStatus();
             UpdateUsageDuration();
             _gameStatusTimer.Start();
             _mapCountValue.Text = "…";
-            _successRateValue.Text = "…";
-            _successRateDetail.Text = string.Empty;
 
             // 公告仍在后台刷新，以便未读红点及时更新；但独立窗口必须等主界面完整呈现。
             _ = Task.Run(async () =>
@@ -332,24 +321,11 @@ public sealed partial class HomePage : Page
                 }
             });
 
-            var mapsTask = _mapRepository.GetMapsAsync();
-            var statisticsTask = _statisticsRepository.GetAsync();
-            await Task.WhenAll(mapsTask, statisticsTask);
-
-            var statistics = await statisticsTask;
-            _mapCountValue.Text = (await mapsTask).Count.ToString();
-            _successRateValue.Text = statistics.TotalAttempts == 0
-                ? "—"
-                : statistics.SuccessRate.ToString("P0");
-            _successRateDetail.Text = statistics.TotalAttempts == 0
-                ? "暂无识别会话"
-                : $"{statistics.SuccessfulAttempts} / {statistics.TotalAttempts} 次成功";
+            _mapCountValue.Text = (await _mapRepository.GetMapsAsync()).Count.ToString();
         }
         catch
         {
             _mapCountValue.Text = "—";
-            _successRateValue.Text = "—";
-            _successRateDetail.Text = "数据暂时不可用";
         }
         finally
         {
@@ -363,22 +339,12 @@ public sealed partial class HomePage : Page
         _usageDurationValue.Text = usage.Total is { } total
             ? ApplicationUsageTracker.FormatDuration(total)
             : "—";
-        _usageDurationDetail.Text = $"本次 {ApplicationUsageTracker.FormatDuration(usage.Session)}";
-        if (usage.Total is null)
-            _usageDurationDetail.Text += " · 累计记录暂不可用";
     }
 
     private static TextBlock CreateMetricValue()
     {
         var text = new TextBlock { Text = "…", FontSize = 30, FontWeight = FontWeights.SemiBold };
         text.Foreground = FluentTheme.Brush(text, "TextFillColorPrimaryBrush");
-        return text;
-    }
-
-    private static TextBlock CreateMetricDetail()
-    {
-        var text = new TextBlock { FontSize = 12 };
-        text.Foreground = FluentTheme.Brush(text, "TextFillColorSecondaryBrush");
         return text;
     }
 
@@ -406,10 +372,13 @@ public sealed partial class HomePage : Page
                         await session.SetScanPerformanceModeAsync(requested);
                     else
                     {
-                        var repository = new MapRuntimeSettingsRepository();
-                        var settings = await repository.LoadAsync();
-                        settings.ScanPerformanceMode = requested;
-                        await repository.SaveAsync(settings);
+                        await Task.Run(async () =>
+                        {
+                            var repository = new MapRuntimeSettingsRepository();
+                            var settings = await repository.LoadAsync();
+                            settings.ScanPerformanceMode = requested;
+                            await repository.SaveAsync(settings);
+                        });
                     }
                     _savedScanMode = requested;
                     _scanModeSaveError.Visibility = Visibility.Collapsed;

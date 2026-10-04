@@ -49,9 +49,9 @@ public sealed partial class MainPage
 
     private void StartScanAccentTransition(Color target, bool animate)
     {
-        // Publish the semantic mode color once; palette refresh walks every theme owner.
-        // Intermediate ambient colors must never trigger a full application re-theme.
-        ThemeService.SetScanModeAccent(target);
+        // One palette refresh starts transitions on the shared brushes. Intermediate
+        // ambient frames never resolve a palette or notify all theme owners again.
+        ThemeService.SetScanModeAccent(target, animate && _scanVisualUiSettings.AnimationsEnabled);
         if (animate && _scanAccentAnimationRunning && _scanAccentTarget.Equals(target))
             return;
         var now = Stopwatch.GetTimestamp();

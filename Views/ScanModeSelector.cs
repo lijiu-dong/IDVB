@@ -16,7 +16,7 @@ using Windows.UI.ViewManagement;
 namespace IDVBuff.Views;
 
 /// <summary>
-/// Quality reveals the fourth choice. The native slider owns keyboard input and accessibility;
+/// Four persistent choices. The native slider owns keyboard input and accessibility;
 /// the surrounding layers provide the segmented visual treatment and mode-specific motion.
 /// </summary>
 public sealed partial class ScanModeSelector : UserControl
@@ -40,7 +40,7 @@ public sealed partial class ScanModeSelector : UserControl
     private readonly Slider _input = new()
     {
         Minimum = 0,
-        Maximum = 2,
+        Maximum = 3,
         StepFrequency = 1,
         TickFrequency = 1,
         Value = 1,
@@ -236,10 +236,8 @@ public sealed partial class ScanModeSelector : UserControl
             _dragTrackX = null;
             _isPointerDragging = false;
             _pointerNeedsSettle = false;
-            _expandedForGesture = false;
             _track.ReleasePointerCaptures();
         }
-        if (mode == ScanPerformanceMode.DeepScan) _input.Maximum = 3;
         _input.Value = (int)mode;
         _updating = false;
         UpdateAppearance(false);
@@ -322,8 +320,6 @@ public sealed partial class ScanModeSelector : UserControl
             _dividers[index - 1] = divider;
             labels.Children.Add(divider);
         }
-        _labels[3].Opacity = 0;
-        _dividers[2].Opacity = 0;
         return labels;
     }
 
@@ -350,7 +346,6 @@ public sealed partial class ScanModeSelector : UserControl
         var selectionWidth = Math.Max(1, _segmentWidth - 8);
         _dragGrabOffset = pointerX >= _selectedPosition && pointerX <= _selectedPosition + selectionWidth
             ? pointerX - (_selectedPosition + selectionWidth / 2) : 0;
-        _expandedForGesture = _visibleSegments == 4;
         _track.CapturePointer(args.Pointer);
         SelectAtPointer(args);
         _input.Focus(FocusState.Pointer);
@@ -363,18 +358,16 @@ public sealed partial class ScanModeSelector : UserControl
         var index = Math.Clamp((int)Mode, 0, 3);
         var enterDeepScan = animate && index == 3 && _lastAppearanceMode != ScanPerformanceMode.DeepScan;
         _lastAppearanceMode = Mode;
-        UpdateSegmentCount();
         _hint.Text = ModeDescriptions[index];
         AutomationProperties.SetName(_input,
             $"扫描模式，{ModeNames[index]}，{ModeDescriptions[index]}");
         AutomationProperties.SetHelpText(_input,
-            _visibleSegments == 4
-                ? "四段式选择器：极速、均衡、质量、DeepScan。使用左右方向键选择；切换在下一次扫描生效。"
-                : "使用左右方向键选择极速、均衡或质量；选择质量后展开 DeepScan。切换在下一次扫描生效。");
+            "四段式选择器：极速、均衡、质量、DeepScan。使用左右方向键选择；切换在下一次扫描生效。");
         AutomationProperties.SetItemStatus(_input, $"已选择{ModeNames[index]}");
 
         BeginAppearanceTransition(animate);
         UpdateMotion();
+        if (Mode != ScanPerformanceMode.DeepScan) StopDeepImpact();
         if (enterDeepScan && CanAnimate()) PlayDeepEntry();
     }
     private static Color Shade(Color color, double amount, byte alpha) =>

@@ -209,7 +209,6 @@ public sealed partial class ScanModeSelector
         _dragTrackX = null;
         _isPointerDragging = false;
         _pointerNeedsSettle = false;
-        _expandedForGesture = false;
         _track.ReleasePointerCaptures();
         UpdateAppearance(false);
     }
