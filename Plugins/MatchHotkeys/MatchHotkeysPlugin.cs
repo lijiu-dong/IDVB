@@ -22,7 +22,7 @@ namespace IDVBuff.Plugins.MatchHotkeys;
     MatchHotkeysOptions.PluginId,
     DisplayName = "对局快捷键",
     Description = "两个可自定义的快捷键，各自一键进入/结束指定地图模式的对局；地图模式在插件设置里选。",
-    Version = "1.0.1",
+    Version = "1.0.2",
     AlwaysActive = true)]
 public sealed class MatchHotkeysPlugin
     : PluginBase, IPluginSettingsProvider, IHandle<MatchStateChangedMessage>
@@ -77,7 +77,6 @@ public sealed class MatchHotkeysPlugin
             {
                 Key = MatchHotkeysOptions.HotkeyAKey,
                 DisplayName = "快捷键一（进入 / 结束地图 A）",
-                Description = "点右侧按钮录制；留空则不生效。",
                 DefaultValue = MatchHotkeysOptions.NoBindingStorageValue,
                 AllowedKinds = PluginInputBindingKinds.All
             },
@@ -93,7 +92,6 @@ public sealed class MatchHotkeysPlugin
             {
                 Key = MatchHotkeysOptions.HotkeyBKey,
                 DisplayName = "快捷键二（进入 / 结束地图 B）",
-                Description = "点右侧按钮录制；留空则不生效。",
                 DefaultValue = MatchHotkeysOptions.NoBindingStorageValue,
                 AllowedKinds = PluginInputBindingKinds.All
             },
