@@ -35,17 +35,23 @@ internal sealed partial class CustomPhraseOverlay : IDisposable
     private const int BoxHeight = 56;
     private const int BoxGap = 12;
     private const int OuterMargin = 24;
-    private const int MaximumColumns = 5;
+
+    /// <summary>竖排布局：每列放 5 个，超过 5 个另起一列（整体仍然是一列一列竖着排）。</summary>
+    private const int RowsPerColumn = 5;
     private static readonly object RegistrationGate = new();
     private static readonly WindowProcedureDelegate WindowProcedure = WindowProcedureCore;
     private static bool _classRegistered;
 
     private readonly object _sync = new();
+    private readonly object _renderGate = new();
     private IntPtr _handle;
     private CancellationTokenSource? _pollCancellation;
     private Thread? _pollThread;
     private PhraseBox[] _boxes = [];
     private Rectangle _windowBounds;
+    private string[] _phrases = [];
+    private NativePoint _lastCursor;
+    private bool _hasCursor;
     private int _selectedIndex = -1;
     private bool _visible;
     private bool _disposed;
@@ -59,18 +65,25 @@ internal sealed partial class CustomPhraseOverlay : IDisposable
 
         EnsureWindow();
         var boxes = CreateBoxes(phrases, gameBounds);
+        if (boxes.Length == 0)
+            return;
+
         CancellationTokenSource cancellation;
         lock (_sync)
         {
             _boxes = boxes;
             _windowBounds = GetWindowBounds(boxes);
-            _selectedIndex = FindSelectedIndexUnsafe();
+            _phrases = [.. phrases.Take(CustomPhrasePluginData.MaxPhraseCount)];
+            _hasCursor = GetCursorPos(out _lastCursor);
+            // 菜单一打开就默认高亮第一条；之后由滚轮（或被移动的鼠标）改高亮。
+            ResetSelectionToFirst();
             _visible = true;
             cancellation = new CancellationTokenSource();
             _pollCancellation?.Cancel();
             _pollCancellation = cancellation;
         }
 
+        EnsureRawInput();
         Render();
         SetWindowPos(
             _handle,
@@ -131,6 +144,8 @@ internal sealed partial class CustomPhraseOverlay : IDisposable
         _disposed = true;
         if (_handle != IntPtr.Zero)
         {
+            UnregisterRawInput();
+            Overlays.TryRemove(_handle, out _);
             DestroyWindow(_handle);
             _handle = IntPtr.Zero;
         }
@@ -145,11 +160,19 @@ internal sealed partial class CustomPhraseOverlay : IDisposable
             {
                 if (!_visible)
                     return;
-                var next = FindSelectedIndexUnsafe();
-                if (next != _selectedIndex)
+                // 只有指针真的动了才用悬停覆盖高亮：否则「默认高亮第一条」和滚轮选出来的
+                // 结果会被静止在原地的指针立刻改回去。
+                if (GetCursorPos(out var point)
+                    && (!_hasCursor || point.X != _lastCursor.X || point.Y != _lastCursor.Y))
                 {
-                    _selectedIndex = next;
-                    changed = true;
+                    _hasCursor = true;
+                    _lastCursor = point;
+                    var next = FindSelectedIndexUnsafe();
+                    if (next >= 0 && next != _selectedIndex)
+                    {
+                        _selectedIndex = next;
+                        changed = true;
+                    }
                 }
             }
             if (changed)
@@ -160,17 +183,24 @@ internal sealed partial class CustomPhraseOverlay : IDisposable
 
     private int FindSelectedIndexUnsafe()
     {
-        if (!GetCursorPos(out var point))
+        if (!_hasCursor)
             return -1;
         for (var index = 0; index < _boxes.Length; index++)
         {
-            if (_boxes[index].Bounds.Contains(point.X, point.Y))
+            if (_boxes[index].Bounds.Contains(_lastCursor.X, _lastCursor.Y))
                 return index;
         }
         return -1;
     }
 
     private void Render()
+    {
+        // 光标轮询线程与窗口线程（WM_INPUT 滚轮）都会触发重画，这里把绘制串行化。
+        lock (_renderGate)
+            RenderCore();
+    }
+
+    private void RenderCore()
     {
         PhraseBox[] boxes;
         Rectangle windowBounds;
@@ -228,45 +258,51 @@ internal sealed partial class CustomPhraseOverlay : IDisposable
         UpdateLayeredBitmap(bitmap, windowBounds);
     }
 
+    /// <summary>
+    /// 竖排布局：一条短语一个矩形，**每列从上往下排 5 个**，超过 5 个就另起一列；
+    /// 整体在游戏客户区里水平居中、垂直居中于 70% 高度处。
+    /// </summary>
     private static PhraseBox[] CreateBoxes(
         IReadOnlyList<string> phrases,
         PluginClientBounds gameBounds)
     {
         var count = Math.Min(CustomPhrasePluginData.MaxPhraseCount, phrases.Count);
+        if (count == 0)
+            return [];
+
+        var rows = Math.Min(RowsPerColumn, count);
+        var columns = (int)Math.Ceiling(count / (double)rows);
         var usableWidth = Math.Max(1, gameBounds.Width - (OuterMargin * 2));
-        var columns = Math.Min(MaximumColumns, count);
         var width = Math.Clamp(
             (int)Math.Round(gameBounds.Width * 0.14d),
             150,
             260);
+        // 列数多、窗口窄时按可用宽度收一收，保证整排都放得下。
         width = Math.Min(width,
             Math.Max(40, (usableWidth - (BoxGap * (columns - 1))) / columns));
-        var rows = (int)Math.Ceiling(count / (double)columns);
+
+        var totalWidth = (columns * width) + (BoxGap * (columns - 1));
         var totalHeight = (rows * BoxHeight) + (BoxGap * (rows - 1));
+        var left = gameBounds.X + ((gameBounds.Width - totalWidth) / 2);
         var centerY = gameBounds.Y + (int)Math.Round(gameBounds.Height * 0.70d);
         var top = Math.Clamp(
             centerY - (totalHeight / 2),
             gameBounds.Y + OuterMargin,
             gameBounds.Y + gameBounds.Height - OuterMargin - totalHeight);
+
         var boxes = new List<PhraseBox>(count);
-        for (var row = 0; row < rows; row++)
+        for (var index = 0; index < count; index++)
         {
-            var firstIndex = row * columns;
-            var rowCount = Math.Min(columns, count - firstIndex);
-            var rowWidth = (rowCount * width) + (BoxGap * (rowCount - 1));
-            var left = gameBounds.X + ((gameBounds.Width - rowWidth) / 2);
-            for (var column = 0; column < rowCount; column++)
-            {
-                var index = firstIndex + column;
-                boxes.Add(new PhraseBox(
-                    index,
-                    phrases[index],
-                    new Rectangle(
-                        left + ((width + BoxGap) * column),
-                        top + ((BoxHeight + BoxGap) * row),
-                        width,
-                        BoxHeight)));
-            }
+            var column = index / rows;
+            var row = index % rows;
+            boxes.Add(new PhraseBox(
+                index,
+                phrases[index],
+                new Rectangle(
+                    left + ((width + BoxGap) * column),
+                    top + ((BoxHeight + BoxGap) * row),
+                    width,
+                    BoxHeight)));
         }
         return boxes.ToArray();
     }
@@ -299,6 +335,7 @@ internal sealed partial class CustomPhraseOverlay : IDisposable
             IntPtr.Zero);
         if (_handle == IntPtr.Zero)
             throw new InvalidOperationException("无法创建自定义短语选择层。");
+        Overlays[_handle] = this;
     }
 
     private void UpdateLayeredBitmap(Bitmap bitmap, Rectangle bounds)
@@ -388,6 +425,14 @@ internal sealed partial class CustomPhraseOverlay : IDisposable
             return new IntPtr(HtTransparent);
         if (message == WmMouseActivate)
             return new IntPtr(MaNoActivate);
+        if (message == WmInput)
+        {
+            // 滚轮：这层窗口是鼠标穿透的，收不到 WM_MOUSEWHEEL（滚轮消息只发给焦点窗口），
+            // 所以改从 Raw Input 读——既不抢焦点，也不吞掉游戏自己的滚轮。
+            if (Overlays.TryGetValue(window, out var overlay))
+                overlay.HandleRawInput(lParam);
+            return IntPtr.Zero;
+        }
         return DefWindowProc(window, message, wParam, lParam);
     }
 
