@@ -30,6 +30,10 @@ public static class PluginRegistration
         // 常驻（AlwaysActive）：开局前宿主会关掉非常驻插件的运行时闸门，而它正是用来开局的。
         using (StartupTimeline.Measure("Built-in construct and register: IDVBuff.Plugins.MatchHotkeys.MatchHotkeysPlugin"))
             host.Register(new IDVBuff.Plugins.MatchHotkeys.MatchHotkeysPlugin());
+        // 拾取 ESC：识别到「可拾取」面板出现就按一下 ESC 关掉它（热键可暂停/恢复检测）。
+        // 常驻（AlwaysActive）：热键要在局外也按得动，与「背包辅助」保持一致。
+        using (StartupTimeline.Measure("Built-in construct and register: IDVBuff.Plugins.PickupEscape.PickupEscapePlugin"))
+            host.Register(new IDVBuff.Plugins.PickupEscape.PickupEscapePlugin());
         // 本修改版已注销「自动加特林」（Id auto-gatling）：它的源码与工程引用仍留在
         // Plugins\AutoGatling\，只是不再登记，与上游一致（上游自 1.6.0-unstable 起就没登记它）。
         // 需要时把下面两行注释放开即可恢复。

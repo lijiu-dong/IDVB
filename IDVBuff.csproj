@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="UTF-8" ?>
+<?xml version="1.0" encoding="UTF-8" ?>
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
         <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
@@ -101,6 +101,7 @@
         <ProjectReference Include="Plugins\CustomPhrases\IDVBuff.CustomPhrases.csproj" />
         <ProjectReference Include="Plugins\SceneQuickActions\IDVBuff.SceneQuickActions.csproj" />
         <ProjectReference Include="Plugins\MatchHotkeys\IDVBuff.MatchHotkeys.csproj" />
+        <ProjectReference Include="Plugins\PickupEscape\IDVBuff.PickupEscape.csproj" />
 
         <Content Include="Assets\SplashScreen.scale-200.png" CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Assets\LockScreenLogo.scale-200.png" CopyToOutputDirectory="PreserveNewest" />
