@@ -22,7 +22,7 @@ namespace IDVBuff.Plugins.MatchHotkeys;
     MatchHotkeysOptions.PluginId,
     DisplayName = "对局快捷键",
     Description = "两个可自定义的快捷键，各自一键进入/结束指定地图模式的对局；地图模式在插件设置里选。",
-    Version = "1.0.2",
+    Version = "1.1.0",
     AlwaysActive = true)]
 public sealed class MatchHotkeysPlugin
     : PluginBase, IPluginSettingsProvider, IHandle<MatchStateChangedMessage>
@@ -42,6 +42,7 @@ public sealed class MatchHotkeysPlugin
     private IPluginGameWindowService? _gameWindow;
     private IHostMatchCapability? _matches;
     private ISessionOrchestrator? _session;
+    private IGameOverlayToast? _toast;
     private MatchHotkeysOptions _options = MatchHotkeysOptions.Default;
     private string[] _mapClasses = [];
     private bool _mapClassSyncAttempted;
@@ -167,11 +168,14 @@ public sealed class MatchHotkeysPlugin
         _gameWindow = context.GetService<IPluginGameWindowService>();
         _matches = context.GetService<IHostMatchCapability>();
         _session = context.GetService<ISessionOrchestrator>();
+        _toast = context.GetService<IGameOverlayToast>();
 
         if (_input is null)
             context.Logger.Error("宿主没有提供插件输入通道（IPluginInputService），对局快捷键不可用。");
         if (_matches is null)
             context.Logger.Error("宿主没有提供对局控制能力（IHostMatchCapability），对局快捷键不可用。");
+        if (_toast is null)
+            context.Logger.Warning("宿主没有提供浮层提示通道，进/出对局时屏幕上不会有提示（功能不受影响）。");
         if (_gameWindow is null)
             context.Logger.Warning("宿主没有提供前台游戏窗口服务，「仅在游戏窗口前台时生效」这道护栏本次不生效。");
 
@@ -326,6 +330,7 @@ public sealed class MatchHotkeysPlugin
         if (MatchHotkeysOptions.IsUnsetClass(target))
         {
             LogWarning($"{slotName}还没有在设置里选择地图模式，已忽略这次按键。");
+            Toast(warning: true, $"{slotName}还没选择地图模式");
             return;
         }
         if (_matches is not { } matches)
@@ -359,13 +364,29 @@ public sealed class MatchHotkeysPlugin
             var elapsed = (int)(DateTime.UtcNow - startedAt).TotalMilliseconds;
 
             if (result.State == HostOperationState.Applied)
+            {
                 LogInfo($"{slotName}（{binding.DisplayName}）：{result.Message}（{elapsed}ms）");
+                // 可见反馈：与本体「对局状态开关」一样在屏幕上弹一条浮层提示，
+                // 否则开局只影响运行时状态、玩家那边什么也看不到。
+                Toast(warning: alreadyInTargetMatch,
+                    alreadyInTargetMatch ? "已结束对局" : $"已进入对局 · {target}");
+            }
             else
+            {
                 LogWarning($"{slotName}（{binding.DisplayName}）：{result.State} · {result.Message}");
+                // 被拒绝 / 宿主没就绪 / 失败都值得让用户看见；Busy（连按同一下）不刷屏。
+                if (result.State is HostOperationState.Rejected
+                    or HostOperationState.Failed
+                    or HostOperationState.NotReady)
+                {
+                    Toast(warning: true, $"{slotName}：{result.Message}");
+                }
+            }
         }
         catch (Exception exception)
         {
             LogWarning($"{slotName}：对局切换失败 · {Describe(exception)}");
+            Toast(warning: true, $"{slotName}：对局切换失败");
         }
         finally
         {
@@ -497,6 +518,26 @@ public sealed class MatchHotkeysPlugin
         Interlocked.Exchange(ref _mapClassesRefreshedTick, Environment.TickCount64);
         if (classes.Length == 0)
             LogInfo("地图库里暂时没有可用的地图模式，下拉框只会有「（请选择地图模式）」；装好地图后打开设置页即可刷新。");
+    }
+
+    // ════════════════ 浮层提示 ════════════════
+
+    /// <summary>发一条游戏内浮层提示；提示本身出问题也绝不能影响对局切换。</summary>
+    private void Toast(bool warning, string message)
+    {
+        try
+        {
+            if (_toast is not { } toast)
+                return;
+            if (warning)
+                toast.Warning(message);
+            else
+                toast.Notice(message);
+        }
+        catch (Exception exception)
+        {
+            LogWarning($"浮层提示发送失败：{Describe(exception)}");
+        }
     }
 
     // ════════════════ 日志小工具 ════════════════

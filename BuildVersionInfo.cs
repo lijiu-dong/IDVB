@@ -24,11 +24,11 @@ internal static class BuildVersionInfo
 
     /// <summary>
     /// 标明这是本地从源码构建，且带：背包辅助（自动加特林与无后摇信仰两个自动开火类
-    /// 插件均已注销、源码保留）、对局快捷键、精简后的设置页文案（含宿主录键提示），
-    /// 以及构建桩。
+    /// 插件均已注销、源码保留）、对局快捷键（含进/出对局的游戏内浮层提示）、
+    /// 精简后的设置页文案（含宿主录键提示），以及构建桩。
     /// </summary>
     public const string BuildVersion =
-        "1.6.6-unstable+scene-quick-actions+match-hotkeys+short-copy2+codeonlyfill";
+        "1.6.6-unstable+scene-quick-actions+match-hotkeys+toast+codeonlyfill";
 
     public const string NumericVersion = "1.6.6.0";
 }

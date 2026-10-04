@@ -129,6 +129,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IGameWindowCapture, GameWindowCaptureAdapter>();
         services.AddSingleton<IPluginScreenshotService, PluginScreenshotService>();
         services.AddSingleton<IPluginGameWindowService, PluginGameWindowService>();
+        // 游戏内浮层提示通道（插件用它给「已进入对局 / 已结束对局」这类动作一个可见反馈）。
+        services.AddSingleton<IGameOverlayToast, GameOverlayToast>();
         services.AddSingleton<IGlobalInput>(_ =>
             new GlobalInputAdapter(dispatcher));
 
