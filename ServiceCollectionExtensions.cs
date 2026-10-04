@@ -19,6 +19,7 @@ using IDVBuff.Survey.Fusion.OpenCv;
 using IDVBuff.Survey.Idvm;
 using IDVBuff.PluginContracts;
 using IDVBuff.Features.Notifications;
+using IdentityVisionBridge.PluginSdk;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Dispatching;
 
@@ -220,6 +221,10 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<ICaptureProtectionService>(),
                 headless: headless));
         services.AddSingleton<ISessionOrchestrator>(sp =>
+            sp.GetRequiredService<SessionOrchestrator>());
+        // 插件对局控制能力：内置插件与第三方插件共用同一套语义
+        // （实现见 Features\Maps\SessionOrchestrator.HostMatchCapability.cs，只做转发）。
+        services.AddSingleton<IHostMatchCapability>(sp =>
             sp.GetRequiredService<SessionOrchestrator>());
 
         return services;

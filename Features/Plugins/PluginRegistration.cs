@@ -27,6 +27,10 @@ public static class PluginRegistration
         // 本修改版新增：背包辅助（牵手邀请自动接受 / 可拾取面板拾取全部 + 快捷替换）。
         using (StartupTimeline.Measure("Built-in construct and register: IDVBuff.Plugins.SceneQuickActions.SceneQuickActionsPlugin"))
             host.Register(new IDVBuff.Plugins.SceneQuickActions.SceneQuickActionsPlugin());
+        // 本修改版新增：对局快捷键（两个可自定义快捷键，各自一键进入/结束指定地图模式的对局）。
+        // 常驻（AlwaysActive）：开局前宿主会关掉非常驻插件的运行时闸门，而它正是用来开局的。
+        using (StartupTimeline.Measure("Built-in construct and register: IDVBuff.Plugins.MatchHotkeys.MatchHotkeysPlugin"))
+            host.Register(new IDVBuff.Plugins.MatchHotkeys.MatchHotkeysPlugin());
         // 本修改版已注销「自动加特林」（Id auto-gatling）：它的源码与工程引用仍留在
         // Plugins\AutoGatling\，只是不再登记，回到与上游 1.6.6 一致的状态（上游自
         // 1.6.0-unstable 起就没登记它）。需要时把下面两行注释放开即可恢复。
