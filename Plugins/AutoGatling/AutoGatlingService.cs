@@ -454,6 +454,10 @@ public sealed partial class AutoGatlingService : IDisposable
         await PressBindingAsync(_inventoryBinding, cancellationToken)
             .ConfigureAwait(false);
         await StandardDelayAsync(cancellationToken).ConfigureAwait(false);
+        // 关背包后先等游戏把武器交回手上，否则这一下左键会被背包收起动画吃掉。
+        await JitteredDelayAsync(
+            _options.FireDelayMilliseconds,
+            cancellationToken).ConfigureAwait(false);
         await ClickLeftAsync(cancellationToken).ConfigureAwait(false);
         await StandardDelayAsync(cancellationToken).ConfigureAwait(false);
     }

@@ -6,7 +6,7 @@ namespace IDVBuff.Plugins.AutoGatling;
     "auto-gatling",
     DisplayName = "自动加特林",
     Description = "按所选双枪、四枪或六枪方案执行加特林开火和装弹操作。",
-    Version = "1.2.0")]
+    Version = "1.3.0")]
 public sealed class AutoGatlingPlugin : PluginBase, IPluginSettingsProvider
 {
     private const string EquipmentPlanKey = "equipment-plan";
@@ -15,6 +15,7 @@ public sealed class AutoGatlingPlugin : PluginBase, IPluginSettingsProvider
     private const string ActivateBindingKey = "activate-binding";
     private const string ReloadBindingKey = "reload-binding";
     private const string StandardDelayKey = "standard-delay-ms";
+    private const string FireDelayKey = "fire-delay-ms";
     private const string ReloadDelayKey = "reload-delay-ms";
     private const string KeyPressDelayKey = "key-press-delay-ms";
     private const string DragDelayKey = "drag-delay-ms";
@@ -93,6 +94,9 @@ public sealed class AutoGatlingPlugin : PluginBase, IPluginSettingsProvider
         },
         CreateDelaySetting(StandardDelayKey, "通用延迟（毫秒）",
             "背包切换、定位、拖放和开火步骤之间的基础等待。", 50),
+        CreateDelaySetting(FireDelayKey, "开火前延迟（毫秒）",
+            "关背包后、按下开火键前的额外等待，等游戏把武器交回手上。"
+            + "枪拖到位了却不开火就调大它；默认 150。", 150),
         CreateDelaySetting(ReloadDelayKey, "装弹延迟（毫秒）",
             "发送装弹按键后等待装弹完成的时间。", 2000),
         CreateDelaySetting(KeyPressDelayKey, "按键保持（毫秒）",
@@ -156,6 +160,7 @@ public sealed class AutoGatlingPlugin : PluginBase, IPluginSettingsProvider
         ActivateBindingKey => _activateBinding.StorageValue,
         ReloadBindingKey => _reloadBinding.StorageValue,
         StandardDelayKey => (double)_options.StandardDelayMilliseconds,
+        FireDelayKey => (double)_options.FireDelayMilliseconds,
         ReloadDelayKey => (double)_options.ReloadDelayMilliseconds,
         KeyPressDelayKey => (double)_options.KeyPressDelayMilliseconds,
         DragDelayKey => (double)_options.DragDelayMilliseconds,
@@ -246,6 +251,9 @@ public sealed class AutoGatlingPlugin : PluginBase, IPluginSettingsProvider
         {
             case StandardDelayKey:
                 _options.StandardDelayMilliseconds = milliseconds;
+                return true;
+            case FireDelayKey:
+                _options.FireDelayMilliseconds = milliseconds;
                 return true;
             case ReloadDelayKey:
                 _options.ReloadDelayMilliseconds = milliseconds;

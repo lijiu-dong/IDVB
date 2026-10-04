@@ -17,6 +17,12 @@ public sealed class AutoGatlingOptions
 
     public int StandardDelayMilliseconds { get; set; } = 50;
 
+    /// <summary>
+    /// 关闭背包后、按下开火键前的额外等待：游戏要先播完背包收起动画、
+    /// 把武器交回手上，这段期间注入的左键点击会被丢掉，表现为「拖过去了但不开火」。
+    /// </summary>
+    public int FireDelayMilliseconds { get; set; } = 150;
+
     public int ReloadDelayMilliseconds { get; set; } = 2000;
 
     public int KeyPressDelayMilliseconds { get; set; } = 10;
