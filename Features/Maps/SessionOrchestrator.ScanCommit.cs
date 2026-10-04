@@ -161,7 +161,10 @@ public sealed partial class SessionOrchestrator
         var settings = _settings ?? throw new InvalidOperationException("设置尚未加载。");
         var saved = settings.Clone();
         saved.ScanPerformanceMode = mode;
-        await _settingsRepo.SaveAsync(saved);
+        // Normalize/serialize and atomic file replacement can perform synchronous
+        // work before their first await. Keep it off the input/rendering thread;
+        // the live session and its notification still update on the caller.
+        await Task.Run(() => _settingsRepo.SaveAsync(saved));
         settings.ScanPerformanceMode = mode;
         StateChanged?.Invoke(this, EventArgs.Empty);
     }

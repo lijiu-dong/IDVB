@@ -18,7 +18,7 @@ namespace IDVBuff.Plugins.SceneQuickActions;
     "scene-quick-actions",
     DisplayName = "背包辅助",
     Description = "自动识别「邀请你牵手」与「可拾取」两个界面，执行接受邀请、拾取全部、快捷替换。",
-    Version = "1.7.1",
+    Version = "1.7.0",
     AlwaysActive = true)]
 public sealed class SceneQuickActionsPlugin
     : PluginBase, IPluginSettingsProvider, IHandle<SessionStateChangedMessage>
@@ -38,21 +38,21 @@ public sealed class SceneQuickActionsPlugin
         {
             Key = SceneQuickActionsOptions.InviteEnabledKey,
             DisplayName = "自动接受邀请",
-            Description = "识别到就自动点「接受」。",
+            Description = "识别到「接受」按钮时，自动切出鼠标并点击它。",
             DefaultValue = true
         },
         new PluginToggleSetting
         {
             Key = SceneQuickActionsOptions.PickupEnabledKey,
             DisplayName = "拾取相关",
-            Description = "识别到就「拾取全部」+「快捷替换」。",
+            Description = "识别到「可拾取」面板时，先「拾取全部」，再「快捷替换」。",
             DefaultValue = true
         },
         new PluginKeyBindingSetting
         {
             Key = SceneQuickActionsOptions.DropBagHotkeyKey,
             DisplayName = "丢光背包 · 热键（键盘键或鼠标键）",
-            Description = "开背包 → 上排/中排 6 格拖到屏幕中心 → 关背包。",
+            Description = "按下后先按 Tab 开背包切出鼠标，再把上排 3 格、中排 3 格依次拖到屏幕正中心松手，最后按 Tab 关背包。点右边按钮即可录制新键；不支持组合键。",
             DefaultValue = PluginInputBinding.Keyboard(SceneQuickActionsOptions.DefaultDropBagVirtualKey).StorageValue,
             AllowedKinds = PluginInputBindingKinds.All
         },
@@ -60,7 +60,7 @@ public sealed class SceneQuickActionsPlugin
         {
             Key = SceneQuickActionsOptions.DropHotbarHotkeyKey,
             DisplayName = "逐个丢道具栏 · 热键（键盘键或鼠标键）",
-            Description = "每按一次丢掉底部道具栏的下一格。",
+            Description = "每按一次，先切出鼠标，再把底部道具栏的下一个格子拖到屏幕正中心松手：第 1 次拖第 1 格，第 2 次拖第 2 格，依次循环。点右边按钮即可录制新键；不支持组合键。",
             DefaultValue = PluginInputBinding.Keyboard(SceneQuickActionsOptions.DefaultDropHotbarVirtualKey).StorageValue,
             AllowedKinds = PluginInputBindingKinds.All
         },
@@ -68,7 +68,7 @@ public sealed class SceneQuickActionsPlugin
         {
             Key = SceneQuickActionsOptions.PickupAllBindingKey,
             DisplayName = "拾取全部按键",
-            Description = "游戏里「拾取全部」提示上的键（默认 B）。",
+            Description = "游戏里「拾取全部」提示上显示的按键（默认 B 键）。点「重置按键」清空后，改为用鼠标点击该提示。",
             Group = SceneQuickActionsOptions.KeyGroupTitle,
             DefaultValue = PluginInputBinding.Keyboard(SceneQuickActionsOptions.DefaultPickupAllVirtualKey).StorageValue,
             AllowedKinds = PluginInputBindingKinds.All
@@ -77,7 +77,7 @@ public sealed class SceneQuickActionsPlugin
         {
             Key = SceneQuickActionsOptions.QuickReplaceBindingKey,
             DisplayName = "快捷替换按键",
-            Description = "有键位提示就录进来；留空则用鼠标点。",
+            Description = "若你的游戏里「快捷替换」也有按键提示，就在这里录一个；保持「未设置」时用鼠标点击该按钮。",
             Group = SceneQuickActionsOptions.KeyGroupTitle,
             DefaultValue = SceneQuickActionsOptions.NoBindingStorageValue,
             AllowedKinds = PluginInputBindingKinds.All
@@ -86,7 +86,7 @@ public sealed class SceneQuickActionsPlugin
         {
             Key = SceneQuickActionsOptions.PickupWakeKey,
             DisplayName = "拾取相关动作前先切出鼠标",
-            Description = "两步都用按键时不需要。",
+            Description = "两步都用按键时不需要。打开后同样用「按 Tab 开背包」切出指针，动作完自动按 Tab 关上。",
             Group = SceneQuickActionsOptions.KeyGroupTitle,
             DefaultValue = false
         },
@@ -94,7 +94,7 @@ public sealed class SceneQuickActionsPlugin
         {
             Key = SceneQuickActionsOptions.WakeDelayKey,
             DisplayName = "切出鼠标后等待（毫秒）",
-            Description = "开背包后等指针出现再动手。",
+            Description = "按 Tab 打开背包后，等指针真正出现再移动点击（内部下限 120ms，避免背包还没开就开始点）。",
             Group = SceneQuickActionsOptions.TimingGroupTitle,
             Minimum = SceneQuickActionsOptions.WakeDelayMinimum,
             Maximum = SceneQuickActionsOptions.WakeDelayMaximum,
@@ -105,7 +105,7 @@ public sealed class SceneQuickActionsPlugin
         {
             Key = SceneQuickActionsOptions.BetweenClicksKey,
             DisplayName = "两次动作间隔（毫秒）",
-            Description = "两个动作之间的等待。",
+            Description = "「拾取全部」与「快捷替换」之间的等待时间。",
             Group = SceneQuickActionsOptions.TimingGroupTitle,
             Minimum = SceneQuickActionsOptions.BetweenClicksMinimum,
             Maximum = SceneQuickActionsOptions.BetweenClicksMaximum,
@@ -116,7 +116,7 @@ public sealed class SceneQuickActionsPlugin
         {
             Key = SceneQuickActionsOptions.PollIntervalKey,
             DisplayName = "检测间隔（毫秒）",
-            Description = "多久抓一帧识别；仅游戏前台时抓帧。",
+            Description = "多久抓一帧做识别；只在游戏处于前台时才会真正抓帧。",
             Group = SceneQuickActionsOptions.TimingGroupTitle,
             Minimum = SceneQuickActionsOptions.PollIntervalMinimum,
             Maximum = SceneQuickActionsOptions.PollIntervalMaximum,
@@ -127,7 +127,7 @@ public sealed class SceneQuickActionsPlugin
         {
             Key = SceneQuickActionsOptions.ThresholdKey,
             DisplayName = "识别相似度阈值（%）",
-            Description = "调高不易误判，识别不到就调低。",
+            Description = "越高越不容易误判，但界面被遮挡或分辨率差异大时可能识别不到。",
             Group = SceneQuickActionsOptions.TimingGroupTitle,
             Minimum = SceneQuickActionsOptions.ThresholdMinimum,
             Maximum = SceneQuickActionsOptions.ThresholdMaximum,
@@ -138,7 +138,7 @@ public sealed class SceneQuickActionsPlugin
         {
             Key = SceneQuickActionsOptions.CooldownKey,
             DisplayName = "同一场景动作冷却（毫秒）",
-            Description = "同一场景两次动作的最小间隔。",
+            Description = "同一场景两次动作之间的最小间隔，避免连续重复点击。",
             Group = SceneQuickActionsOptions.TimingGroupTitle,
             Minimum = SceneQuickActionsOptions.CooldownMinimum,
             Maximum = SceneQuickActionsOptions.CooldownMaximum,
@@ -149,18 +149,42 @@ public sealed class SceneQuickActionsPlugin
         {
             Key = SceneQuickActionsOptions.DropSilenceKey,
             DisplayName = "丢东西后暂停拾取（秒）",
-            Description = "丢东西后这段时间内不再拾取。",
+            Description = "按上面两个热键之后，这段时间内「拾取相关」不再动作，免得把自己刚丢出来的东西又捡回去。",
             Group = SceneQuickActionsOptions.TimingGroupTitle,
             Minimum = SceneQuickActionsOptions.DropSilenceMinimum,
             Maximum = SceneQuickActionsOptions.DropSilenceMaximum,
             StepFrequency = 5,
             DefaultValue = 30
         },
+        new PluginSliderSetting
+        {
+            Key = SceneQuickActionsOptions.MinimumRandomDelayKey,
+            DisplayName = "随机延迟下限（毫秒）",
+            Description = "每段开关背包、移动、按键、点击及拖拽操作后追加的随机等待下限。",
+            Group = SceneQuickActionsOptions.TimingGroupTitle,
+            Minimum = 30,
+            MinimumWhenUnsafe = 0,
+            Maximum = SceneQuickActionsOptions.MaximumRandomDelayMillisecondsAllowed,
+            StepFrequency = 1,
+            DefaultValue = 30
+        },
+        new PluginSliderSetting
+        {
+            Key = SceneQuickActionsOptions.MaximumRandomDelayKey,
+            DisplayName = "随机延迟上限（毫秒）",
+            Description = "每段操作后从下限至上限中独立随机取值，追加在原有等待之后。",
+            Group = SceneQuickActionsOptions.TimingGroupTitle,
+            Minimum = 50,
+            MinimumWhenUnsafe = 0,
+            Maximum = SceneQuickActionsOptions.MaximumRandomDelayMillisecondsAllowed,
+            StepFrequency = 1,
+            DefaultValue = 50
+        },
         new PluginChoiceSetting
         {
             Key = SceneQuickActionsOptions.DropSpeedKey,
             DisplayName = "拖拽速度",
-            Description = "嫌慢选快；丢不出去就换慢。",
+            Description = "两个热键拖动时的快慢。嫌慢选「快」，如果丢不出去（拖拽太快游戏没吃到）就换「慢（稳妥）」。",
             Group = SceneQuickActionsOptions.TimingGroupTitle,
             Options = [.. SceneQuickActionsOptions.DropSpeedOptions],
             DefaultIndex = 0
@@ -253,6 +277,8 @@ public sealed class SceneQuickActionsPlugin
         SceneQuickActionsOptions.PollIntervalKey => (double)_options.PollIntervalMilliseconds,
         SceneQuickActionsOptions.ThresholdKey => (double)_options.MatchThresholdPercent,
         SceneQuickActionsOptions.CooldownKey => (double)_options.CooldownMilliseconds,
+        SceneQuickActionsOptions.MinimumRandomDelayKey => (double)_options.MinimumRandomDelayMilliseconds,
+        SceneQuickActionsOptions.MaximumRandomDelayKey => (double)_options.MaximumRandomDelayMilliseconds,
         SceneQuickActionsOptions.DropBagHotkeyKey => _options.DropBagHotkey.StorageValue,
         SceneQuickActionsOptions.DropHotbarHotkeyKey => _options.DropHotbarHotkey.StorageValue,
         SceneQuickActionsOptions.DropSilenceKey => (double)_options.DropSilenceSeconds,
@@ -357,6 +383,20 @@ public sealed class SceneQuickActionsPlugin
                 };
             case SceneQuickActionsOptions.DropSpeedKey when value is string dropSpeed:
                 return _options with { DropSpeedIndex = SceneQuickActionsOptions.ParseDropSpeed(dropSpeed) };
+            case SceneQuickActionsOptions.MinimumRandomDelayKey:
+                return _options with
+                {
+                    MinimumRandomDelayMilliseconds = SceneQuickActionsOptions.FromDouble(value,
+                        _options.MinimumRandomDelayMilliseconds, PluginRandomDelayPolicy.GetMinimum(30),
+                        SceneQuickActionsOptions.MaximumRandomDelayMillisecondsAllowed)
+                };
+            case SceneQuickActionsOptions.MaximumRandomDelayKey:
+                return _options with
+                {
+                    MaximumRandomDelayMilliseconds = SceneQuickActionsOptions.FromDouble(value,
+                        _options.MaximumRandomDelayMilliseconds, PluginRandomDelayPolicy.GetMinimum(50),
+                        SceneQuickActionsOptions.MaximumRandomDelayMillisecondsAllowed)
+                };
             default:
                 return _options;
         }

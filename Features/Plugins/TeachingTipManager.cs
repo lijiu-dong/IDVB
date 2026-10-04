@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Text.Json;
 using IDVBuff.PluginContracts;
 using IDVBuff.Views;
 using Microsoft.UI.Dispatching;
@@ -150,10 +149,12 @@ public sealed partial class TeachingTipManager
             ShouldConstrainToRootBounds = true,
             PreferredPlacement = TeachingTipPlacementMode.Bottom,
             TailVisibility = TeachingTipTailVisibility.Collapsed,
-            MinWidth = TipMinWidth,
-            MinHeight = TipMinHeight,
-            MaxHeight = TipMaxHeight
+            MinWidth = TipMinWidth
         };
+        // 默认模板将实际弹出内容移入 Popup，并通过资源约束尺寸；
+        // TeachingTip 自身的 MinHeight/MaxHeight 不会约束这个弹出内容。
+        tip.Resources["TeachingTipMinHeight"] = TipMinHeight;
+        tip.Resources["TeachingTipMaxHeight"] = TipMaxHeight;
         AttachBlankAreaEditingHandler(tip, content);
 
         _tip = tip;
@@ -313,111 +314,6 @@ public sealed partial class TeachingTipManager
         }
     }
 
-    private void RestorePersistedValues(IPluginSettingsProvider provider, string pluginId)
-    {
-        foreach (var setting in provider.Settings)
-        {
-            object? value;
-            if (_store.TryGetSetting(pluginId, setting.Key, out var stored)
-                && TryRestore(setting, stored, out var restored))
-            {
-                value = restored;
-            }
-            else
-            {
-                value = DefaultFor(setting);
-            }
-            if (value is not null)
-                SafeSetProviderValue(provider, setting.Key, value);
-        }
-    }
-
-    private static object? DefaultFor(IPluginSetting setting) => setting switch
-    {
-        PluginToggleSetting toggle => toggle.DefaultValue,
-        PluginSliderSetting slider => slider.DefaultValue,
-        // 空 Options 的 choice 无默认值可取：返回 null，调用方跳过写回。
-        // 与 BuildSettingRow 的空 Options 跳过渲染保持一致，避免 RestorePersistedValues
-        // 在此处抛 InvalidOperationException 冒泡到未处理的 XAML 事件。
-        PluginChoiceSetting choice => choice.Options.Length > 0 ? choice.DefaultValue : null,
-        PluginKeyBindingSetting binding =>
-            PluginInputBinding.TryParse(
-                binding.DefaultValue,
-                binding.AllowedKinds,
-                out _)
-                ? binding.DefaultValue
-                : null,
-        PluginTextSetting text => text.Coerce(text.DefaultValue),
-        _ => null
-    };
-
-    /// <summary>把存储的 JsonElement 还原为符合描述符类型的 CLR 值；类型不符返回 false。</summary>
-    private static bool TryRestore(IPluginSetting setting, JsonElement stored, out object? value)
-    {
-        switch (setting)
-        {
-            case PluginToggleSetting:
-                if (stored.ValueKind is JsonValueKind.True or JsonValueKind.False)
-                {
-                    value = stored.GetBoolean();
-                    return true;
-                }
-                break;
-            case PluginSliderSetting slider:
-                if (stored.ValueKind == JsonValueKind.Number
-                    && stored.TryGetDouble(out var raw))
-                {
-                    value = CoerceSlider(raw, slider);
-                    return true;
-                }
-                break;
-            case PluginChoiceSetting choice:
-                if (stored.ValueKind == JsonValueKind.String
-                    && stored.GetString() is { } text
-                    && choice.Options.Contains(text, StringComparer.Ordinal))
-                {
-                    value = text;
-                    return true;
-                }
-                break;
-            case PluginKeyBindingSetting binding:
-                if (stored.ValueKind == JsonValueKind.String
-                    && stored.GetString() is { } bindingText
-                    && PluginInputBinding.TryParse(
-                        bindingText,
-                        binding.AllowedKinds,
-                        out _))
-                {
-                    value = bindingText;
-                    return true;
-                }
-                break;
-            case PluginTextSetting textSetting:
-                if (stored.ValueKind == JsonValueKind.String
-                    && stored.GetString() is { } textValue)
-                {
-                    value = textSetting.Coerce(textValue);
-                    return true;
-                }
-                break;
-        }
-        value = null;
-        return false;
-    }
-
-    private void SafeSetProviderValue(IPluginSettingsProvider provider, string key, object? value)
-    {
-        try
-        {
-            provider.SetSettingValue(key, value);
-        }
-        catch (Exception exception)
-        {
-            System.Diagnostics.Debug.WriteLine(
-                $"TTM 写回插件设置失败 {key}: {exception}");
-        }
-    }
-
     private void CommitCurrentSettings()
     {
         if (_tip?.Content is FrameworkElement content
@@ -487,11 +383,20 @@ public sealed partial class TeachingTipManager
         var scrollViewer = new ScrollViewer
         {
             Content = rows,
+            Width = TipMinWidth - 40,
             MaxHeight = ContentMaxHeight,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Hidden,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             IsTabStop = false,
             Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0))
+        };
+        // 挂入 XamlRoot、应用主题和模板后固定首次布局的视口；不能在脱离树时
+        // Measure，否则 Expander 等控件尚未获得模板，测得的高度会不完整。
+        // 展开只增加滚动范围，不再让 TeachingTip 因尺寸变化突然翻到上方。
+        scrollViewer.Loaded += (_, _) =>
+        {
+            if (double.IsNaN(scrollViewer.Height) && scrollViewer.ActualHeight > 0)
+                scrollViewer.Height = scrollViewer.ActualHeight;
         };
         endNumericEditing = () =>
             scrollViewer.Focus(FocusState.Programmatic);
