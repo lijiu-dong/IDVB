@@ -22,7 +22,7 @@ namespace IDVBuff.Plugins.MatchHotkeys;
     MatchHotkeysOptions.PluginId,
     DisplayName = "对局快捷键",
     Description = "两个可自定义的快捷键，各自一键进入/结束指定地图模式的对局；地图模式在插件设置里选。",
-    Version = "1.1.0",
+    Version = "1.2.0",
     AlwaysActive = true)]
 public sealed class MatchHotkeysPlugin
     : PluginBase, IPluginSettingsProvider, IHandle<MatchStateChangedMessage>
@@ -74,36 +74,43 @@ public sealed class MatchHotkeysPlugin
         var classOptionsB = ClassOptionsFor(options.MapClassB);
         return
         [
+            // 两个快捷键收进「按键」折叠区（默认收起），名字里不带任何括号说明。
             new PluginKeyBindingSetting
             {
                 Key = MatchHotkeysOptions.HotkeyAKey,
-                DisplayName = "快捷键一（进入 / 结束地图 A）",
+                DisplayName = "快捷键一",
+                Group = MatchHotkeysOptions.KeyGroupTitle,
                 DefaultValue = MatchHotkeysOptions.NoBindingStorageValue,
                 AllowedKinds = PluginInputBindingKinds.All
-            },
-            new PluginChoiceSetting
-            {
-                Key = MatchHotkeysOptions.MapClassAKey,
-                DisplayName = "地图 A（快捷键一的目标）",
-                Description = "按一下进入，再按一下结束。",
-                Options = classOptionsA,
-                DefaultIndex = IndexOfOption(classOptionsA, options.MapClassA)
             },
             new PluginKeyBindingSetting
             {
                 Key = MatchHotkeysOptions.HotkeyBKey,
-                DisplayName = "快捷键二（进入 / 结束地图 B）",
+                DisplayName = "快捷键二",
+                Group = MatchHotkeysOptions.KeyGroupTitle,
                 DefaultValue = MatchHotkeysOptions.NoBindingStorageValue,
                 AllowedKinds = PluginInputBindingKinds.All
+            },
+            // 两个目标收进「目标」折叠区（默认收起）。
+            new PluginChoiceSetting
+            {
+                Key = MatchHotkeysOptions.MapClassAKey,
+                DisplayName = "地图 A",
+                Description = "按一下进入，再按一下结束。",
+                Group = MatchHotkeysOptions.TargetGroupTitle,
+                Options = classOptionsA,
+                DefaultIndex = IndexOfOption(classOptionsA, options.MapClassA)
             },
             new PluginChoiceSetting
             {
                 Key = MatchHotkeysOptions.MapClassBKey,
-                DisplayName = "地图 B（快捷键二的目标）",
+                DisplayName = "地图 B",
                 Description = "按一下进入，再按一下结束。",
+                Group = MatchHotkeysOptions.TargetGroupTitle,
                 Options = classOptionsB,
                 DefaultIndex = IndexOfOption(classOptionsB, options.MapClassB)
             },
+            // 未分组的项会被宿主平铺在设置页最上面（折叠区之上）。
             new PluginToggleSetting
             {
                 Key = MatchHotkeysOptions.ForegroundOnlyKey,

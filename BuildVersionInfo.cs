@@ -28,7 +28,7 @@ internal static class BuildVersionInfo
     /// 精简后的设置页文案（含宿主录键提示），以及构建桩。
     /// </summary>
     public const string BuildVersion =
-        "1.6.6-unstable+scene-quick-actions+match-hotkeys+toast+codeonlyfill";
+        "1.6.6-unstable+scene-quick-actions+match-hotkeys+toast+folded+codeonlyfill";
 
     public const string NumericVersion = "1.6.6.0";
 }

@@ -20,6 +20,12 @@ internal sealed record MatchHotkeysOptions
     public const string MapClassBKey = "map-class-b";
     public const string ForegroundOnlyKey = "foreground-only";
 
+    /// <summary>设置页里「按键」折叠区的标题（两个快捷键收在这里，默认收起）。</summary>
+    public const string KeyGroupTitle = "按键";
+
+    /// <summary>设置页里「目标」折叠区的标题（两张地图收在这里，默认收起）。</summary>
+    public const string TargetGroupTitle = "目标";
+
     /// <summary>「未设置」的稳定存储串，与宿主 <see cref="PluginInputBinding"/> 的约定一致。</summary>
     public const string NoBindingStorageValue = "none";
 
