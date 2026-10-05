@@ -6,8 +6,7 @@ public sealed partial class SessionOrchestrator
 {
     private readonly SemaphoreSlim _matchLifecycleGate = new(1, 1);
     private CancellationTokenSource? _matchCancellation;
-    private readonly object _mapOpenCancellationGate = new();
-    private CancellationTokenSource? _mapOpenCancellation;
+    private readonly MapOpenCancellationOwner _mapOpenCancellationOwner = new();
     private int _matchEnding;
     private long _currentMapOpenGeneration;
 
@@ -68,10 +67,12 @@ public sealed partial class SessionOrchestrator
             _currentFloorKey);
     }
 
-    private void InvalidateActiveMapOpenOperation(string reason = "operation-invalidated")
+    private void InvalidateActiveMapOpenOperation(string reason = "operation-invalidated",
+        CancellationToken continuingOwner = default)
     {
+        _mapOpenCancellationOwner.CancelUnlessOwnedBy(continuingOwner);
         Interlocked.Increment(ref _currentMapOpenGeneration);
-        CancelMapOpenAlignment();
+        _lowStructureRecoveryCursor.Reset();
         _alignmentCommitGuard.Invalidate();
     }
 
@@ -106,34 +107,19 @@ public sealed partial class SessionOrchestrator
 
     private CancellationTokenSource BeginMapOpenCancellationScope()
     {
-        lock (_mapOpenCancellationGate)
-        {
-            // Map-open alignment is latest-wins. Revoke the previous owner's
-            // token before publishing a new scope; the toggle-version checks
-            // below remain the independent commit guard.
-            _mapOpenCancellation?.Cancel();
-            var scope = CancellationTokenSource.CreateLinkedTokenSource(
-                CurrentMatchCancellationToken, ExternalOperationCancellation.Value);
-            _mapOpenCancellation = scope;
-            return scope;
-        }
+        return _mapOpenCancellationOwner.Begin(
+            CurrentMatchCancellationToken, ExternalOperationCancellation.Value);
     }
 
     private void CompleteMapOpenCancellationScope(
         CancellationTokenSource scope)
     {
-        lock (_mapOpenCancellationGate)
-        {
-            if (ReferenceEquals(_mapOpenCancellation, scope))
-                _mapOpenCancellation = null;
-        }
-        scope.Dispose();
+        _mapOpenCancellationOwner.Complete(scope);
     }
 
     private void CancelMapOpenAlignment()
     {
-        lock (_mapOpenCancellationGate)
-            _mapOpenCancellation?.Cancel();
+        _mapOpenCancellationOwner.CancelUnlessOwnedBy();
         _lowStructureRecoveryCursor.Reset();
     }
 
@@ -299,6 +285,11 @@ public sealed partial class SessionOrchestrator
             if (_matchSession.Snapshot.IsStarted)
                 throw new InvalidOperationException("A match is already in progress.");
             ResetMatchTransientState(resetAutomaticCacheSamples: true);
+            _statusMessage = $"正在准备对局地图 · {mapClass}";
+            StateChanged?.Invoke(this, EventArgs.Empty);
+            await _recognition.PrepareMatchResourcesAsync(mapClass);
+            if (_disposed)
+                return;
             _matchPluginsActivated = false;
             StartMatchCancellationScope();
             var match = _matchSession.Begin(mapClass);

@@ -249,6 +249,7 @@ public sealed partial class MapCvRecognitionService
             Math.Max(topK, inputs.Count),
             frame.ViewportBounds,
             progress: value => progress?.Invoke(0.12d + value * 0.88d));
+        ScanExecutionContext.Current?.RecordRetrievalCoverage(eligibleMapCount, inputs.Count);
         return new SideEntranceScanResult
         {
             GateDetection = gateResult,
@@ -256,7 +257,9 @@ public sealed partial class MapCvRecognitionService
             EligibleMapCount = eligibleMapCount,
             ReadyMapCount = inputs.Count,
             RejectedCandidateCount = Math.Max(0, inputs.Count - candidates.Count),
-            FailureReason = candidates.Count == 0
+            FailureReason = inputs.Count != eligibleMapCount
+                ? $"地图目录数据尚未就绪（就绪 {inputs.Count}/{eligibleMapCount}）；请检查扫描楼层标记与结构特征。"
+                : candidates.Count == 0
                 ? inputs.Count == 0
                     ? $"当前地图类别没有可用的侧门特征（就绪 {inputs.Count}/{eligibleMapCount}）。"
                     : "检测到侧门，但没有地图通过最低证据门槛。"
@@ -453,9 +456,18 @@ public sealed partial class MapCvRecognitionService
                     floorKey, tuning.Generation, profile);
             }, ct);
             _floorPrewarmTasks[key] = task;
-            _ = task.ContinueWith(_ =>
+            _allFloorPrewarmTasks.Add(task);
+            _ = task.ContinueWith(completed =>
             {
-                lock (_floorPrewarmGate) _floorPrewarmTasks.Remove(key);
+                lock (_floorPrewarmGate)
+                {
+                    _allFloorPrewarmTasks.Remove(completed);
+                    // An earlier match's completion must not erase a newer
+                    // prewarm registered under the same map/floor key.
+                    if (_floorPrewarmTasks.TryGetValue(key, out var current)
+                        && ReferenceEquals(current, completed))
+                        _floorPrewarmTasks.Remove(key);
+                }
             }, TaskScheduler.Default);
             return task;
         }
