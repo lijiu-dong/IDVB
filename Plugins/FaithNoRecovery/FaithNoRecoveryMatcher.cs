@@ -28,30 +28,81 @@ internal sealed class FaithNoRecoveryMatcher : IDisposable
             _templates[name] = FaithNoRecoveryTemplates.LoadGray(name);
     }
 
-    public bool TryMatch(Mat grayFrame, double threshold, out FaithHintHit hit)
-    {
-        hit = default;
-        if (_disposed || grayFrame.Empty() || _templates.Count == 0)
-            return false;
+    public bool TryMatch(Mat grayFrame, double threshold, out FaithHintHit hit) =>
+        MatchBest(grayFrame, out hit) >= threshold;
 
-        var found = false;
-        var best = default(FaithHintHit);
-        foreach (var name in _templates.Keys)
+    /// <summary>
+    /// 取最佳匹配（**不看阈值**）。诊断用：命中不了时也要知道"最像的那一次"是多少分，
+    /// 否则日志里只有"无"，分不清是"阈值太高"还是"根本没这句文案"。
+    /// 没有任何模板/画面为空时返回 0。
+    /// </summary>
+    public double MatchBest(Mat grayFrame, out FaithHintHit best)
+    {
+        best = default;
+        if (_disposed || grayFrame.Empty() || _templates.Count == 0)
+            return 0d;
+
+        var region = FaithNoRecoveryTemplates.GetSearchRegion(grayFrame.Size());
+        if (region.Width < 32 || region.Height < 32
+            || region.X + region.Width > grayFrame.Width
+            || region.Y + region.Height > grayFrame.Height)
         {
-            if (!TryMatchTemplate(grayFrame, name, threshold, out var candidate))
+            return 0d;
+        }
+
+        using var searchArea = new Mat(grayFrame, region);
+        var baseScale = grayFrame.Width / (double)FaithNoRecoveryTemplates.ReferenceWidth;
+        var bestScore = double.NegativeInfinity;
+        var bestLocation = new Point();
+        var bestSize = new Size();
+        var bestScale = baseScale;
+        var bestTemplate = string.Empty;
+
+        foreach (var (name, template) in _templates)
+        {
+            if (template.Empty())
                 continue;
-            if (!found || candidate.Score > best.Score)
+
+            foreach (var factor in ScaleFactors)
             {
-                best = candidate;
-                found = true;
+                var scale = baseScale * factor;
+                var width = (int)Math.Round(template.Width * scale);
+                var height = (int)Math.Round(template.Height * scale);
+                if (width < 8 || height < 8 || width >= searchArea.Width || height >= searchArea.Height)
+                    continue;
+
+                using var scaled = new Mat();
+                Cv2.Resize(
+                    template,
+                    scaled,
+                    new Size(width, height),
+                    0,
+                    0,
+                    width < template.Width ? InterpolationFlags.Area : InterpolationFlags.Linear);
+
+                using var result = new Mat();
+                Cv2.MatchTemplate(searchArea, scaled, result, TemplateMatchModes.CCoeffNormed);
+                Cv2.MinMaxLoc(result, out _, out var maxValue, out _, out var maxLocation);
+                if (maxValue > bestScore)
+                {
+                    bestScore = maxValue;
+                    bestLocation = maxLocation;
+                    bestSize = new Size(width, height);
+                    bestScale = scale;
+                    bestTemplate = name;
+                }
             }
         }
 
-        if (!found)
-            return false;
+        if (!double.IsFinite(bestScore) || bestSize.Width == 0)
+            return 0d;
 
-        hit = best;
-        return true;
+        best = new FaithHintHit(
+            bestScore,
+            new Rect(region.X + bestLocation.X, region.Y + bestLocation.Y, bestSize.Width, bestSize.Height),
+            bestScale,
+            bestTemplate);
+        return bestScore;
     }
 
     /// <summary>

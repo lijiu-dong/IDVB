@@ -27,7 +27,7 @@ namespace IDVBuff.Plugins.FaithNoRecovery;
     FaithNoRecoveryOptions.PluginId,
     DisplayName = "信仰无后摇",
     Description = "识别「信仰」蓄力结束（蓄力环 + 「点击ESC，取消操作」双双消失、且不是按 ESC 取消的）后，用道具轮切（先切到别的道具栏再切回原栏）顶掉后摇。",
-    Version = "1.0.0",
+    Version = "1.0.1",
     AlwaysActive = true)]
 public sealed class FaithNoRecoveryPlugin
     : PluginBase, IPluginSettingsProvider, IHandle<SessionStateChangedMessage>
@@ -50,9 +50,16 @@ public sealed class FaithNoRecoveryPlugin
         {
             Key = FaithNoRecoveryOptions.ToggleHotkeyKey,
             DisplayName = "开关检测 · 热键（键盘键或鼠标键）",
-            Description = "按一下开始检测、再按一下暂停；默认「未设置」——没录之前插件完全不动作。",
+            Description = "按一下开始检测、再按一下暂停；默认「未设置」——没录之前插件完全不动作（想省掉这一步就打开下面那一项）。",
             DefaultValue = FaithNoRecoveryOptions.NoBindingStorageValue,
             AllowedKinds = PluginInputBindingKinds.All
+        },
+        new PluginToggleSetting
+        {
+            Key = FaithNoRecoveryOptions.AutoArmKey,
+            DisplayName = "未录热键也自动开始检测",
+            Description = "打开后：插件页一开就自动工作（不用先录热键、也不用按一下）；热键只用来临时暂停/恢复。默认关。",
+            DefaultValue = false
         },
         new PluginKeyBindingSetting
         {
@@ -286,6 +293,22 @@ public sealed class FaithNoRecoveryPlugin
 
         _runner.ResetDetection();
         _runner.Start();
+        if (!_runner.DetectionEnabled)
+        {
+            // 关键：这种状态下插件**不抓帧、不动作**，必须在画面上说清楚，
+            // 否则就会变成"我明明打开了，怎么一点反应都没有"。
+            Context.Logger.Warning(
+                "检测处于暂停：没有开关热键，也没有打开「未录热键也自动开始检测」——插件不抓帧、不动作。");
+            try
+            {
+                _toast?.Warning("信仰无后摇：检测未开始 —— 先录「开关检测」热键并按一下（或打开「未录热键也自动开始检测」）");
+            }
+            catch (Exception exception)
+            {
+                Context.Logger.Warning($"发布浮层提示失败：{exception.Message}");
+            }
+        }
+
         Context.Logger.Info(
             $"参数：检测间隔 {_options.PollIntervalMilliseconds}ms，文案阈值 {_options.MatchThresholdPercent}%，"
             + $"蓄力环门槛 {_options.RingMinimumSectors} 扇区 / 对比度 {_options.RingContrastThreshold}，"
@@ -293,7 +316,8 @@ public sealed class FaithNoRecoveryPlugin
             + $"标志消失后延迟 {_options.ActionDelayMilliseconds}ms，"
             + $"轮切 {_options.SwitchToBinding.DisplayName} → {_options.SwitchBackBinding.DisplayName}"
             + $"（间隔 {_options.SwitchGapMilliseconds}ms，保持 {_options.KeyHoldMilliseconds}ms），"
-            + $"动作冷却 {_options.CooldownMilliseconds}ms。");
+            + $"动作冷却 {_options.CooldownMilliseconds}ms，"
+            + $"未录热键也自动开始 {(_options.AutoArmWithoutHotkey ? "是" : "否")}。");
     }
 
     public override void OnDisable()
@@ -359,6 +383,7 @@ public sealed class FaithNoRecoveryPlugin
     public object? GetSettingValue(string key) => key switch
     {
         FaithNoRecoveryOptions.ToggleHotkeyKey => _options.ToggleHotkey.StorageValue,
+        FaithNoRecoveryOptions.AutoArmKey => _options.AutoArmWithoutHotkey,
         FaithNoRecoveryOptions.SwitchToBindingKey => _options.SwitchToBinding.StorageValue,
         FaithNoRecoveryOptions.SwitchBackBindingKey => _options.SwitchBackBinding.StorageValue,
         FaithNoRecoveryOptions.ActionDelayKey => (double)_options.ActionDelayMilliseconds,
@@ -385,6 +410,7 @@ public sealed class FaithNoRecoveryPlugin
             return;
 
         var hotkeyChanged = !Equals(updated.ToggleHotkey, _options.ToggleHotkey);
+        var autoArmChanged = updated.AutoArmWithoutHotkey != _options.AutoArmWithoutHotkey;
         _options = updated;
         if (!_enabled)
             return;
@@ -395,6 +421,9 @@ public sealed class FaithNoRecoveryPlugin
             // 刚录上第一个热键：注册它，但检测仍保持暂停，等玩家自己按一下开启。
             _runner?.RefreshHotkeyBindings();
         }
+
+        if (autoArmChanged)
+            _runner?.ReevaluateArming();
     }
 
     private FaithNoRecoveryOptions BuildOptions(string key, object? value)
@@ -408,6 +437,8 @@ public sealed class FaithNoRecoveryPlugin
                 return TryParseHotkey(hotkey, out var parsedHotkey)
                     ? _options with { ToggleHotkey = parsedHotkey }
                     : _options;
+            case FaithNoRecoveryOptions.AutoArmKey when value is bool autoArm:
+                return _options with { AutoArmWithoutHotkey = autoArm };
             case FaithNoRecoveryOptions.SwitchToBindingKey when value is string switchTo:
                 return TryParseBinding(switchTo, out var parsedSwitchTo)
                     ? _options with { SwitchToBinding = parsedSwitchTo }

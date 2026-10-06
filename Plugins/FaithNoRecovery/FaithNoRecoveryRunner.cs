@@ -35,6 +35,9 @@ internal sealed class FaithNoRecoveryRunner : IDisposable
     private int _detectionEnabled;
     private int _chargedThisRun;
     private int _aspectWarned;
+    private int _frameInfoLogged;
+    private DateTime _lastHeartbeatAt = DateTime.MinValue;
+    private DateTime _lastPausedReminderAt = DateTime.MinValue;
     private string _lastWarning = string.Empty;
     private DateTime _lastWarningAt = DateTime.MinValue;
     private bool _lastRingPresent;
@@ -77,19 +80,42 @@ internal sealed class FaithNoRecoveryRunner : IDisposable
     public void SetMapOpen(bool mapOpen) => _mapOpen = mapOpen;
 
     /// <summary>
-    /// 插件刚启用 / 重新启用时回到初始状态。**没有录开关热键时保持暂停**：
-    /// 按用户要求「不录制就完全不动作」。
+    /// 插件刚启用 / 重新启用时回到初始状态。默认要求先录「开关检测」热键（按用户要求
+    /// 「不录制就完全不动作」）；如果打开了「未录热键也自动开始检测」，就直接进入检测态。
     /// </summary>
     public void ResetDetection()
     {
         var options = Volatile.Read(ref _options);
         var hasHotkey = options.ToggleHotkey.IsConfigured;
-        Volatile.Write(ref _detectionEnabled, hasHotkey ? 1 : 0);
+        var armed = hasHotkey || options.AutoArmWithoutHotkey;
+        Volatile.Write(ref _detectionEnabled, armed ? 1 : 0);
         _tracker.ResetAll();
         Interlocked.Exchange(ref _chargedThisRun, 0);
-        _logger.Info(hasHotkey
-            ? $"检测已开启（开关热键：{options.ToggleHotkey.DisplayName}）。"
-            : "开关热键未设置：检测保持暂停，先到插件设置里录一个键，再按一下它才开始工作。");
+        Interlocked.Exchange(ref _frameInfoLogged, 0);
+        _lastHeartbeatAt = DateTime.MinValue;
+        _lastPausedReminderAt = DateTime.MinValue;
+        _logger.Info(armed
+            ? hasHotkey
+                ? $"检测已开启（开关热键：{options.ToggleHotkey.DisplayName}）。"
+                : "检测已开启（未录开关热键，但设置里打开了「未录热键也自动开始检测」）。"
+            : "开关热键未设置：检测保持暂停，先到插件设置里录一个键、再按一下它才开始工作"
+              + "（或者打开「未录热键也自动开始检测」，让插件页一开就工作）。");
+    }
+
+    /// <summary>
+    /// 设置页改了「未录热键也自动开始检测」之后重新评估：只有"因为没录热键而暂停"时才自动武装，
+    /// 免得把玩家用热键手动暂停的状态又打开。
+    /// </summary>
+    public void ReevaluateArming()
+    {
+        var options = Volatile.Read(ref _options);
+        if (!options.AutoArmWithoutHotkey || options.ToggleHotkey.IsConfigured || DetectionEnabled)
+            return;
+
+        Volatile.Write(ref _detectionEnabled, 1);
+        _tracker.ResetAll();
+        _logger.Info("设置里打开了「未录热键也自动开始检测」：检测已开启。");
+        DetectionStateChanged?.Invoke(true);
     }
 
     public void Start()
@@ -169,6 +195,8 @@ internal sealed class FaithNoRecoveryRunner : IDisposable
             {
                 if (DetectionEnabled && !_mapOpen)
                     ProcessOnce(options, token);
+                else
+                    RemindPausedOnce();
             }
             catch (OperationCanceledException)
             {
@@ -200,6 +228,7 @@ internal sealed class FaithNoRecoveryRunner : IDisposable
         using (frame)
         {
             WarnAboutAspectOnce(frame);
+            LogFrameInfoOnce(frame);
 
             var ringPresent = false;
             var brightSectors = 0;
@@ -211,12 +240,15 @@ internal sealed class FaithNoRecoveryRunner : IDisposable
                 ringPresent = ring.IsPresent(options.RingMinimumSectors);
             }
 
-            var hintPresent = _matcher.TryMatch(frame.Gray, options.MatchThreshold, out var hint);
+            // 不看阈值地取最佳相似度：命中不了时也要知道"最像的那一次"是多少分。
+            var hintScore = _matcher.MatchBest(frame.Gray, out var hint);
+            var hintPresent = hintScore >= options.MatchThreshold;
             var now = DateTime.UtcNow;
             var decision = _tracker.Observe(
                 options, ringPresent, hintPresent, _escMonitor.LastEscapeDownTicks, now);
 
             LogDetectionChange(options, ringPresent, brightSectors, bestContrast, hintPresent, hint, decision);
+            LogHeartbeat(options, ringPresent, brightSectors, bestContrast, hintPresent, hintScore, decision);
 
             if (!decision.ShouldSwitch)
                 return;
@@ -226,6 +258,66 @@ internal sealed class FaithNoRecoveryRunner : IDisposable
 
             PerformSwitch(frame, options, decision, token);
         }
+    }
+
+    /// <summary>
+    /// 第一次抓到帧时把客户区尺寸写进日志：识别位置全按 1920×1080 标定，
+    /// 出问题时这一行就是判断"是不是分辨率/窗口比例不对"的第一手证据。
+    /// </summary>
+    private void LogFrameInfoOnce(GrabbedFrame frame)
+    {
+        if (Interlocked.Exchange(ref _frameInfoLogged, 1) != 0)
+            return;
+
+        var width = frame.Bounds.Width;
+        var height = frame.Bounds.Height;
+        var ratio = height > 0 ? width / (double)height : 0d;
+        _logger.Info(
+            $"首帧：客户区 {width}×{height}（比例 {ratio:F3}）；"
+            + "蓄力环按高度缩放（圆心横向居中、纵向 50.3%、半径 3.7%–4.8% 高度），"
+            + "取消提示搜索区为右下角 x 70%–100% / y 52%–84%。");
+    }
+
+    /// <summary>
+    /// 诊断心跳：检测开着的时候每隔几秒写一行当前识别结果，
+    /// 这样"到底没认到环、还是没认到文案、还是压根没在蓄力"一眼就能分清。
+    /// </summary>
+    private void LogHeartbeat(
+        FaithNoRecoveryOptions options,
+        bool ringPresent,
+        int brightSectors,
+        double bestContrast,
+        bool hintPresent,
+        double hintScore,
+        FaithChargeDecision decision)
+    {
+        var seconds = Math.Clamp(options.HeartbeatSeconds, 1, 30);
+        var now = DateTime.UtcNow;
+        if (now - _lastHeartbeatAt < TimeSpan.FromSeconds(seconds))
+            return;
+
+        _lastHeartbeatAt = now;
+        _logger.Info(
+            $"心跳：蓄力环 {(ringPresent ? "在" : "无")}"
+            + $"（亮扇区 {brightSectors}/{FaithNoRecoveryOptions.RingSectorsMaximum}，"
+            + $"最高对比度 {bestContrast:F0}，判定线 {options.RingMinimumSectors} 扇区 / {options.RingContrastThreshold}）；"
+            + $"取消提示 {(hintPresent ? "在" : "无")}"
+            + $"（最佳相似度 {hintScore:P0}，阈值 {options.MatchThreshold:P0}）"
+            + (decision.Phase == FaithChargePhase.WaitingOtherCue ? "；只剩一个标志，正在等宽限" : string.Empty));
+    }
+
+    /// <summary>检测处于暂停时，每 30 秒在日志里提醒一次"为什么不动作"，免得让人以为插件坏了。</summary>
+    private void RemindPausedOnce()
+    {
+        var now = DateTime.UtcNow;
+        if (now - _lastPausedReminderAt < TimeSpan.FromSeconds(30))
+            return;
+
+        _lastPausedReminderAt = now;
+        var reason = _mapOpen
+            ? "宿主的 IDVB 地图界面正开着"
+            : "检测处于暂停（没录开关热键，或被热键暂停了）";
+        _logger.Info($"{reason}：不抓帧、不动作。");
     }
 
     /// <summary>「道具轮切」：先按「切到别的道具栏」、停一下、再按「切回原来那栏」。</summary>

@@ -20,6 +20,7 @@ public sealed record FaithNoRecoveryOptions
     public const string TimingGroupTitle = "间隔设置";
 
     public const string ToggleHotkeyKey = "toggle-hotkey";
+    public const string AutoArmKey = "auto-arm-without-hotkey";
     public const string SwitchToBindingKey = "switch-to-binding";
     public const string SwitchBackBindingKey = "switch-back-binding";
     public const string ActionDelayKey = "action-delay-ms";
@@ -113,6 +114,15 @@ public sealed record FaithNoRecoveryOptions
 
     /// <summary>切换「检测运行 / 暂停」的热键；默认「未设置」，需要用户在设置页自己录。</summary>
     public PluginInputBinding ToggleHotkey { get; init; } = new();
+
+    /// <summary>
+    /// 没录开关热键时是否也自动开启检测。默认关（按用户最初的要求「不录制就完全不动作」）；
+    /// 打开之后插件页一开就工作，热键只用来临时暂停/恢复。
+    /// </summary>
+    public bool AutoArmWithoutHotkey { get; init; }
+
+    /// <summary>诊断心跳间隔：检测开启时每隔这么久在日志里写一行当前识别结果。</summary>
+    public int HeartbeatSeconds { get; init; } = 2;
 
     /// <summary>先按的道具栏（切到别的栏）；默认 4。</summary>
     public PluginInputBinding SwitchToBinding { get; init; } =
