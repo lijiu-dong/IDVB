@@ -51,6 +51,7 @@
     <Project Path="Plugins\SceneQuickActions\IDVBuff.SceneQuickActions.csproj" />
     <Project Path="Plugins\MatchHotkeys\IDVBuff.MatchHotkeys.csproj" />
     <Project Path="Plugins\PickupEscape\IDVBuff.PickupEscape.csproj" />
+    <Project Path="Plugins\FaithNoRecovery\IDVBuff.FaithNoRecovery.csproj" />
     <Project Path="IDVBuff.PluginContracts.Tests\IDVBuff.PluginContracts.Tests.csproj" />
     <Properties Name="Visual Studio">
         <!-- Support is provisionally available on Visual Studio 17.10 and later versions. -->

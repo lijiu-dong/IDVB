@@ -102,6 +102,7 @@
         <ProjectReference Include="Plugins\SceneQuickActions\IDVBuff.SceneQuickActions.csproj" />
         <ProjectReference Include="Plugins\MatchHotkeys\IDVBuff.MatchHotkeys.csproj" />
         <ProjectReference Include="Plugins\PickupEscape\IDVBuff.PickupEscape.csproj" />
+        <ProjectReference Include="Plugins\FaithNoRecovery\IDVBuff.FaithNoRecovery.csproj" />
 
         <Content Include="Assets\SplashScreen.scale-200.png" CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Assets\LockScreenLogo.scale-200.png" CopyToOutputDirectory="PreserveNewest" />

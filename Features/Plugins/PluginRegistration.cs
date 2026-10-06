@@ -34,6 +34,11 @@ public static class PluginRegistration
         // 常驻（AlwaysActive）：热键要在局外也按得动，与「背包辅助」保持一致。
         using (StartupTimeline.Measure("Built-in construct and register: IDVBuff.Plugins.PickupEscape.PickupEscapePlugin"))
             host.Register(new IDVBuff.Plugins.PickupEscape.PickupEscapePlugin());
+        // 信仰无后摇：识别「信仰」蓄力结束（准心下的蓄力环 + 右下「点击ESC，取消操作」双双消失、
+        // 且这次蓄力期间玩家没按过 ESC）之后，用道具轮切（先切到别的道具栏、再切回原栏）顶掉后摇。
+        // 常驻（AlwaysActive）：开关热键要在局外也按得动；热键默认「未设置」，没录就不动作。
+        using (StartupTimeline.Measure("Built-in construct and register: IDVBuff.Plugins.FaithNoRecovery.FaithNoRecoveryPlugin"))
+            host.Register(new IDVBuff.Plugins.FaithNoRecovery.FaithNoRecoveryPlugin());
         // 本修改版已注销「自动加特林」（Id auto-gatling）：它的源码与工程引用仍留在
         // Plugins\AutoGatling\，只是不再登记，与上游一致（上游自 1.6.0-unstable 起就没登记它）。
         // 需要时把下面两行注释放开即可恢复。

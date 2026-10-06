@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>IDVBuff.Plugins.FaithNoRecovery</RootNamespace>
+    <AssemblyName>IDVB.FaithNoRecovery</AssemblyName>
+    <PackageId>IdentityVisionBridge.FaithNoRecovery</PackageId>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\IDVBuff.PluginContracts\IDVBuff.PluginContracts.csproj" />
+    <ProjectReference Include="..\..\IDVBuff.PluginHostMessages\IDVBuff.PluginHostMessages.csproj" />
+    <!-- IGameOverlayToast（游戏内浮层提示），与「九歌自用」用的是同一条 Core 契约。 -->
+    <ProjectReference Include="..\..\Core\IDVBuff.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- 只取托管封装；原生 OpenCvSharpExtern.dll 由主程序输出目录提供。 -->
+    <PackageReference Include="OpenCvSharp4" Version="4.13.0.20260627" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- 识别模板：「点击ESC，取消操作」文案，取自用户提供的两张 1920×1080 游戏截图。 -->
+    <EmbeddedResource Include="Templates\*.png" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- 离线探针（tools\FaithNoRecoveryProbe）要直接单测内部的识别/状态机类型。 -->
+    <InternalsVisibleTo Include="FaithNoRecoveryProbe" />
+  </ItemGroup>
+</Project>
