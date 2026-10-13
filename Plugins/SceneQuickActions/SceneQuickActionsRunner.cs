@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using IDVBuff.PluginContracts;
 
 namespace IDVBuff.Plugins.SceneQuickActions;
@@ -8,10 +9,15 @@ namespace IDVBuff.Plugins.SceneQuickActions;
 /// 线程只在插件启用期间存在；未在游戏中（dwrg.exe 不是前台窗口）时抓帧会立刻失败，
 /// 开销接近 0。
 ///
-/// 另外负责两个手动热键（默认 F5 / F6）：
+/// 另外负责三个手动热键：
+///   总开关（默认未设置）—— 按一下停用整个插件（不抓帧、不自动动作、拖拽热键也不响应），再按一下恢复；
 ///   F5 —— 把背包上排 3 格 + 中排 3 格的物品依次拖到屏幕正中心松手；
 ///   F6 —— 每按一次，把底部道具栏的下一个格子拖到屏幕正中心松手（1 → 2 → 3 → 4 循环）。
 /// 触发后一段时间内暂停「拾取相关」，免得把刚丢出来的东西又捡回去。
+///
+/// 背包状态（<see cref="SceneQuickActionsBackpackState"/>）：识别到背包开着时
+/// 「拾取相关」不动作（你要自己丢东西的时候别来抢），并且两个拖拽热键 / 接受邀请
+/// 不再多按一次 Tab 把背包关掉。
 /// </summary>
 internal sealed partial class SceneQuickActionsRunner : IDisposable
 {
@@ -25,6 +31,9 @@ internal sealed partial class SceneQuickActionsRunner : IDisposable
     private const int QuickReplaceAttempts = 3;
     private const int QuickReplaceRetryMilliseconds = 150;
     private const int WarningThrottleSeconds = 20;
+
+    /// <summary>本插件自己注入 Tab 之后，屏蔽宿主钩子送来的那次边沿的时间窗（毫秒）。</summary>
+    private const int SuppressBackpackKeyMilliseconds = 800;
 
     // —— 拖拽热键相关 ——
     private const int HotkeyDebounceMilliseconds = 400;
@@ -44,6 +53,7 @@ internal sealed partial class SceneQuickActionsRunner : IDisposable
     private readonly ISceneQuickActionsMatcher _matcher;
     private readonly ISceneQuickActionsInput _input;
     private readonly IPluginLogger _logger;
+    private readonly SceneQuickActionsBackpackState _backpack = new();
 
     private SceneQuickActionsOptions _options = new();
     private CancellationTokenSource? _cancellation;
@@ -59,12 +69,18 @@ internal sealed partial class SceneQuickActionsRunner : IDisposable
     private DateTime _lastWarningAt = DateTime.MinValue;
     private bool _disposed;
 
+    // 总开关：1 = 运行中（默认），0 = 已停用（不抓帧、不自动动作、拖拽热键也不响应）
+    private int _automaticEnabled = 1;
+
     // 热键状态（走宿主的 IPluginInputService，键盘键与鼠标键都能绑）
     private IPluginInputService? _hotkeyService;
     private int _hotkeyBusy;
     private int _hotbarCursor;
     private DateTime _lastHotkeyAt = DateTime.MinValue;
+    private DateTime _lastMasterHotkeyAt = DateTime.MinValue;
     private long _dropSilenceUntilTicks;
+    /// <summary>本插件自己注入 Tab 的时间窗截止（Stopwatch 时间戳），窗内的 Tab 边沿不计入状态机。</summary>
+    private long _suppressBackpackKeyUntilTimestamp;
 
     public SceneQuickActionsRunner(
         ISceneQuickActionsFrameGrabber grabber,
@@ -78,11 +94,56 @@ internal sealed partial class SceneQuickActionsRunner : IDisposable
         _input = input ?? SceneQuickActionsNativeInput.Instance;
     }
 
+    /// <summary>总开关热键切换后触发（true = 已启用），交给插件去发游戏内浮层提示。</summary>
+    public event Action<bool>? AutomaticStateChanged;
+
     public void SetOptions(SceneQuickActionsOptions options) =>
         Volatile.Write(ref _options, options ?? new SceneQuickActionsOptions());
 
     /// <summary>宿主地图界面打开时暂停检测：那时不可能出现这两个场景，且避免与识别流程抢抓帧。</summary>
     public void SetMapOpen(bool mapOpen) => _mapOpen = mapOpen;
+
+    /// <summary>总开关是否处于「运行中」。</summary>
+    public bool AutomaticEnabled => Volatile.Read(ref _automaticEnabled) == 1;
+
+    /// <summary>当前是否判定为「背包开着」（供探针与日志使用）。</summary>
+    public bool IsBackpackOpen => _backpack.IsOpen;
+
+    /// <summary>
+    /// 总开关热键：启用 ⇄ 停用整个插件。停用后不抓帧、不自动动作，两个拖拽热键也不响应
+    /// （只留这个总开关本身还能按回来），返回切换后的状态。
+    /// </summary>
+    public bool ToggleAutomatic()
+    {
+        var enabled = Volatile.Read(ref _automaticEnabled) == 0;
+        Volatile.Write(ref _automaticEnabled, enabled ? 1 : 0);
+        lock (_sync)
+        {
+            // 恢复时让下一帧命中就能动作，不必等上一轮的冷却。
+            _inviteReadyAt = DateTime.MinValue;
+            _pickupReadyAt = DateTime.MinValue;
+        }
+
+        _logger.Info(enabled
+            ? "总开关：已启用（识别与自动动作恢复）。"
+            : "总开关：已停用（不抓帧、不自动动作，拖拽热键也暂不响应；再按一次恢复）。");
+        return enabled;
+    }
+
+    /// <summary>插件刚启用 / 重新启用时回到「运行中」，并把背包状态清零重算。</summary>
+    public void ResetAutomatic()
+    {
+        Volatile.Write(ref _automaticEnabled, 1);
+        lock (_sync)
+        {
+            _inviteArmed = true;
+            _pickupArmed = true;
+            _inviteReadyAt = DateTime.MinValue;
+            _pickupReadyAt = DateTime.MinValue;
+        }
+
+        _backpack.Reset(DateTime.UtcNow);
+    }
 
     public void Start()
     {
@@ -101,6 +162,7 @@ internal sealed partial class SceneQuickActionsRunner : IDisposable
             };
             _worker.Start();
             _lastHotkeyAt = DateTime.MinValue;
+            _lastMasterHotkeyAt = DateTime.MinValue;
             StartHotkeys();
         }
 
@@ -169,8 +231,24 @@ internal sealed partial class SceneQuickActionsRunner : IDisposable
             var options = Volatile.Read(ref _options);
             try
             {
-                if (!_mapOpen && (options.InviteEnabled || options.PickupEnabled))
-                    ProcessOnce(options, token);
+                DrainBackpackTransitions();
+
+                var now = DateTime.UtcNow;
+                // 每轮都重新接入一次设置：判断方式改了就清零重算，最长保持也在这里兜底。
+                _backpack.Configure(options.BackpackMode, options.BackpackMaxHoldSeconds, now);
+
+                if (AutomaticEnabled && !_mapOpen)
+                {
+                    ObserveBackpackCursor(options, now);
+                    // 背包开着的时候不需要为「拾取相关」抓帧；只有「自动接受邀请」还盯着画面。
+                    if (options.InviteEnabled
+                        || (options.PickupEnabled && !_backpack.IsOpen))
+                    {
+                        ProcessOnce(options, token);
+                    }
+                }
+
+                DrainBackpackTransitions();
             }
             catch (OperationCanceledException)
             {
@@ -185,6 +263,27 @@ internal sealed partial class SceneQuickActionsRunner : IDisposable
             if (token.WaitHandle.WaitOne(TimeSpan.FromMilliseconds(interval)))
                 break;
         }
+    }
+
+    /// <summary>把背包状态的翻转写成日志（统一由工作线程输出，避免多线程抢同一个节流字段）。</summary>
+    private void DrainBackpackTransitions()
+    {
+        while (_backpack.TryTakeTransition(out var message))
+            _logger.Info(message);
+    }
+
+    /// <summary>
+    /// 采样一次「指针可见性」。只在游戏处于前台时采样：切到别的窗口时桌面指针当然可见，
+    /// 拿它当证据会把「背包已打开」误判出来。
+    /// </summary>
+    private void ObserveBackpackCursor(SceneQuickActionsOptions options, DateTime now)
+    {
+        if (options.BackpackMode == SceneQuickActionsBackpackMode.Off)
+            return;
+        if (!_input.TryGetForegroundGameWindow(out _))
+            return;
+
+        _backpack.ObserveCursor(SceneQuickActionsCursorProbe.IsCursorVisible(), now);
     }
 
     internal void ProcessOnce(SceneQuickActionsOptions options, CancellationToken token)
@@ -238,27 +337,42 @@ internal sealed partial class SceneQuickActionsRunner : IDisposable
             var now = DateTime.UtcNow;
             if (options.InviteEnabled && ProcessInviteScene(frame, options, now, token))
                 return;
-            if (options.PickupEnabled && now.Ticks >= Interlocked.Read(ref _dropSilenceUntilTicks))
+            // 背包开着的时候不拾取 —— 这时候你要自己整理 / 丢东西，别来抢。
+            if (options.PickupEnabled
+                && !_backpack.IsOpen
+                && now.Ticks >= Interlocked.Read(ref _dropSilenceUntilTicks))
+            {
                 ProcessPickupScene(frame, options, now, token);
+            }
         }
     }
 
     /// <summary>
-    /// 切出鼠标：按一次 Tab 打开背包，把系统指针切出来。
-    /// 之所以不用鼠标侧键：实测合成的侧键事件游戏不认（物理侧键正常），
-    /// 而游戏自身键位（Tab）走键盘输入路径是通的。调用方负责成对调用
-    /// <see cref="CloseBackpack"/> 把背包关掉。
+    /// 切出鼠标：**背包已经开着就什么都不按**（再按一次 Tab 会把它关掉，拖拽 / 点击就全错位了），
+    /// 否则按一次 Tab 打开背包、把系统指针切出来。之所以不用鼠标侧键：实测合成的侧键事件游戏不认
+    /// （物理侧键正常），而游戏自身键位（Tab）走键盘输入路径是通的。调用方负责成对调用
+    /// <see cref="CloseBackpack"/> 把背包关掉（只有真的按过 Tab 才需要关）。
     /// </summary>
-    private void WakeMouse(SceneQuickActionsOptions options, IntPtr windowHandle, CancellationToken token,
+    private void EnsureMouseOut(SceneQuickActionsOptions options, IntPtr windowHandle, CancellationToken token,
         ref bool wokeMouse)
     {
         EnsureCanInject(windowHandle, token);
+
+        var wait = Math.Max(options.WakeDelayMilliseconds, MinimumWakeDelayMilliseconds);
+        if (_backpack.IsOpen)
+        {
+            _logger.Info("检测到背包已经开着（指针已切出），本次不按 Tab，直接用现在的指针操作。");
+            SleepAfterStep(options, wait, token);
+            return;
+        }
+
+        SuppressBackpackKeyEdges();
         _input.InjectKey(SceneQuickActionsOptions.WakeVirtualKey, WakeHoldMilliseconds);
+        _backpack.MarkOpenedByPlugin(DateTime.UtcNow, "本插件按了 Tab 开背包（切出鼠标）");
         wokeMouse = true;
         _logger.Info("已按 Tab 打开背包切出鼠标。");
 
         // 下限 120ms：按完 Tab 背包还要一帧才真的开出来，太快移动会白动。
-        var wait = Math.Max(options.WakeDelayMilliseconds, MinimumWakeDelayMilliseconds);
         SleepAfterStep(options, wait, token);
     }
 
@@ -273,7 +387,9 @@ internal sealed partial class SceneQuickActionsRunner : IDisposable
 
         try
         {
+            SuppressBackpackKeyEdges();
             _input.InjectKey(SceneQuickActionsOptions.WakeVirtualKey, WakeHoldMilliseconds);
+            _backpack.MarkClosedByPlugin(DateTime.UtcNow, "本插件又按了一次 Tab 关背包");
             // 清理必须完成，但取消后的所有权交接无需再等待随机延迟。
             if (!token.IsCancellationRequested)
                 SleepAfterStep(options, 0, token);
@@ -284,6 +400,16 @@ internal sealed partial class SceneQuickActionsRunner : IDisposable
             _logger.Warning($"关闭背包失败：{exception.Message}");
         }
     }
+
+    /// <summary>
+    /// 屏蔽「本插件自己注入的 Tab」在宿主键盘钩子里产生的那一次边沿：否则状态机会把
+    /// 自己的开 / 关背包当成你按的，奇偶就乱了。窗口按事件时间戳判定，与投递时机无关。
+    /// （internal 是为了让离线探针能验证这个时间窗。）
+    /// </summary>
+    internal void SuppressBackpackKeyEdges() =>
+        Interlocked.Exchange(
+            ref _suppressBackpackKeyUntilTimestamp,
+            Stopwatch.GetTimestamp() + (SuppressBackpackKeyMilliseconds * Stopwatch.Frequency / 1000));
 
     private void EnsureCanInject(IntPtr windowHandle, CancellationToken token)
     {

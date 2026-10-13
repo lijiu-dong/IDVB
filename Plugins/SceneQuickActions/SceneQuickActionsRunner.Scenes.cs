@@ -36,13 +36,13 @@ internal sealed partial class SceneQuickActionsRunner
         CancellationToken token)
     {
         var (x, y) = SceneQuickActionsMatcher.ToScreen(hit.CenterX, hit.CenterY, frame.Bounds, frame.Size);
-        _logger.Info($"识别到「接受」按钮（相似度 {hit.Score:P0}），执行「按 Tab 开背包切出鼠标 → 点击接受 → 按 Tab 关背包」。");
+        _logger.Info($"识别到「接受」按钮（相似度 {hit.Score:P0}），执行「切出鼠标（背包已开着就不重复按 Tab）→ 点击接受」。");
 
         var wokeMouse = false;
         var clicked = false;
         try
         {
-            WakeMouse(options, frame.WindowHandle, token, ref wokeMouse);
+            EnsureMouseOut(options, frame.WindowHandle, token, ref wokeMouse);
             EnsureCanInject(frame.WindowHandle, token);
             _input.MoveSmoothly(x, y, MoveDurationMilliseconds, token);
             SleepAfterStep(options, PreClickDelayMilliseconds, token);
@@ -122,7 +122,7 @@ internal sealed partial class SceneQuickActionsRunner
         try
         {
             if (options.PickupWakeMouse)
-                WakeMouse(options, frame.WindowHandle, token, ref wokeMouse);
+                EnsureMouseOut(options, frame.WindowHandle, token, ref wokeMouse);
             // 第一步：拾取全部（按下配置的按键，未配置则点击提示位置）
             if (options.PickupAllBinding.IsConfigured)
             {

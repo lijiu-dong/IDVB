@@ -43,13 +43,47 @@ internal sealed partial class SceneQuickActionsRunner
 
     private void HandleHotkeyInvoked(PluginInputEventArgs args, CancellationToken token)
     {
-        if (!args.IsDown
-            || !string.Equals(args.PluginId, _pluginId, StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(args.PluginId, _pluginId, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var options = Volatile.Read(ref _options);
+
+        // 「开背包 / 切出鼠标」的按键：只用来判断背包是不是开着。
+        // 这一路不受总开关影响 —— 停用期间照样记着，恢复时才不会数错奇偶。
+        if (string.Equals(args.BindingKey, SceneQuickActionsOptions.BackpackKeyKey, StringComparison.Ordinal)
+            && options.BackpackKey.IsConfigured)
         {
+            if (!args.IsDown)
+                return;
+            // 本插件自己注入的那次 Tab 不计入（否则开 / 关背包的奇偶会被自己打乱）。
+            if (args.Timestamp < Interlocked.Read(ref _suppressBackpackKeyUntilTimestamp))
+                return;
+            _backpack.PressBackpackKey(DateTime.UtcNow);
             return;
         }
 
-        var options = Volatile.Read(ref _options);
+        if (!args.IsDown)
+            return;
+
+        // 总开关热键：启用 ⇄ 停用（优先级高于其它热键，停用后还能按它回来）。
+        if (options.MasterHotkey.IsConfigured
+            && string.Equals(args.BindingKey, SceneQuickActionsOptions.MasterHotkeyKey, StringComparison.Ordinal))
+        {
+            var masterPressedAt = DateTime.UtcNow;
+            if (masterPressedAt < _lastMasterHotkeyAt.AddMilliseconds(HotkeyDebounceMilliseconds))
+                return;
+            _lastMasterHotkeyAt = masterPressedAt;
+            var enabled = ToggleAutomatic();
+            AutomaticStateChanged?.Invoke(enabled);
+            return;
+        }
+
+        if (!AutomaticEnabled)
+        {
+            LogThrottled("插件已停用（总开关），本次不响应拖拽热键；按总开关热键再按一次即可恢复。");
+            return;
+        }
+
         var isBag = options.DropBagHotkey.IsConfigured
             && string.Equals(args.BindingKey, SceneQuickActionsOptions.DropBagHotkeyKey, StringComparison.Ordinal);
         var isHotbar = options.DropHotbarHotkey.IsConfigured
@@ -90,8 +124,8 @@ internal sealed partial class SceneQuickActionsRunner
             {
                 work = BuildBagDropWork();
                 _logger.Info(
-                    $"热键「丢光背包」触发：先按 Tab 开背包，再依次拖 {work.Length} 格到屏幕中心；"
-                    + $"「拾取相关」暂停 {silence} 秒。");
+                    $"热键「丢光背包」触发：切出鼠标（背包已经开着就直接用，不重复按 Tab），"
+                    + $"再依次拖 {work.Length} 格到屏幕中心；「拾取相关」暂停 {silence} 秒。");
             }
             else
             {
@@ -100,7 +134,7 @@ internal sealed partial class SceneQuickActionsRunner
                 work = BuildHotbarDropWork(ref cursor);
                 Volatile.Write(ref _hotbarCursor, cursor);
                 _logger.Info(
-                    $"热键「逐个丢道具栏」触发：{work[0]}（先切出鼠标）；"
+                    $"热键「逐个丢道具栏」触发：{work[0]}（切出鼠标，背包已经开着就直接用）；"
                     + $"「拾取相关」暂停 {silence} 秒。");
             }
 
@@ -149,6 +183,8 @@ internal sealed partial class SceneQuickActionsRunner
                 return;
 
             var options = Volatile.Read(ref _options);
+            _hotkeyService.SetBinding(_pluginId, SceneQuickActionsOptions.MasterHotkeyKey, options.MasterHotkey);
+            _hotkeyService.SetBinding(_pluginId, SceneQuickActionsOptions.BackpackKeyKey, options.BackpackKey);
             _hotkeyService.SetBinding(_pluginId, SceneQuickActionsOptions.DropBagHotkeyKey, options.DropBagHotkey);
             _hotkeyService.SetBinding(_pluginId, SceneQuickActionsOptions.DropHotbarHotkeyKey, options.DropHotbarHotkey);
             // 宿主事件使用 Stopwatch 时间戳，可能仍在 UI 队列中等待分发。
@@ -156,6 +192,16 @@ internal sealed partial class SceneQuickActionsRunner
             _logger.Info(
                 $"热键已注册：丢光背包 {options.DropBagHotkey.DisplayName}，"
                 + $"逐个丢道具栏 {options.DropHotbarHotkey.DisplayName}。");
+            _logger.Info(options.MasterHotkey.IsConfigured
+                ? $"总开关热键已注册：{options.MasterHotkey.DisplayName}（按一下停用整个插件，再按一下恢复）。"
+                : "总开关热键尚未设置（去插件设置里录一个键，就能随时停用/启用整个插件）。");
+            if (options.BackpackMode != SceneQuickActionsBackpackMode.Off)
+            {
+                _logger.Info(
+                    $"背包判断：{SceneQuickActionsOptions.ToBackpackModeOption(options.BackpackMode)}"
+                    + $"（「{options.BackpackKey.DisplayName}」开背包时视为背包打开；"
+                    + $"最多保持 {options.BackpackMaxHoldSeconds} 秒）。");
+            }
         }
     }
 
@@ -253,18 +299,10 @@ internal sealed partial class SceneQuickActionsRunner
         }
     }
 
-    /// <summary>拖拽前切出鼠标：按一次 Tab 打开背包，等指针真正出现。</summary>
+    /// <summary>拖拽前切出鼠标：背包已经开着就不重复按 Tab（再按会把它关掉），否则按一次 Tab 开背包。</summary>
     private void WakeMouseForDrop(IntPtr window, SceneQuickActionsOptions options,
-        CancellationToken token, ref bool wokeMouse)
-    {
-        EnsureCanInject(window, token);
-        _input.InjectKey(SceneQuickActionsOptions.WakeVirtualKey, WakeHoldMilliseconds);
-        wokeMouse = true;
-        _logger.Info("已按 Tab 打开背包切出鼠标（准备拖拽）。");
-
-        var wait = Math.Max(options.WakeDelayMilliseconds, MinimumWakeDelayMilliseconds);
-        SleepAfterStep(options, wait, token);
-    }
+        CancellationToken token, ref bool wokeMouse) =>
+        EnsureMouseOut(options, window, token, ref wokeMouse);
 
     /// <summary>按一次左键拖拽：移动 → 按下 → 缓动到目标 → 松手。快慢由 timing 决定。</summary>
     private void DragOnce(

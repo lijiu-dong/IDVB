@@ -1,3 +1,4 @@
+using IDVBuff.Core.Contracts;
 using IDVBuff.PluginContracts;
 using IDVBuff.PluginHostMessages;
 
@@ -13,12 +14,17 @@ namespace IDVBuff.Plugins.SceneQuickActions;
 ///
 /// 识别方式是对宿主抓到的客户区画面做多尺度模板匹配，模板来自用户提供的
 /// 1920×1080 游戏截图；命中后才注入输入，注入前会再次确认游戏仍在前台。
+///
+/// 两条「别打扰我」的护栏：
+///   ① 背包（鼠标切出）状态 —— 你自己按 Tab 开背包整理 / 丢东西时，
+///      「拾取相关」不动作；两个拖拽热键也不再重复按 Tab 把背包关掉；
+///   ② 总开关热键 —— 按一下停用整个插件（不抓帧、不自动动作、热键也不响应），再按一下恢复。
 /// </summary>
 [Plugin(
     "scene-quick-actions",
     DisplayName = "背包辅助",
-    Description = "自动识别「邀请你牵手」与「可拾取」两个界面，执行接受邀请、拾取全部、快捷替换。",
-    Version = "1.7.0",
+    Description = "自动识别「邀请你牵手」与「可拾取」两个界面，执行接受邀请、拾取全部、快捷替换；背包开着时不拾取，另带总开关热键。",
+    Version = "1.8.0",
     AlwaysActive = true)]
 public sealed class SceneQuickActionsPlugin
     : PluginBase, IPluginSettingsProvider, IHandle<SessionStateChangedMessage>
@@ -26,6 +32,7 @@ public sealed class SceneQuickActionsPlugin
     private SceneQuickActionsMatcher? _matcher;
     private SceneQuickActionsRunner? _runner;
     private SceneQuickActionsOptions _options = new();
+    private IGameOverlayToast? _toast;
     private bool _enabled;
 
     public override string Id => "scene-quick-actions";
@@ -45,14 +52,22 @@ public sealed class SceneQuickActionsPlugin
         {
             Key = SceneQuickActionsOptions.PickupEnabledKey,
             DisplayName = "拾取相关",
-            Description = "识别到「可拾取」面板时，先「拾取全部」，再「快捷替换」。",
+            Description = "识别到「可拾取」面板时，先「拾取全部」，再「快捷替换」。背包开着的时候这一项不动作。",
             DefaultValue = true
+        },
+        new PluginKeyBindingSetting
+        {
+            Key = SceneQuickActionsOptions.MasterHotkeyKey,
+            DisplayName = "总开关 · 热键（键盘键或鼠标键）",
+            Description = "按一下停用整个插件（不抓帧、不自动动作，两个拖拽热键也暂不响应），再按一下恢复；默认「未设置」，点右边按钮录一个键即可（不支持组合键）。",
+            DefaultValue = SceneQuickActionsOptions.NoBindingStorageValue,
+            AllowedKinds = PluginInputBindingKinds.All
         },
         new PluginKeyBindingSetting
         {
             Key = SceneQuickActionsOptions.DropBagHotkeyKey,
             DisplayName = "丢光背包 · 热键（键盘键或鼠标键）",
-            Description = "按下后先按 Tab 开背包切出鼠标，再把上排 3 格、中排 3 格依次拖到屏幕正中心松手，最后按 Tab 关背包。点右边按钮即可录制新键；不支持组合键。",
+            Description = "按下后先切出鼠标（背包已经开着就直接用，不重复按 Tab），再把上排 3 格、中排 3 格依次拖到屏幕正中心松手。点右边按钮即可录制新键；不支持组合键。",
             DefaultValue = PluginInputBinding.Keyboard(SceneQuickActionsOptions.DefaultDropBagVirtualKey).StorageValue,
             AllowedKinds = PluginInputBindingKinds.All
         },
@@ -89,6 +104,35 @@ public sealed class SceneQuickActionsPlugin
             Description = "两步都用按键时不需要。打开后同样用「按 Tab 开背包」切出指针，动作完自动按 Tab 关上。",
             Group = SceneQuickActionsOptions.KeyGroupTitle,
             DefaultValue = false
+        },
+        new PluginKeyBindingSetting
+        {
+            Key = SceneQuickActionsOptions.BackpackKeyKey,
+            DisplayName = "开背包 / 切出鼠标 · 按键",
+            Description = "游戏里打开背包、把鼠标指针切出来的那颗键（默认 Tab）。本插件用它判断「背包是不是开着」：开着的时候不拾取，拖拽也不再重复按 Tab。",
+            Group = SceneQuickActionsOptions.BackpackGroupTitle,
+            DefaultValue = PluginInputBinding.Keyboard(SceneQuickActionsOptions.DefaultBackpackVirtualKey).StorageValue,
+            AllowedKinds = PluginInputBindingKinds.All
+        },
+        new PluginChoiceSetting
+        {
+            Key = SceneQuickActionsOptions.BackpackModeKey,
+            DisplayName = "背包打开时怎么判断",
+            Description = "「按开背包键判断」= 按上面那颗键算打开、再按一次算关闭；「按键 + 指针」= 游戏切出鼠标指针也算打开（更保守，但如果你平时也能看到指针就别用）；「关」= 不做这个判断。",
+            Group = SceneQuickActionsOptions.BackpackGroupTitle,
+            Options = [.. SceneQuickActionsOptions.BackpackModeOptions],
+            DefaultIndex = 0
+        },
+        new PluginSliderSetting
+        {
+            Key = SceneQuickActionsOptions.BackpackMaxHoldKey,
+            DisplayName = "背包打开状态最长保持（秒）",
+            Description = "背包状态一直停在「打开」且这么久没有任何新证据（没按 Tab、指针也没切出）时自动解除，免得漏了一次按键就再也不拾取。",
+            Group = SceneQuickActionsOptions.BackpackGroupTitle,
+            Minimum = SceneQuickActionsOptions.BackpackMaxHoldMinimum,
+            Maximum = SceneQuickActionsOptions.BackpackMaxHoldMaximum,
+            StepFrequency = 10,
+            DefaultValue = 120
         },
         new PluginSliderSetting
         {
@@ -218,7 +262,12 @@ public sealed class SceneQuickActionsPlugin
             screenshot,
             gameWindow,
             message => context.Logger.Info(message));
+        _toast = context.GetService<IGameOverlayToast>();
+        if (_toast is null)
+            context.Logger.Warning("宿主没有提供浮层提示通道，切换总开关时屏幕上不会有提示（功能不受影响）。");
+
         _runner = new SceneQuickActionsRunner(grabber, _matcher, context.Logger);
+        _runner.AutomaticStateChanged += OnAutomaticStateChanged;
         _runner.AttachHotkeys(
             context.GetService<IPluginInputService>(),
             Id);
@@ -235,13 +284,21 @@ public sealed class SceneQuickActionsPlugin
         }
 
         _runner.SetOptions(_options);
+        _runner.ResetAutomatic();
         _runner.Start();
+
+        var backpackText = _options.BackpackMode == SceneQuickActionsBackpackMode.Off
+            ? "背包判断 关（不做背包判断）"
+            : "背包判断 " + SceneQuickActionsOptions.ToBackpackModeOption(_options.BackpackMode)
+              + $"（「{_options.BackpackKey.DisplayName}」开背包算打开，最长保持 {_options.BackpackMaxHoldSeconds} 秒）";
         Context.Logger.Info(
             $"参数：检测间隔 {_options.PollIntervalMilliseconds}ms，阈值 {_options.MatchThresholdPercent}%，"
             + $"自动接受邀请 {(_options.InviteEnabled ? "开" : "关")}，拾取相关 {(_options.PickupEnabled ? "开" : "关")}；"
-            + "切出鼠标 按 Tab 开背包（动作完再按 Tab 关上）；"
+            + "切出鼠标 按 Tab 开背包（背包已经开着就直接用）；"
             + $"拾取全部 {_options.PickupAllBinding.DisplayName}，"
-            + $"快捷替换 {_options.QuickReplaceBinding.DisplayName}。");
+            + $"快捷替换 {_options.QuickReplaceBinding.DisplayName}；"
+            + $"总开关热键 {(_options.MasterHotkey.IsConfigured ? _options.MasterHotkey.DisplayName : "未设置")}；"
+            + backpackText + "。");
     }
 
     public override void OnDisable()
@@ -253,10 +310,28 @@ public sealed class SceneQuickActionsPlugin
     public override void OnUnload()
     {
         _enabled = false;
+        if (_runner is not null)
+            _runner.AutomaticStateChanged -= OnAutomaticStateChanged;
         _runner?.Dispose();
         _runner = null;
         _matcher?.Dispose();
         _matcher = null;
+    }
+
+    /// <summary>热键换了总开关：屏幕上来一条游戏内提示，避免「按下去像没反应」。</summary>
+    private void OnAutomaticStateChanged(bool enabled)
+    {
+        try
+        {
+            if (enabled)
+                _toast?.Notice("背包辅助：已启用");
+            else
+                _toast?.Warning("背包辅助：已停用");
+        }
+        catch (Exception exception)
+        {
+            Context.Logger.Warning($"发布浮层提示失败：{exception.Message}");
+        }
     }
 
     /// <summary>热键键位在设置页改动后，重新注册到宿主输入通道。</summary>
@@ -270,6 +345,11 @@ public sealed class SceneQuickActionsPlugin
         SceneQuickActionsOptions.InviteEnabledKey => _options.InviteEnabled,
         SceneQuickActionsOptions.WakeDelayKey => (double)_options.WakeDelayMilliseconds,
         SceneQuickActionsOptions.PickupEnabledKey => _options.PickupEnabled,
+        SceneQuickActionsOptions.MasterHotkeyKey => _options.MasterHotkey.StorageValue,
+        SceneQuickActionsOptions.BackpackKeyKey => _options.BackpackKey.StorageValue,
+        SceneQuickActionsOptions.BackpackModeKey =>
+            SceneQuickActionsOptions.ToBackpackModeOption(_options.BackpackMode),
+        SceneQuickActionsOptions.BackpackMaxHoldKey => (double)_options.BackpackMaxHoldSeconds,
         SceneQuickActionsOptions.PickupAllBindingKey => _options.PickupAllBinding.StorageValue,
         SceneQuickActionsOptions.QuickReplaceBindingKey => _options.QuickReplaceBinding.StorageValue,
         SceneQuickActionsOptions.BetweenClicksKey => (double)_options.BetweenClicksMilliseconds,
@@ -318,6 +398,30 @@ public sealed class SceneQuickActionsPlugin
                 };
             case SceneQuickActionsOptions.PickupEnabledKey when value is bool pickupEnabled:
                 return _options with { PickupEnabled = pickupEnabled };
+            case SceneQuickActionsOptions.MasterHotkeyKey when value is string masterHotkey:
+                // 「none」= 用户点了重置：允许把热键清成「未设置」，之后不再注册任何绑定。
+                if (string.Equals(masterHotkey, SceneQuickActionsOptions.NoBindingStorageValue, StringComparison.Ordinal))
+                    return _options with { MasterHotkey = new PluginInputBinding() };
+                return TryParseHotkey(masterHotkey, out var parsedMaster)
+                    ? _options with { MasterHotkey = parsedMaster }
+                    : _options;
+            case SceneQuickActionsOptions.BackpackKeyKey when value is string backpackKey:
+                if (string.Equals(backpackKey, SceneQuickActionsOptions.NoBindingStorageValue, StringComparison.Ordinal))
+                    return _options with { BackpackKey = new PluginInputBinding() };
+                return TryParseBinding(backpackKey, out var parsedBackpack)
+                    ? _options with { BackpackKey = parsedBackpack }
+                    : _options;
+            case SceneQuickActionsOptions.BackpackModeKey when value is string backpackMode:
+                return _options with { BackpackMode = SceneQuickActionsOptions.ParseBackpackMode(backpackMode) };
+            case SceneQuickActionsOptions.BackpackMaxHoldKey:
+                return _options with
+                {
+                    BackpackMaxHoldSeconds = SceneQuickActionsOptions.FromDouble(
+                        value,
+                        _options.BackpackMaxHoldSeconds,
+                        SceneQuickActionsOptions.BackpackMaxHoldMinimum,
+                        SceneQuickActionsOptions.BackpackMaxHoldMaximum)
+                };
             case SceneQuickActionsOptions.PickupAllBindingKey when value is string pickupBinding:
                 return TryParseBinding(pickupBinding, out var parsedPickup)
                     ? _options with { PickupAllBinding = parsedPickup }

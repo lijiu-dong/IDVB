@@ -9,8 +9,11 @@
   </PropertyGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="IDVBuff.PluginContracts.Tests" />
+    <InternalsVisibleTo Include="BagAssistProbe" />
     <ProjectReference Include="..\..\IDVBuff.PluginContracts\IDVBuff.PluginContracts.csproj" />
     <ProjectReference Include="..\..\IDVBuff.PluginHostMessages\IDVBuff.PluginHostMessages.csproj" />
+    <!-- IGameOverlayToast（游戏内浮层提示）：总开关热键切换时给一条提示，与「九歌自用」同一条 Core 契约。 -->
+    <ProjectReference Include="..\..\Core\IDVBuff.Core.csproj" />
   </ItemGroup>
   <ItemGroup>
     <!-- 只取托管封装；原生 OpenCvSharpExtern.dll 由主程序输出目录提供。 -->

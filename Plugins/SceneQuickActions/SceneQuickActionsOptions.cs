@@ -15,11 +15,54 @@ public sealed record SceneQuickActionsOptions
     /// <summary>设置页里「配置按键」可折叠区的标题。</summary>
     public const string KeyGroupTitle = "配置按键";
 
+    /// <summary>设置页里「背包检测」可折叠区的标题。</summary>
+    public const string BackpackGroupTitle = "背包检测";
+
     /// <summary>设置页里「间隔设置」可折叠区的标题。</summary>
     public const string TimingGroupTitle = "间隔设置";
 
     /// <summary>「切出鼠标」固定用的键：Tab（打开 / 关闭背包）。</summary>
     public const uint WakeVirtualKey = 0x09;
+
+    /// <summary>「开背包 / 切出鼠标」按键的默认值：Tab。</summary>
+    public const uint DefaultBackpackVirtualKey = WakeVirtualKey;
+
+    /// <summary>「总开关」热键的键位键名（默认「未设置」）。</summary>
+    public const string MasterHotkeyKey = "master-hotkey";
+
+    /// <summary>「开背包 / 切出鼠标」按键的键名；用来判断背包是不是开着。</summary>
+    public const string BackpackKeyKey = "backpack-key";
+
+    /// <summary>背包判断方式的键名（下拉框）。</summary>
+    public const string BackpackModeKey = "backpack-detect-mode";
+
+    /// <summary>「打开状态最长保持」秒数的键名（兜底释放）。</summary>
+    public const string BackpackMaxHoldKey = "backpack-max-hold-seconds";
+
+    /// <summary>背包判断方式下拉框的选项文案。</summary>
+    public static IReadOnlyList<string> BackpackModeOptions { get; } =
+        ["按「开背包键」判断（推荐）", "按键 + 指针（更保守）", "关（不判断背包）"];
+
+    /// <summary>把设置页存下来的文案还原成枚举；不认得的退回「按开背包键判断」。</summary>
+    public static SceneQuickActionsBackpackMode ParseBackpackMode(string? option)
+    {
+        var index = BackpackModeOptions
+            .ToList()
+            .FindIndex(candidate => string.Equals(candidate, option, StringComparison.Ordinal));
+        return index switch
+        {
+            1 => SceneQuickActionsBackpackMode.KeyAndCursor,
+            2 => SceneQuickActionsBackpackMode.Off,
+            _ => SceneQuickActionsBackpackMode.KeyOnly
+        };
+    }
+
+    public static string ToBackpackModeOption(SceneQuickActionsBackpackMode mode) =>
+        BackpackModeOptions[Math.Clamp((int)mode, 0, BackpackModeOptions.Count - 1)];
+
+    /// <summary>「打开状态最长保持」秒数的范围。</summary>
+    public const int BackpackMaxHoldMinimum = 10;
+    public const int BackpackMaxHoldMaximum = 600;
 
     /// <summary>「丢光背包」热键默认值：F5。</summary>
     public const uint DefaultDropBagVirtualKey = 0x74;
@@ -112,6 +155,20 @@ public sealed record SceneQuickActionsOptions
 
     /// <summary>自动接受邀请：识别到「邀请你牵手」的接受按钮时自动点「接受」。</summary>
     public bool InviteEnabled { get; init; } = true;
+
+    /// <summary>总开关热键（默认「未设置」）：按一下停用整个插件，再按一下恢复。</summary>
+    public PluginInputBinding MasterHotkey { get; init; } = new();
+
+    /// <summary>游戏里「开背包 / 切出鼠标」的按键（默认 Tab），用来判断背包是不是开着。</summary>
+    public PluginInputBinding BackpackKey { get; init; } =
+        PluginInputBinding.Keyboard(DefaultBackpackVirtualKey);
+
+    /// <summary>背包判断方式。</summary>
+    public SceneQuickActionsBackpackMode BackpackMode { get; init; } =
+        SceneQuickActionsBackpackMode.KeyOnly;
+
+    /// <summary>「打开」状态的最长保持秒数：这段时间里没有任何新证据就自动解除，免得一直不拾取。</summary>
+    public int BackpackMaxHoldSeconds { get; init; } = 120;
 
     /// <summary>切出鼠标后、移动指针前的等待时间。</summary>
     public int WakeDelayMilliseconds { get; init; } = 150;
