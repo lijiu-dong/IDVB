@@ -92,6 +92,33 @@ internal sealed partial class SceneQuickActionsRunner : IDisposable
         _matcher = matcher ?? throw new ArgumentNullException(nameof(matcher));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _input = input ?? SceneQuickActionsNativeInput.Instance;
+        _backpack.OpenChanged += OnBackpackOpenChanged;
+    }
+
+    /// <summary>
+    /// 背包刚被关掉：给「拾取相关」一段宽限（默认 5 秒，可设 0 关掉）。
+    /// 你手动丢东西的流程是「按 Tab 开背包 → 把东西拖出去 → 按 Tab 关背包」，
+    /// 刚丢出去的东西可能立刻出现在「可拾取」面板里 —— 不给宽限就会被插件捡回去。
+    /// 只会**往后延**已有的暂停（F5/F6 那条「丢东西后暂停拾取」默认 30 秒，更长时不会被缩短）。
+    /// </summary>
+    private void OnBackpackOpenChanged(bool open)
+    {
+        if (open)
+            return;
+
+        var grace = Math.Clamp(
+            Volatile.Read(ref _options).BackpackCloseGraceSeconds,
+            SceneQuickActionsOptions.BackpackCloseGraceMinimum,
+            SceneQuickActionsOptions.BackpackCloseGraceMaximum);
+        if (grace <= 0)
+            return;
+
+        var until = DateTime.UtcNow.AddSeconds(grace).Ticks;
+        Interlocked.Exchange(
+            ref _dropSilenceUntilTicks,
+            Math.Max(until, Interlocked.Read(ref _dropSilenceUntilTicks)));
+        _logger.Info(
+            $"刚关掉背包：「拾取相关」接下来 {grace} 秒内不动作（免得把你刚丢出来的东西又捡回去）。");
     }
 
     /// <summary>总开关热键切换后触发（true = 已启用），交给插件去发游戏内浮层提示。</summary>
@@ -226,6 +253,7 @@ internal sealed partial class SceneQuickActionsRunner : IDisposable
         Stop();
         lock (_sync)
             _hotkeyService = null;
+        _backpack.OpenChanged -= OnBackpackOpenChanged;
     }
 
     private void Run(CancellationToken token)

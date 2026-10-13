@@ -39,6 +39,13 @@ public sealed record SceneQuickActionsOptions
     /// <summary>「打开状态最长保持」秒数的键名（兜底释放）。</summary>
     public const string BackpackMaxHoldKey = "backpack-max-hold-seconds";
 
+    /// <summary>「关掉背包后再宽限几秒不拾取」的键名。</summary>
+    public const string BackpackCloseGraceKey = "backpack-close-grace-seconds";
+
+    /// <summary>「关掉背包后再宽限几秒」的范围（0 = 不做这件事）。</summary>
+    public const int BackpackCloseGraceMinimum = 0;
+    public const int BackpackCloseGraceMaximum = 60;
+
     /// <summary>背包判断方式下拉框的选项文案。</summary>
     public static IReadOnlyList<string> BackpackModeOptions { get; } =
         ["按「开背包键」判断（推荐）", "按键 + 指针（更保守）", "关（不判断背包）"];
@@ -169,6 +176,13 @@ public sealed record SceneQuickActionsOptions
 
     /// <summary>「打开」状态的最长保持秒数：这段时间里没有任何新证据就自动解除，免得一直不拾取。</summary>
     public int BackpackMaxHoldSeconds { get; init; } = 120;
+
+    /// <summary>
+    /// 背包从「打开」翻回「关闭」之后的宽限秒数：这段时间内「拾取相关」仍然不动作。
+    /// 你手动丢东西的时候是「开着背包拖出去 → 关上背包」，刚丢出去的东西可能立刻出现在
+    /// 「可拾取」面板里，不给点宽限就会被自己捡回去。0 = 不做这件事。
+    /// </summary>
+    public int BackpackCloseGraceSeconds { get; init; } = 5;
 
     /// <summary>切出鼠标后、移动指针前的等待时间。</summary>
     public int WakeDelayMilliseconds { get; init; } = 150;

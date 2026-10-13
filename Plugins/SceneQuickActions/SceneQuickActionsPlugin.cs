@@ -17,14 +17,15 @@ namespace IDVBuff.Plugins.SceneQuickActions;
 ///
 /// 两条「别打扰我」的护栏：
 ///   ① 背包（鼠标切出）状态 —— 你自己按 Tab 开背包整理 / 丢东西时，
-///      「拾取相关」不动作；两个拖拽热键也不再重复按 Tab 把背包关掉；
+///      「拾取相关」不动作；刚关掉背包后的几秒（可调）也继续不动作，
+///      免得把你刚拖出去丢的东西又捡回来；两个拖拽热键也不再重复按 Tab 把背包关掉；
 ///   ② 总开关热键 —— 按一下停用整个插件（不抓帧、不自动动作、热键也不响应），再按一下恢复。
 /// </summary>
 [Plugin(
     "scene-quick-actions",
     DisplayName = "背包辅助",
     Description = "自动识别「邀请你牵手」与「可拾取」两个界面，执行接受邀请、拾取全部、快捷替换；背包开着时不拾取，另带总开关热键。",
-    Version = "1.8.0",
+    Version = "1.8.1",
     AlwaysActive = true)]
 public sealed class SceneQuickActionsPlugin
     : PluginBase, IPluginSettingsProvider, IHandle<SessionStateChangedMessage>
@@ -133,6 +134,17 @@ public sealed class SceneQuickActionsPlugin
             Maximum = SceneQuickActionsOptions.BackpackMaxHoldMaximum,
             StepFrequency = 10,
             DefaultValue = 120
+        },
+        new PluginSliderSetting
+        {
+            Key = SceneQuickActionsOptions.BackpackCloseGraceKey,
+            DisplayName = "关掉背包后再宽限（秒）",
+            Description = "你按 Tab 关背包之后的这么多秒里，「拾取相关」仍然不动作 —— 免得把你刚拖出去丢掉的东西又立刻捡回来。0 = 不做这件事。",
+            Group = SceneQuickActionsOptions.BackpackGroupTitle,
+            Minimum = SceneQuickActionsOptions.BackpackCloseGraceMinimum,
+            Maximum = SceneQuickActionsOptions.BackpackCloseGraceMaximum,
+            StepFrequency = 1,
+            DefaultValue = 5
         },
         new PluginSliderSetting
         {
@@ -290,7 +302,8 @@ public sealed class SceneQuickActionsPlugin
         var backpackText = _options.BackpackMode == SceneQuickActionsBackpackMode.Off
             ? "背包判断 关（不做背包判断）"
             : "背包判断 " + SceneQuickActionsOptions.ToBackpackModeOption(_options.BackpackMode)
-              + $"（「{_options.BackpackKey.DisplayName}」开背包算打开，最长保持 {_options.BackpackMaxHoldSeconds} 秒）";
+              + $"（「{_options.BackpackKey.DisplayName}」开背包算打开，最长保持 {_options.BackpackMaxHoldSeconds} 秒，"
+              + $"关背包后再宽限 {_options.BackpackCloseGraceSeconds} 秒）";
         Context.Logger.Info(
             $"参数：检测间隔 {_options.PollIntervalMilliseconds}ms，阈值 {_options.MatchThresholdPercent}%，"
             + $"自动接受邀请 {(_options.InviteEnabled ? "开" : "关")}，拾取相关 {(_options.PickupEnabled ? "开" : "关")}；"
@@ -350,6 +363,7 @@ public sealed class SceneQuickActionsPlugin
         SceneQuickActionsOptions.BackpackModeKey =>
             SceneQuickActionsOptions.ToBackpackModeOption(_options.BackpackMode),
         SceneQuickActionsOptions.BackpackMaxHoldKey => (double)_options.BackpackMaxHoldSeconds,
+        SceneQuickActionsOptions.BackpackCloseGraceKey => (double)_options.BackpackCloseGraceSeconds,
         SceneQuickActionsOptions.PickupAllBindingKey => _options.PickupAllBinding.StorageValue,
         SceneQuickActionsOptions.QuickReplaceBindingKey => _options.QuickReplaceBinding.StorageValue,
         SceneQuickActionsOptions.BetweenClicksKey => (double)_options.BetweenClicksMilliseconds,
@@ -421,6 +435,15 @@ public sealed class SceneQuickActionsPlugin
                         _options.BackpackMaxHoldSeconds,
                         SceneQuickActionsOptions.BackpackMaxHoldMinimum,
                         SceneQuickActionsOptions.BackpackMaxHoldMaximum)
+                };
+            case SceneQuickActionsOptions.BackpackCloseGraceKey:
+                return _options with
+                {
+                    BackpackCloseGraceSeconds = SceneQuickActionsOptions.FromDouble(
+                        value,
+                        _options.BackpackCloseGraceSeconds,
+                        SceneQuickActionsOptions.BackpackCloseGraceMinimum,
+                        SceneQuickActionsOptions.BackpackCloseGraceMaximum)
                 };
             case SceneQuickActionsOptions.PickupAllBindingKey when value is string pickupBinding:
                 return TryParseBinding(pickupBinding, out var parsedPickup)

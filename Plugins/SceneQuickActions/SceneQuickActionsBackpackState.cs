@@ -52,6 +52,9 @@ internal sealed class SceneQuickActionsBackpackState
     private DateTime _lastEvidenceAt = DateTime.MinValue;
     private string _reason = "插件启动，从「背包已关闭」重新开始";
 
+    /// <summary>状态翻转（true = 打开）时触发，供 runner 挂「刚关背包后别急着捡」之类的反应。</summary>
+    internal event Action<bool>? OpenChanged;
+
     internal bool IsOpen
     {
         get
@@ -115,6 +118,7 @@ internal sealed class SceneQuickActionsBackpackState
     /// </summary>
     internal void Configure(SceneQuickActionsBackpackMode mode, int maxHoldSeconds, DateTime now)
     {
+        bool? flipped;
         lock (_sync)
         {
             if (mode != _mode)
@@ -135,50 +139,62 @@ internal sealed class SceneQuickActionsBackpackState
             }
 
             _maxHoldSeconds = Math.Max(0, maxHoldSeconds);
-            Recompute(now);
+            flipped = Recompute(now);
         }
+
+        RaiseIfFlipped(flipped);
     }
 
     /// <summary>「开背包键」（默认 Tab）被按下：打开 / 关闭交替。</summary>
     internal void PressBackpackKey(DateTime now)
     {
+        bool? flipped;
         lock (_sync)
         {
             _keyOpen = !_keyOpen;
             _lastEvidenceAt = now;
             _reason = _keyOpen ? "按下了「开背包键」" : "又按了一次「开背包键」";
-            Recompute(now);
+            flipped = Recompute(now);
         }
+
+        RaiseIfFlipped(flipped);
     }
 
     /// <summary>本插件自己按了 Tab 开背包（切出鼠标）——直接记为打开，不参与奇偶计数。</summary>
     internal void MarkOpenedByPlugin(DateTime now, string reason)
     {
+        bool? flipped;
         lock (_sync)
         {
             _keyOpen = true;
             _lastEvidenceAt = now;
             _reason = reason;
-            Recompute(now);
+            flipped = Recompute(now);
         }
+
+        RaiseIfFlipped(flipped);
     }
 
     /// <summary>本插件自己按了 Tab 关背包——直接记为关闭。</summary>
     internal void MarkClosedByPlugin(DateTime now, string reason)
     {
+        bool? flipped;
         lock (_sync)
         {
             _keyOpen = false;
             _cursorOpen = false;
             _lastEvidenceAt = now;
             _reason = reason;
-            Recompute(now);
+            flipped = Recompute(now);
         }
+
+        RaiseIfFlipped(flipped);
     }
 
     /// <summary>采样一次「指针可见性」。只在游戏处于前台时才有意义（切出去时桌面指针当然可见）。</summary>
     internal void ObserveCursor(bool visible, DateTime now)
     {
+        bool? flipped;
         lock (_sync)
         {
             _cursorVisible = visible;
@@ -223,8 +239,16 @@ internal sealed class SceneQuickActionsBackpackState
                 }
             }
 
-            Recompute(now);
+            flipped = Recompute(now);
         }
+
+        RaiseIfFlipped(flipped);
+    }
+
+    private void RaiseIfFlipped(bool? flipped)
+    {
+        if (flipped is { } open)
+            OpenChanged?.Invoke(open);
     }
 
     /// <summary>状态翻转时排队一条人话日志（由 runner 在工作线程里统一取走打印）。</summary>
@@ -244,7 +268,8 @@ internal sealed class SceneQuickActionsBackpackState
     }
 
     /// <summary>把「原始证据」按当前判断方式折算成「背包是否打开」，并记录翻转。</summary>
-    private void Recompute(DateTime now)
+    /// <returns>状态翻转时返回新的状态；没有翻转返回 <c>null</c>（调用方据此决定要不要发事件）。</returns>
+    private bool? Recompute(DateTime now)
     {
         var open = _mode switch
         {
@@ -265,7 +290,7 @@ internal sealed class SceneQuickActionsBackpackState
         }
 
         if (open == _open)
-            return;
+            return null;
 
         _open = open;
         if (open)
@@ -277,5 +302,7 @@ internal sealed class SceneQuickActionsBackpackState
         {
             _transitions.Enqueue($"背包已关闭（依据：{_reason}）：恢复「拾取相关」。");
         }
+
+        return open;
     }
 }
