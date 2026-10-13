@@ -130,7 +130,11 @@ internal sealed partial class SceneQuickActionsRunner : IDisposable
         return enabled;
     }
 
-    /// <summary>插件刚启用 / 重新启用时回到「运行中」，并把背包状态清零重算。</summary>
+    /// <summary>
+    /// 插件刚启用 / 重新启用时回到「运行中」。
+    /// **不动背包状态**：总开关停用期间开背包键仍然照常计数（见热键处理），
+    /// 恢复的那一刻你可能正开着背包 —— 这时候把状态清成「关闭」反而会让它来抢你的东西。
+    /// </summary>
     public void ResetAutomatic()
     {
         Volatile.Write(ref _automaticEnabled, 1);
@@ -141,8 +145,6 @@ internal sealed partial class SceneQuickActionsRunner : IDisposable
             _inviteReadyAt = DateTime.MinValue;
             _pickupReadyAt = DateTime.MinValue;
         }
-
-        _backpack.Reset(DateTime.UtcNow);
     }
 
     public void Start()
@@ -166,6 +168,8 @@ internal sealed partial class SceneQuickActionsRunner : IDisposable
             StartHotkeys();
         }
 
+        // 插件从「关」到「开」：中间那段时间的按键没人记，状态不可信，从「背包已关闭」重新开始。
+        _backpack.Reset(DateTime.UtcNow);
         _logger.Info($"背包辅助已启动（抓帧路径：{(_grabber.HasFastPath ? "宿主快速抓帧" : "PNG 截图")}）。");
     }
 
