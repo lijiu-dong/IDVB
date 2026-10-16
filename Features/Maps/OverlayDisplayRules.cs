@@ -28,6 +28,7 @@ internal static class OverlayDisplayRules
     // ── 大地图 ──
     public static double MapOpacity => _config.MapOpacity;
     public static bool ShowRoutes => _config.ShowRoutes;
+    public static double RouteOpacity => _config.RouteOpacity;
 
     // ── 大地图标记可见性 ──
     public static bool ShowGateMarkers => _config.ShowGateMarkers;

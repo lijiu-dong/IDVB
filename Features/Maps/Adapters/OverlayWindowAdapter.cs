@@ -13,6 +13,9 @@ public sealed class OverlayWindowAdapter : IOverlayWindow
     }
 
     public bool IsVisible => _window.IsVisible;
+#if IDVB_DEVELOPMENT_BUILD
+    internal object CaptureDevelopmentTrackingSnapshot() => _window.CaptureDevelopmentTrackingSnapshot();
+#endif
     public void SetNativeMiniMapHeading(double? degrees) => _window.SetNativeMiniMapHeading(degrees);
     public bool HasMap => _window.HasMap;
     public double? CurrentMiniMapScale => _window.CurrentMiniMapScale;
@@ -115,6 +118,7 @@ public sealed class OverlayWindowAdapter : IOverlayWindow
     public void SetAllowExtend(bool allow) => _window.SetAllowExtend(allow);
     public void SetMapOpacity(double opacity) => _window.SetMapOpacity(opacity);
     public void SetRouteLineThickness(int level) => _window.SetRouteLineThickness(level);
+    public void SetRouteOpacity(double opacity) => _window.SetRouteOpacity(opacity);
     public void SetHideMiniMap(bool hide) => _window.SetHideMiniMap(hide);
     public void SetShowGateMarkers(bool show) => _window.SetShowGateMarkers(show);
     public void SetShowAuxiliaryAnchors(bool show) => _window.SetShowAuxiliaryAnchors(show);

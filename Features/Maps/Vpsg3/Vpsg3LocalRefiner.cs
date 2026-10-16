@@ -228,6 +228,13 @@ public static class Vpsg3LocalRefiner
             var ry = (int)Math.Round((viewportBounds.Y + point.Y - offsetY) * invScale);
             if ((uint)rx >= (uint)preparedFloor.ReferenceWidth || (uint)ry >= (uint)preparedFloor.ReferenceHeight)
                 continue;
+            if (sparsePoints is Vpsg3SemanticPoints semantic && preparedFloor.SemanticIndex is { } semanticIndex
+                && semantic.Classes[i] is SemanticStructureContours.Warm or SemanticStructureContours.Cool)
+            {
+                hitsK5 += semanticIndex.IsHit(rx, ry, semantic.Classes[i], 2) ? 1 : 0;
+                hitsK3 += semanticIndex.IsHit(rx, ry, semantic.Classes[i], 1) ? 1 : 0;
+                continue;
+            }
             var index = ry * preparedFloor.WordsPerRow + (rx >> 6);
             var shift = rx & 63;
             var word5 = k5[index];
@@ -263,11 +270,20 @@ public static class Vpsg3LocalRefiner
 
             if ((uint)rx < (uint)width && (uint)ry < (uint)height)
             {
-                var index = ry * wordsPerRow + (rx >> 6);
-                var shift = rx & 63;
-                var word5 = k5[index];
-                hitsK5 += (int)((word5 >> shift) & 1UL);
-                hitsK3 += (int)(((k3[index] & word5) >> shift) & 1UL);
+                if (sparsePoints is Vpsg3SemanticPoints semantic && preparedFloor.SemanticIndex is { } semanticIndex
+                    && semantic.Classes[i] is SemanticStructureContours.Warm or SemanticStructureContours.Cool)
+                {
+                    hitsK5 += semanticIndex.IsHit(rx, ry, semantic.Classes[i], 2) ? 1 : 0;
+                    hitsK3 += semanticIndex.IsHit(rx, ry, semantic.Classes[i], 1) ? 1 : 0;
+                }
+                else
+                {
+                    var index = ry * wordsPerRow + (rx >> 6);
+                    var shift = rx & 63;
+                    var word5 = k5[index];
+                    hitsK5 += (int)((word5 >> shift) & 1UL);
+                    hitsK3 += (int)(((k3[index] & word5) >> shift) & 1UL);
+                }
             }
             // An unvisited point can contribute at most 3. Prune only when even that
             // exact upper bound cannot beat the incumbent; ties retain the first probe.

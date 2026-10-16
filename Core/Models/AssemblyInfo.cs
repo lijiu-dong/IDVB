@@ -3,3 +3,4 @@ using System.Runtime.CompilerServices;
 
 [assembly: InternalsVisibleTo("IDVBuff.Tests")]
 [assembly: InternalsVisibleTo("IDVBuff.MapAlignment.Probe")]
+[assembly: InternalsVisibleTo("IdentityVisionBridge.ScanRaster")]

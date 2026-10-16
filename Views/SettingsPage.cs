@@ -161,6 +161,9 @@ public sealed partial class SettingsPage : Page
         });
 
         var grid = new Grid();
+        var brandImage = new Image { Stretch = Stretch.Uniform };
+        MemoryImageBinding.AttachOwned(this, brandImage,
+            new Uri("ms-appx:///Assets/Icons/IDVB_icon_square_master.png"), "UI.Settings.BrandArtwork");
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         grid.Children.Add(new Border
@@ -169,12 +172,7 @@ public sealed partial class SettingsPage : Page
             Height = 64,
             CornerRadius = new CornerRadius(14),
             Background = AccentContainerBrush,
-            Child = new Image
-            {
-                Source = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(
-                    new Uri("ms-appx:///Assets/Icons/IDVB_icon_square_master.png")),
-                Stretch = Stretch.Uniform
-            }
+            Child = brandImage
         });
         Grid.SetColumn(identity, 1);
         identity.Margin = new Thickness(18, 0, 0, 0);

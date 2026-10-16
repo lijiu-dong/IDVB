@@ -80,6 +80,8 @@ public sealed partial class SessionOrchestrator
     private bool TryCommitAutomaticScan(InitialRecognitionPipelineState result,
         CapturedGameFrame frame, MapMatchSnapshot match, CancellationToken cancellation)
     {
+        using var validation = MapOperationTraceAmbient.StartTopLevel(
+            "automatic_commit_validation", MapOperationWaitKind.Compute);
         var execution = ScanExecutionContext.Current;
         var recognition = result.Recognition;
         bool Reject(string reason)
@@ -127,6 +129,12 @@ public sealed partial class SessionOrchestrator
 
         // No await between this generation/deadline check and first publication. The UI thread
         // owns the transaction; manual selection and future opens use their independent paths.
+        validation.Complete();
+        // This automatic transaction includes the deferred final present.
+        // Dispose order closes present before its containing trace phase.
+        using var publication = MapOperationTraceAmbient.StartTopLevel(
+            "automatic_commit_and_publish", MapOperationWaitKind.Compute,
+            mapId: recognition.Map.Id.ToString("D"), floorKey: recognition.Result.Floor);
         using var present = _overlay.DeferPresent();
         _provisionalRecognition = null;
         _provisionalCatalogRevision = null;
@@ -173,7 +181,7 @@ public sealed partial class SessionOrchestrator
                 ["decisionElapsedMs"] = execution.ElapsedMilliseconds
             });
         StateChanged?.Invoke(this, EventArgs.Empty);
-        QueueVariantIdentityNotification(recognition.Map.Id, userConfirmed: false);
+        QueueSelectedMapResourcePreparation(recognition.Map.Id); QueueVariantIdentityNotification(recognition.Map.Id, userConfirmed: false);
         return true;
     }
 
@@ -191,3 +199,4 @@ public sealed partial class SessionOrchestrator
         StateChanged?.Invoke(this, EventArgs.Empty);
     }
 }
+

@@ -79,6 +79,12 @@ public sealed partial class SessionOrchestrator
                 }
 
                 var isLButtonDown = (GetAsyncKeyState(VkLButton) & 0x8000) != 0;
+#if IDVB_DEVELOPMENT_BUILD
+                if (IDVBuff.Lifecycle.BackgroundTestRuntime.Enabled)
+                {
+                    isForeground = IDVBuff.Lifecycle.BackgroundTestRuntime.TryInput(out _, out _, out isLButtonDown, out _);
+                }
+#endif
                 var isDragging = isForeground && isLButtonDown;
 
                 if (!isDragging)
@@ -160,7 +166,7 @@ public sealed partial class SessionOrchestrator
                 {
                     wasDragging = true;
                     dragStarted = Stopwatch.GetTimestamp();
-                    if (GetCursorPos(out var initialCursor))
+                    if (TryGetTrackingCursor(out var initialCursor))
                     {
                         mouseHistory.Reset(
                             initialCursor.X,
@@ -181,7 +187,7 @@ public sealed partial class SessionOrchestrator
                 }
 
                 // 1. Zero-latency Mouse Feedforward
-                if (trackingConfig.EnableMouseFeedforward && GetCursorPos(out var currentCursor))
+                if (trackingConfig.EnableMouseFeedforward && TryGetTrackingCursor(out var currentCursor))
                 {
                     var mouseTimestamp = SystemRelativeClock.GetTicks();
                     var (rawDx, rawDy) = mouseHistory.Record(
@@ -323,7 +329,7 @@ public sealed partial class SessionOrchestrator
                                             trackingConfig);
                                     }
                                     solveSamples.Add(trackResult.Timing.TotalMs);
-                                    if (GetCursorPos(out var cursorAfterSolve))
+                                    if (TryGetTrackingCursor(out var cursorAfterSolve))
                                     {
                                         var postSolveMouse = mouseHistory.Record(
                                             cursorAfterSolve.X,

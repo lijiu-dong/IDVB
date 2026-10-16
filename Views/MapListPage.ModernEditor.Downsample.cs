@@ -1,4 +1,5 @@
 using IDVBuff.Features.Maps;
+using IDVBuff.Appearance;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
@@ -11,6 +12,7 @@ public sealed partial class MapListPage : UserControl
 {
     private async Task ShowModernDownsampleDialogAsync()
     {
+        if (_modernToolState.SpecialElementsReadOnly) return;
         if (_draft is null)
             return;
 
@@ -22,8 +24,8 @@ public sealed partial class MapListPage : UserControl
             {
                 try
                 {
-                    using var img = System.Drawing.Image.FromFile(path);
-                    floorItems.Add((floor.Key, floor.DisplayName, path, img.Width, img.Height));
+                    var dimensions = MapImageDimensions.Read(path);
+                    floorItems.Add((floor.Key, floor.DisplayName, path, dimensions.Width, dimensions.Height));
                 }
                 catch
                 {
@@ -45,8 +47,8 @@ public sealed partial class MapListPage : UserControl
         {
             Padding = new Thickness(12, 10, 12, 10),
             CornerRadius = new CornerRadius(6),
-            Background = new SolidColorBrush(Color.FromArgb(45, 255, 68, 68)),
-            BorderBrush = new SolidColorBrush(Color.FromArgb(180, 255, 68, 68)),
+            Background = EditorBrush(ThemeToken.WarningFill),
+            BorderBrush = EditorBrush(ThemeToken.WarningBorder),
             BorderThickness = new Thickness(1)
         };
         var warningContent = new StackPanel { Spacing = 4 };
@@ -55,14 +57,14 @@ public sealed partial class MapListPage : UserControl
             Text = "⚠ 警告：直接修改原图 · 不可撤销",
             FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
             FontSize = 13,
-            Foreground = new SolidColorBrush(Color.FromArgb(255, 255, 120, 120))
+            Foreground = EditorBrush(ThemeToken.WarningText)
         });
         warningContent.Children.Add(new TextBlock
         {
             Text = "降采样操作将直接对磁盘上的原图文件进行下采样覆盖，并同步缩放遮瑕笔刷尺寸。此操作针对当前地图系列的全部楼层，且无法撤销！",
             FontSize = 11.5,
             TextWrapping = TextWrapping.Wrap,
-            Foreground = new SolidColorBrush(EditorText)
+            Foreground = EditorBrush(ThemeToken.WarningText)
         });
         warningCard.Child = warningContent;
         panel.Children.Add(warningCard);
@@ -73,7 +75,7 @@ public sealed partial class MapListPage : UserControl
         {
             Text = "降采样倍率",
             FontSize = 12,
-            Foreground = new SolidColorBrush(EditorMuted)
+            Foreground = EditorMuted
         });
         var factorCombo = new ComboBox
         {
@@ -89,7 +91,7 @@ public sealed partial class MapListPage : UserControl
         {
             Text = "各楼层分辨率预期变化：",
             FontSize = 12,
-            Foreground = new SolidColorBrush(EditorMuted)
+            Foreground = EditorMuted
         });
 
         var previewPanel = new StackPanel { Spacing = 6 };
@@ -119,14 +121,14 @@ public sealed partial class MapListPage : UserControl
                     Text = item.DisplayName,
                     FontSize = 12,
                     FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-                    Foreground = new SolidColorBrush(EditorText),
+                    Foreground = EditorText,
                     VerticalAlignment = VerticalAlignment.Center
                 };
                 var changeText = new TextBlock
                 {
                     Text = $"{item.Width} × {item.Height}   →   {targetW} × {targetH} px",
                     FontSize = 12,
-                    Foreground = new SolidColorBrush(Color.FromArgb(255, 48, 187, 255)),
+                    Foreground = EditorBrush(ThemeToken.AccentText),
                     VerticalAlignment = VerticalAlignment.Center
                 };
                 row.Children.Add(nameText);
@@ -136,7 +138,7 @@ public sealed partial class MapListPage : UserControl
                 var itemBorder = new Border
                 {
                     CornerRadius = new CornerRadius(4),
-                    Background = new SolidColorBrush(Color.FromArgb(30, 255, 255, 255)),
+                    Background = EditorPanelRaised,
                     Child = row
                 };
                 previewPanel.Children.Add(itemBorder);
@@ -178,63 +180,67 @@ public sealed partial class MapListPage : UserControl
 
         SetModernStatus($"正在执行 {factor}x 降采样...", false);
 
-        // 1. 彻底清空现有位图加载，释放文件句柄
-        if (_modernImage is not null)
-            _modernImage.Source = null;
-        foreach (var entry in _modernFloorBitmaps.Values)
-        {
-            entry.Bitmap.ImageOpened -= entry.OpenedHandler;
-            entry.Bitmap.UriSource = null;
-        }
-        _modernFloorBitmaps.Clear();
-        GC.Collect();
-        GC.WaitForPendingFinalizers();
-
         try
         {
-            // 2. 后台线程执行图像物理降采样并覆盖写回原文件
-            await Task.Run(() =>
+            await RunMapOperationAsync("正在降采样地图……", async () =>
             {
-                var processedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-                foreach (var item in floorItems)
+                // The modal is visible before cancelling image work. A cancelled
+                // WIC decode still owns its file until its task leaves the gate;
+                // a GC/finalizer wait cannot synchronize that task. Hold the same
+                // gate through replacement so a new decode cannot reopen a file.
+                if (_modernImage is not null) _modernImage.Source = null;
+                ReleaseModernFloorBitmaps();
+                await _modernImageLoadGate.WaitAsync();
+                try
                 {
-                    if (processedPaths.Add(item.Path))
-                        DownsampleImageFileOnDisk(item.Path, factor);
+                    await Task.Run(() =>
+                    {
+                        var processedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                        var processedFloors = 0;
+                        foreach (var item in floorItems)
+                        {
+                            MapOperationProgress.Report(.6 * processedFloors++ / floorItems.Count, "正在降采样地图楼层……");
+                            if (processedPaths.Add(item.Path))
+                                DownsampleImageFileOnDisk(item.Path, factor);
+                        }
+
+                        // 同步处理识别源图与预览图（若存在且不一致）
+                        foreach (var floor in _draft.Floors)
+                        {
+                            if (_draft.FloorRecognitionSourcePaths.TryGetValue(floor.Key, out var recogPath)
+                                && File.Exists(recogPath)
+                                && processedPaths.Add(recogPath))
+                            {
+                                DownsampleImageFileOnDisk(recogPath, factor);
+                            }
+                            if (_draft.FloorPreviewPaths.TryGetValue(floor.Key, out var prevPath)
+                                && File.Exists(prevPath)
+                                && processedPaths.Add(prevPath))
+                            {
+                                DownsampleImageFileOnDisk(prevPath, factor);
+                            }
+                        }
+                    });
+                }
+                finally { _modernImageLoadGate.Release(); }
+
+                // 3. 缩放遮瑕笔刷
+                MapRepository.ScaleBackgroundBrushes(_draft.Recognition, 0, factor);
+
+                // 4. 若为已有地图，同步持久化到 Repository 与刷新运行时缓存
+                if (_draft.Id is { } mapId)
+                {
+                    await MapOperationProgress.RunAsync(.7, .9, () => Task.Run(() => _repository.SaveAsync(_draft)));
+                    MapOperationProgress.Report(.9, "正在刷新地图……");
+                    if (!App.IsSafeMode)
+                        await MapOperationProgress.RunAsync(.9, 1, () => App.Session.RefreshMapCacheAsync(mapId));
                 }
 
-                // 同步处理识别源图与预览图（若存在且不一致）
-                foreach (var floor in _draft.Floors)
-                {
-                    if (_draft.FloorRecognitionSourcePaths.TryGetValue(floor.Key, out var recogPath)
-                        && File.Exists(recogPath)
-                        && processedPaths.Add(recogPath))
-                    {
-                        DownsampleImageFileOnDisk(recogPath, factor);
-                    }
-                    if (_draft.FloorPreviewPaths.TryGetValue(floor.Key, out var prevPath)
-                        && File.Exists(prevPath)
-                        && processedPaths.Add(prevPath))
-                    {
-                        DownsampleImageFileOnDisk(prevPath, factor);
-                    }
-                }
+                // 5. 重新加载当前楼层底图、刷新视口和分辨率
+                SwitchModernFloor(_activeFloorKey, fitWhenLoaded: true);
+                SetModernStatus($"已成功将当前地图全楼层降采样 {factor}x。", false);
             });
-
-            // 3. 缩放遮瑕笔刷
-            MapRepository.ScaleBackgroundBrushes(_draft.Recognition, 0, factor);
-
-            // 4. 若为已有地图，同步持久化到 Repository 与刷新运行时缓存
-            if (_draft.Id is { } mapId)
-            {
-                await _repository.SaveAsync(_draft);
-                if (!App.IsSafeMode)
-                    await App.Session.RefreshMapCacheAsync(mapId);
-            }
-
-            // 5. 重新加载当前楼层底图、刷新视口和分辨率
-            SwitchModernFloor(_activeFloorKey, fitWhenLoaded: true);
-            SetModernStatus($"已成功将当前地图全楼层降采样 {factor}x。", false);
         }
         catch (Exception ex)
         {
@@ -268,7 +274,16 @@ public sealed partial class MapListPage : UserControl
         var tempPath = Path.Combine(
             Path.GetDirectoryName(filePath) ?? AppDataPaths.RootDirectory,
             $".downsample-{Guid.NewGuid():N}.tmp");
-        File.WriteAllBytes(tempPath, encodedBytes);
-        File.Move(tempPath, filePath, overwrite: true);
+        try
+        {
+            File.WriteAllBytes(tempPath, encodedBytes);
+            File.Move(tempPath, filePath, overwrite: true);
+        }
+        finally
+        {
+            // Only this invocation's temporary file; preserve the original on
+            // failure and leave no orphaned encoded image after a failed move.
+            if (File.Exists(tempPath)) File.Delete(tempPath);
+        }
     }
 }

@@ -12,32 +12,38 @@ public sealed partial class IdvmPackageService
     private static async Task CreateArchiveAsync(
         string sourceDirectory,
         string destination,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool compressed = false)
     {
         await using var stream = new FileStream(destination, FileMode.CreateNew, FileAccess.Write, FileShare.None);
         using var archive = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen: true);
-        foreach (var relative in new[] { "header", "manifest.json" }.Concat(
+        var payloadFiles = compressed ? new[] { SolidPayloadPath } :
             Directory.EnumerateFiles(sourceDirectory, "*", SearchOption.AllDirectories)
                 .Select(path => ToLogicalPath(sourceDirectory, path))
                 .Where(path => path is not "header" and not "manifest.json")
-                .OrderBy(path => path, StringComparer.Ordinal)))
+                .OrderBy(path => path, StringComparer.Ordinal).ToArray();
+        var archiveFiles = new[] { "header", "manifest.json" }.Concat(payloadFiles).ToArray();
+        var writtenFiles = 0;
+        foreach (var relative in archiveFiles)
         {
+            MapOperationProgress.Report((double)writtenFiles++ / archiveFiles.Length, "正在打包地图……");
             cancellationToken.ThrowIfCancellationRequested();
             var entry = archive.CreateEntry(
                 relative,
-                relative == "header" ? CompressionLevel.NoCompression : CompressionLevel.Optimal);
+                relative is "header" or SolidPayloadPath
+                    ? CompressionLevel.NoCompression : CompressionLevel.SmallestSize);
             await using var input = File.OpenRead(ToPhysicalPath(sourceDirectory, relative));
             await using var output = entry.Open();
             await input.CopyToAsync(output, cancellationToken);
         }
     }
 
-    private static byte[] CreateHeader(Guid packageId, DateTimeOffset createdAt, byte[] manifestHash)
+    private static byte[] CreateHeader(Guid packageId, DateTimeOffset createdAt, byte[] manifestHash, ushort minorVersion = 4)
     {
         var bytes = new byte[HeaderSize];
         Encoding.ASCII.GetBytes("IDVM").CopyTo(bytes, 0);
         BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(4, 2), 1);
-        BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(6, 2), 4);
+        BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(6, 2), minorVersion);
         BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(8, 2), HeaderSize);
         WriteRfc4122Guid(packageId, bytes.AsSpan(12, 16));
         BinaryPrimitives.WriteInt64LittleEndian(
@@ -57,7 +63,8 @@ public sealed partial class IdvmPackageService
 
     private static async Task WriteJsonAsync<T>(string path, T value, CancellationToken cancellationToken)
     {
-        await File.WriteAllBytesAsync(path, SerializeUtf8(value), cancellationToken);
+        await using var output = File.Create(path);
+        await JsonSerializer.SerializeAsync(output, value, JsonOptions, cancellationToken);
     }
 
     private static async Task<string> ComputeSha256Async(string path, CancellationToken cancellationToken)
@@ -73,6 +80,7 @@ public sealed partial class IdvmPackageService
         MapClassProperties classProperties,
         CancellationToken cancellationToken)
     {
+        using var memory = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("Idvm.ExportMapPayload", map.Id.ToString());
         var root = $"maps/{map.Id:N}";
         var mapDirectory = Path.Combine(staging, root.Replace('/', Path.DirectorySeparatorChar));
         var imageDirectory = Path.Combine(mapDirectory, "maps");
@@ -99,6 +107,8 @@ public sealed partial class IdvmPackageService
                 ClassId = classId,
                 Title = map.DisplayName,
                 Source = map.Source,
+                IsCoCreationTemplate = map.IsCoCreationTemplate,
+                AppearancePalette = map.AppearancePalette,
                 SourceProjectId = map.SourceProjectId,
                 SourceProjectRevision = map.SourceProjectRevision,
                 SourceVisualSha256 = map.SourceVisualSha256,
@@ -141,9 +151,7 @@ public sealed partial class IdvmPackageService
             var imageLogicalPath = $"{root}/maps/floor-{index + 1:D3}{extension}";
             var target = Path.Combine(staging, imageLogicalPath.Replace('/', Path.DirectorySeparatorChar));
             await CopyFileAsync(source, target, cancellationToken);
-            using var image = Cv2.ImRead(target, ImreadModes.Unchanged);
-            if (image.Empty())
-                throw new InvalidOperationException($"无法读取 {map.DisplayName} 的楼层图片。");
+            var image = MapImageFileValidation.ValidateImageFile(target, cancellationToken);
 
             string? recognitionLogicalPath = null;
             if (string.Equals(map.Source, "survey", StringComparison.Ordinal))
@@ -229,6 +237,7 @@ public sealed partial class IdvmPackageService
                         MapAnnotationType.Text => "text",
                         MapAnnotationType.Outline => "outline",
                         MapAnnotationType.Line => "line",
+                        MapAnnotationType.Route => "route",
                         _ => string.Empty
                     },
                     ColorIndex = MapAnnotationColor.ToLegacyIndex(annotation.EffectiveColorHex),
@@ -236,7 +245,10 @@ public sealed partial class IdvmPackageService
                     Bounds = ToDto(annotation.Bounds),
                     Start = ToDto(annotation.Start),
                     End = ToDto(annotation.End),
+                    Points = annotation.Type == MapAnnotationType.Route ? annotation.Points.Select(point => ToDto(point)!).ToList() : null,
                     Text = annotation.Text,
+                    RoutePlanId = annotation.RoutePlanId,
+                    IsMarker = annotation.IsMarker,
                     FontFamily = annotation.FontFamily,
                     FontSize = annotation.FontSize,
                     IsBold = annotation.IsBold,
@@ -273,6 +285,7 @@ public sealed partial class IdvmPackageService
             anchorsDocument.Floors.Add(floor.Key, floorAnchors);
         }
 
+        await WriteNavigationAsync(staging, root, metadata, map, cancellationToken);
         await WriteJsonAsync(Path.Combine(dataDirectory, "metadata.json"), metadata, cancellationToken);
         await WriteJsonAsync(Path.Combine(dataDirectory, "gates.json"), gatesDocument, cancellationToken);
         await WriteJsonAsync(Path.Combine(dataDirectory, "anchors.json"), anchorsDocument, cancellationToken);
@@ -359,6 +372,10 @@ public sealed partial class IdvmPackageService
                 CenterY = profile.SideEntranceFeatureCenterY,
                 Radius  = profile.SideEntranceFeatureRadius
             };
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch
         {

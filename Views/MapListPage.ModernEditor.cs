@@ -1,4 +1,6 @@
 using IDVBuff.Features.Maps;
+using IDVBuff.Appearance;
+using IDVBuff.Presentation.Theming;
 using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -14,17 +16,19 @@ namespace IDVBuff.Views;
 
 public sealed partial class MapListPage : UserControl
 {
-    private enum EditorSelectionKind { Annotation, Anchor, Crop, Background }
     private enum EditorInteractionKind { None, Create, Move, Resize, Pan }
 
-    private sealed record EditorSelection(EditorSelectionKind Kind, Guid? Id = null);
+    private sealed record EditorSelection(MapEditorElementKind Kind, Guid? Id = null);
 
-    private static readonly Color EditorBackground = Color.FromArgb(255, 8, 14, 22);
-    private static readonly Color EditorPanel = Color.FromArgb(255, 18, 27, 39);
-    private static readonly Color EditorPanelRaised = Color.FromArgb(255, 25, 36, 50);
-    private static readonly Color EditorBorder = Color.FromArgb(255, 46, 62, 79);
-    private static readonly Color EditorText = Color.FromArgb(255, 226, 234, 245);
-    private static readonly Color EditorMuted = Color.FromArgb(255, 151, 166, 187);
+    // Keep the service-owned brushes: existing controls, including open flyouts,
+    // follow mode and accent changes without rebuilding the editing session.
+    private Brush EditorBrush(ThemeToken token) => FluentTheme.Brush(this, token);
+    private Brush EditorBackground => EditorBrush(ThemeToken.Window);
+    private Brush EditorPanel => EditorBrush(ThemeToken.Card);
+    private Brush EditorPanelRaised => EditorBrush(ThemeToken.Raised);
+    private Brush EditorBorder => EditorBrush(ThemeToken.SurfaceBorder);
+    private Brush EditorText => EditorBrush(ThemeToken.Text);
+    private Brush EditorMuted => EditorBrush(ThemeToken.TextSecondary);
 
     private readonly MapEditorToolState _modernToolState = new();
     private readonly RecentAnnotationColors _recentAnnotationColors = new();
@@ -39,7 +43,6 @@ public sealed partial class MapListPage : UserControl
 
     private bool _modernEditorActive;
     private bool _recentColorsLoaded;
-    private IDVBuff.Presentation.Theming.ThemeScope? _editorThemeScope;
     private ScrollMode _editorPreviousVerticalScrollMode;
     private ScrollMode _editorPreviousHorizontalScrollMode;
     private ScrollBarVisibility _editorPreviousVerticalBarVisibility;
@@ -52,6 +55,10 @@ public sealed partial class MapListPage : UserControl
     private Button? _modernExportButton;
     private ScrollViewer? _modernViewport;
     private Grid? _modernScene;
+    private Viewbox? _modernSceneHost;
+    private double _modernDisplayScale = 1;
+    private bool _modernFitPending;
+    private bool _modernFitQueued;
     private Image? _modernImage;
     private Canvas? _modernCanvas;
     private StackPanel? _modernLayerList;
@@ -61,13 +68,44 @@ public sealed partial class MapListPage : UserControl
     private FrameworkElement? _modernFloorResolutionContainer;
     private Button? _modernDownsampleButton;
     private Border? _modernColorIndicator;
-    private BitmapImage? _modernBitmap;
+    private ModernFloorBitmap? _modernBitmap;
     private const int ModernEditorDecodePixelWidth = 2048;
-    private sealed record ModernFloorBitmap(
-        BitmapImage Bitmap,
-        int SourceWidth,
-        int SourceHeight,
-        RoutedEventHandler OpenedHandler);
+    private sealed class ModernFloorBitmap(int sourceWidth, int sourceHeight) : IDisposable
+    {
+        internal readonly Microsoft.UI.Xaml.Media.Imaging.SoftwareBitmapSource Source = new();
+        private Windows.Graphics.Imaging.SoftwareBitmap? _pixels;
+        private readonly CancellationTokenSource _cancellation = new();
+        internal int SourceWidth { get; } = sourceWidth;
+        internal int SourceHeight { get; } = sourceHeight;
+        internal bool IsReady { get; set; }
+        internal bool IsDisposed { get; private set; }
+        internal int PixelWidth => IsReady ? SourceWidth : 0;
+        internal int PixelHeight => IsReady ? SourceHeight : 0;
+        public void Dispose()
+        {
+            if (IsDisposed) return;
+            IsDisposed = true;
+            _cancellation.Cancel();
+            // Source.Close owns the bitmap's close, including deferred close
+            // when an upload is still running. Closing its input ourselves can
+            // invalidate an in-flight copy or later device-loss recovery.
+            Source.Dispose();
+            if (_pixels is not null)
+            {
+                IDVBuff.Core.Diagnostics.MemoryJournal.ReleaseResource(_pixels);
+                _pixels = null;
+            }
+            IDVBuff.Core.Diagnostics.MemoryJournal.ReleaseResource(Source);
+            _cancellation.Dispose();
+        }
+        internal CancellationToken GetToken() => _cancellation.Token;
+        internal void TransferPixels(Windows.Graphics.Imaging.SoftwareBitmap pixels)
+        {
+            ObjectDisposedException.ThrowIf(IsDisposed, this);
+            _pixels = pixels;
+        }
+    }
+    private readonly SemaphoreSlim _modernImageLoadGate = new(1, 1);
     private readonly Dictionary<string, ModernFloorBitmap> _modernFloorBitmaps =
         new(StringComparer.OrdinalIgnoreCase);
     private EditorSelection? _modernSelection;
@@ -89,7 +127,7 @@ public sealed partial class MapListPage : UserControl
     private readonly List<NormalizedPoint> _modernFreeCropPoints = [];
     private string _currentAnnotationColor = MapAnnotationColor.Default;
     private bool _modernGridVisible = true;
-    private bool _modernSnapEnabled = true;
+    private bool _modernSnapEnabled;
     private bool _modernFocusMode;
     private bool _modernLayersAreDrawer;
     private bool _modernLayerDrawerOpen;
@@ -136,7 +174,7 @@ public sealed partial class MapListPage : UserControl
             Width = 58,
             TextAlignment = TextAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
-            Foreground = new SolidColorBrush(EditorText)
+            Foreground = EditorText
         };
         row.Children.Add(_modernZoomText);
         row.Children.Add(CreateViewButton("\uE710", "放大", (_, _) => ChangeModernZoom(1.25f)));
@@ -153,7 +191,7 @@ public sealed partial class MapListPage : UserControl
             Height = 18,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(4, 0, 4, 0),
-            Fill = new SolidColorBrush(EditorBorder)
+            Fill = EditorBorder
         });
 
         var resPill = new Border
@@ -161,7 +199,7 @@ public sealed partial class MapListPage : UserControl
             Padding = new Thickness(8, 4, 8, 4),
             VerticalAlignment = VerticalAlignment.Center,
             CornerRadius = new CornerRadius(6),
-            Background = new SolidColorBrush(Color.FromArgb(35, 255, 255, 255))
+            Background = EditorPanelRaised
         };
         var resContent = new StackPanel
         {
@@ -173,14 +211,14 @@ public sealed partial class MapListPage : UserControl
         {
             Glyph = "\uEB9F",
             FontSize = 13,
-            Foreground = new SolidColorBrush(EditorMuted),
+            Foreground = EditorMuted,
             VerticalAlignment = VerticalAlignment.Center
         });
         _modernFloorResolutionText = new TextBlock
         {
             Text = "原图 -- \u00D7 --",
             FontSize = 11,
-            Foreground = new SolidColorBrush(EditorText),
+            Foreground = EditorText,
             VerticalAlignment = VerticalAlignment.Center
         };
         resContent.Children.Add(_modernFloorResolutionText);
@@ -204,13 +242,15 @@ public sealed partial class MapListPage : UserControl
             Height = 30,
             Padding = new Thickness(8, 2, 8, 2),
             CornerRadius = new CornerRadius(6),
-            Background = new SolidColorBrush(Color.FromArgb(35, 255, 255, 255)),
-            Foreground = new SolidColorBrush(EditorText),
+            Background = EditorPanelRaised,
+            Foreground = EditorText,
             BorderThickness = new Thickness(0),
             VerticalAlignment = VerticalAlignment.Center
         };
         ToolTipService.SetToolTip(_modernDownsampleButton, "对当前地图全系列楼层原图执行降采样（直接修改原图 · 不可撤销）");
+        _modernDownsampleButton.IsEnabled = !_modernToolState.SpecialElementsReadOnly;
         _modernDownsampleButton.Click += async (_, _) => await ShowModernDownsampleDialogAsync();
+        ThemeButton.Apply(_modernDownsampleButton, ThemeButtonRole.Standard);
         row.Children.Add(_modernDownsampleButton);
 
         var toolbarScroller = new ScrollViewer
@@ -223,15 +263,15 @@ public sealed partial class MapListPage : UserControl
         };
         return new Border
         {
-            Background = new SolidColorBrush(Color.FromArgb(238, 13, 21, 31)),
-            BorderBrush = new SolidColorBrush(EditorBorder),
+            Background = EditorPanel,
+            BorderBrush = EditorBorder,
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(8),
             Child = toolbarScroller
         };
     }
 
-    private static Button CreateViewButton(string glyph, string toolTip, RoutedEventHandler click)
+    private Button CreateViewButton(string glyph, string toolTip, RoutedEventHandler click)
     {
         var button = new Button
         {
@@ -240,14 +280,14 @@ public sealed partial class MapListPage : UserControl
             Height = 34,
             Padding = new Thickness(0),
             CornerRadius = new CornerRadius(6),
-            Foreground = new SolidColorBrush(EditorText)
+            Foreground = EditorText
         };
         ToolTipService.SetToolTip(button, toolTip);
         button.Click += click;
-        return button;
+        return ThemeButton.Apply(button, ThemeButtonRole.Standard);
     }
 
-    private static ToggleButton CreateToggleViewButton(string label, bool isChecked, Action<object, ToggleButton> click)
+    private ToggleButton CreateToggleViewButton(string label, bool isChecked, Action<object, ToggleButton> click)
     {
         var button = new ToggleButton
         {
@@ -256,9 +296,20 @@ public sealed partial class MapListPage : UserControl
             Height = 34,
             Padding = new Thickness(9, 3, 9, 3),
             CornerRadius = new CornerRadius(6),
-            Foreground = new SolidColorBrush(EditorText)
+            Foreground = EditorText
         };
         button.Click += (sender, _) => click(sender, button);
+        return BindModernToggleTheme(button);
+    }
+
+    private ToggleButton BindModernToggleTheme(ToggleButton button)
+    {
+        // Bind before the native template resolves its state resources. A checked
+        // control must keep the editor's live selection brushes, including when
+        // only the accent changes and WinUI does not raise ActualThemeChanged.
+        foreach (var (key, token) in ThemeResourceKeys.Brushes)
+            if (key.StartsWith("ToggleButton", StringComparison.Ordinal))
+                button.Resources[key] = EditorBrush(token);
         return button;
     }
 
@@ -274,14 +325,14 @@ public sealed partial class MapListPage : UserControl
             Text = "图层管理器",
             FontSize = 16,
             FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-            Foreground = new SolidColorBrush(EditorText)
+            Foreground = EditorText
         });
         _modernStatusText = new TextBlock
         {
             Text = "选择一个工具开始编辑。",
             FontSize = 11,
             TextWrapping = TextWrapping.Wrap,
-            Foreground = new SolidColorBrush(EditorMuted)
+            Foreground = EditorMuted
         };
         paneHeader.Children.Add(_modernStatusText);
         pane.Children.Add(paneHeader);
@@ -299,16 +350,15 @@ public sealed partial class MapListPage : UserControl
         var actions = new Grid { ColumnSpacing = 10, Padding = new Thickness(10) };
         actions.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         actions.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        var cancel = CreateEditorActionButton("取消", Color.FromArgb(255, 48, 61, 78));
+        var cancel = CreateEditorActionButton("取消", ThemeButtonRole.Standard);
         cancel.Click += async (_, _) =>
         {
             ResetBatchOperation();
             _draft = null;
-            MapClassDiagnosticCoordinator.Instance.Trigger(_repository);
             await ShowListAsync();
         };
         actions.Children.Add(cancel);
-        _markerConfirmButton = CreateEditorActionButton("确认", EditorPanelRaised);
+        _markerConfirmButton = CreateEditorActionButton("确认", ThemeButtonRole.Accent);
         _markerConfirmButton.Click += async (_, _) => await SaveDraftAsync();
         Grid.SetColumn(_markerConfirmButton, 1);
         actions.Children.Add(_markerConfirmButton);
@@ -318,26 +368,23 @@ public sealed partial class MapListPage : UserControl
         return new Border
         {
             Margin = new Thickness(0, 4, 0, 0),
-            Background = new SolidColorBrush(EditorPanel),
-            BorderBrush = new SolidColorBrush(EditorBorder),
+            Background = EditorPanel,
+            BorderBrush = EditorBorder,
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(8),
             Child = pane
         };
     }
 
-    private static Button CreateEditorActionButton(string text, Color background) => new()
+    private static Button CreateEditorActionButton(string text, ThemeButtonRole role) => ThemeButton.Apply(new()
     {
         Content = text,
         Height = 46,
-        Background = new SolidColorBrush(background),
-        Foreground = new SolidColorBrush(EditorText),
-        BorderBrush = new SolidColorBrush(EditorBorder),
         BorderThickness = new Thickness(1),
         CornerRadius = new CornerRadius(7),
         HorizontalAlignment = HorizontalAlignment.Stretch,
         HorizontalContentAlignment = HorizontalAlignment.Center
-    };
+    }, role);
 
     private void EnterModernEditorEnvironment()
     {
@@ -345,11 +392,6 @@ public sealed partial class MapListPage : UserControl
             return;
         _modernEditorActive = true;
         NavigationCompactStateChanged?.Invoke(true);
-        // Scope the temporary theme to this control. XamlRoot.Content can be a
-        // different host (Frame/Grid) depending on how the page was navigated,
-        // which made the old save/restore path a no-op in some editor flows.
-        _editorThemeScope = IDVBuff.Presentation.Theming.ThemeService.AttachRegion(
-            this, IDVBuff.Appearance.ThemeProfile.EditorDark);
         if (ParentScrollViewer is not null)
         {
             _editorPreviousVerticalScrollMode = ParentScrollViewer.VerticalScrollMode;
@@ -373,22 +415,18 @@ public sealed partial class MapListPage : UserControl
         CancelModernInteraction(restoreGeometry: true);
         if (_modernImage is not null)
             _modernImage.Source = null;
-        foreach (var entry in _modernFloorBitmaps.Values)
-        {
-            entry.Bitmap.ImageOpened -= entry.OpenedHandler;
-            entry.Bitmap.UriSource = null;
-        }
-        _modernFloorBitmaps.Clear();
+        ReleaseModernFloorBitmaps();
+        _modernCanvas?.Children.Clear();
+        _modernLayerList?.Children.Clear();
         if (_modernScene is not null)
             _modernScene.Children.Clear();
         if (_modernEditorRoot is not null)
             _modernEditorRoot.Children.Clear();
         if (ReferenceEquals(_workflowHost.Content, _modernEditorRoot))
             _workflowHost.Content = null;
+        ResetModernAutomaticRoute();
         _modernEditorActive = false;
         NavigationCompactStateChanged?.Invoke(false);
-        _editorThemeScope?.Dispose();
-        _editorThemeScope = null;
         if (ParentScrollViewer is not null)
         {
             ParentScrollViewer.SizeChanged -= ModernParentViewport_SizeChanged;
@@ -401,12 +439,26 @@ public sealed partial class MapListPage : UserControl
         _modernEditorHeader = null;
         _modernLayerPane = null;
         _modernLayerColumn = null;
+        if (_modernViewport is not null)
+        {
+            _modernViewport.LayoutUpdated -= ModernViewport_LayoutUpdated;
+            _modernViewport.SizeChanged -= ModernViewport_SizeChanged;
+        }
         _modernViewport = null;
         _modernScene = null;
+        _modernSceneHost = null;
+        CancelModernCanvasFit();
+        _modernFitQueued = false;
+        _modernDisplayScale = 1;
+        _modernRenderedZoom = double.NaN;
         _modernImage = null;
         _modernCanvas = null;
         _modernLayerList = null;
         _modernExportButton = null;
+        _modernLayerDrawerButton = null;
+        _modernStatusText = null;
+        _modernZoomText = null;
+        _modernColorIndicator = null;
         _modernFloorResolutionText = null;
         _modernFloorResolutionContainer = null;
         _modernDownsampleButton = null;

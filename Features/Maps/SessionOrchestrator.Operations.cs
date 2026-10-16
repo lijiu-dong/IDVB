@@ -21,11 +21,13 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
 
     public async Task RefreshMapCacheAsync(Guid? changedMapId = null)
     {
-        await _recognition.RefreshCacheAsync(changedMapId);
+        await MapOperationProgress.RunAsync(0, .98, () => _recognition.RefreshCacheAsync(changedMapId));
+        MapOperationProgress.Report(.98, "正在同步地图会话……");
         if (_learningEngineInitialized)
             await _learningEngine.InvalidateReferenceCacheAsync(
                 _lifetimeCts.Token);
         StateChanged?.Invoke(this, EventArgs.Empty);
+        MapOperationProgress.Report(1, "地图刷新完成");
     }
 
     public async Task EnsureMapCacheSynchronizedAsync()
@@ -348,10 +350,6 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
             if (_controlPanel?.IsVisible == true)
                 _controlPanel.Hide();
             await EndMatchAsync(saveAutomaticMapCache: false);
-            if (!_headless)
-            {
-                OverlayNotificationCenter.Warning("已结束对局");
-            }
         }
         else
         {
@@ -370,10 +368,6 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
                 await SetLastSelectedMapClassAsync(mapClass);
             }
             await BeginMatchAsync(mapClass);
-            if (!_headless)
-            {
-                OverlayNotificationCenter.Notice(!string.IsNullOrWhiteSpace(mapClass) ? $"已进入对局 · {mapClass}" : "已进入对局");
-            }
         }
     }
 

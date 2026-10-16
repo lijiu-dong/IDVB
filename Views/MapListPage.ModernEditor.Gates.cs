@@ -56,7 +56,7 @@ public sealed partial class MapListPage : UserControl
             if (currentSide is not null)
                 currentSide.Bounds = previousSideBounds?.Clone();
         });
-        _modernSelection = new EditorSelection(EditorSelectionKind.Anchor, side.Id);
+        _modernSelection = new EditorSelection(MapEditorElementKind.Anchor, side.Id);
         SetModernStatus("正门与侧门已一起更新。", false);
         RefreshModernToolVisuals();
         UpdateMarkerConfirmState();
@@ -144,7 +144,7 @@ public sealed partial class MapListPage : UserControl
             if (currentSide is not null)
                 currentSide.Bounds = previousSideBounds?.Clone();
         });
-        _modernSelection = new EditorSelection(EditorSelectionKind.Anchor, side.Id);
+        _modernSelection = new EditorSelection(MapEditorElementKind.Anchor, side.Id);
         SetModernStatus("正门与侧门已一起更新。", false);
         RefreshModernToolVisuals();
         UpdateMarkerConfirmState();
@@ -174,7 +174,7 @@ public sealed partial class MapListPage : UserControl
                 currentSecondary.Bounds = previousBounds?.Clone();
         });
         _modernSelection = new EditorSelection(
-            EditorSelectionKind.Anchor,
+            MapEditorElementKind.Anchor,
             secondary.Id);
         CompleteModernCreation("已更新次要门特征。", returnToSelect: true);
     }

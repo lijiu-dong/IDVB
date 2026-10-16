@@ -38,10 +38,19 @@ namespace IDVBuff
                 HideMainWindow();
                 return;
             }
+            await ShutdownApplicationAsync("system-close");
+        }
+
+        private async Task ShutdownApplicationAsync(string trigger)
+        {
+            if (shutdownComplete)
+                return;
             if (shutdownInProgress)
                 return;
 
             shutdownInProgress = true;
+            Program.SuspendNativeBackingReturns();
+            RecordShutdownStage("app-shutdown-start", trigger);
             StopStartupPresentation();
             var closingWindow = window;
 
@@ -76,11 +85,22 @@ namespace IDVBuff
             try
             {
                 await DrainRuntimeStartupAsync();
+                // Discard an unconsumed handoff after its producer has drained.
+                // Dropping App's reference is distinct from natural GC collection.
+                TakeMapListStartupData();
                 // Detach the active page tree first while window is already hidden.
                 if (closingWindow is not null)
                 {
+                    try
+                    {
+                        if (closingWindow.Content is Microsoft.UI.Xaml.Controls.Frame { Content: Views.MainPage main })
+                            main.RetireWindowContents();
+                    }
+                    catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"Main window graphics retirement failed: {ex}"); }
                     try { closingWindow.Content = null; }
                     catch { }
+                    if (_mainFrame is { } mainFrame) mainFrame.Content = null;
+                    _mainFrame = null;
                 }
 
                 try { RealtimePerformanceOverlay.Instance?.Dispose(); }
@@ -179,6 +199,7 @@ namespace IDVBuff
 
                 shutdownComplete = true;
                 shutdownInProgress = false;
+                RecordShutdownStage("app-shutdown-cleanup-finished", trigger);
                 try
                 {
                     if (closingWindow is not null)
@@ -205,10 +226,18 @@ namespace IDVBuff
             _mainWindowCaptureProtection = null;
             if (sender is Window closedWindow)
             {
+                try
+                {
+                    if (closedWindow.Content is Microsoft.UI.Xaml.Controls.Frame { Content: Views.MainPage main })
+                        main.RetireWindowContents();
+                }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"Closed window graphics retirement failed: {ex}"); }
                 closedWindow.AppWindow.Closing -= AppWindow_Closing;
                 closedWindow.AppWindow.Changed -= AppWindow_Changed;
                 closedWindow.Closed -= Window_Closed;
                 closedWindow.Content = null;
+                if (_mainFrame is { } mainFrame) mainFrame.Content = null;
+                _mainFrame = null;
             }
             window = null;
             CompleteApplicationExit();
@@ -220,6 +249,7 @@ namespace IDVBuff
                 return;
 
             applicationExitRequested = true;
+            try { Program.StopMemoryDiagnostics(); } catch { }
             try { _trayIcon?.Dispose(); } catch { }
             _trayIcon = null;
             GuiInstanceCoordinator.ActivationRequested -= GuiInstance_ActivationRequested;
@@ -298,7 +328,26 @@ namespace IDVBuff
         private void RequestApplicationExit()
         {
             explicitExitRequested = true;
-            window?.Close();
+            SaveMainWindowPlacement();
+            // Window.Close destroys the HWND directly and does not route through
+            // AppWindow.Closing. Enter the same cleanup path before destroying it.
+            _ = ShutdownApplicationAsync("explicit-exit");
+        }
+
+        private static void RecordShutdownStage(string stage, string trigger)
+        {
+            try { IDVBuff.Core.Diagnostics.MemoryJournal.Current?.Record(stage, new { trigger }, durable: true); }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"Shutdown diagnostic failed: {ex}"); }
+        }
+
+        internal static void ExitForMemoryFailure()
+        {
+            if (_currentApp is not { } app) return;
+            try { app._serviceProvider?.GetService<SessionOrchestrator>()?.StopForMemoryFailure(); }
+            finally
+            {
+                app.RequestApplicationExit();
+            }
         }
 
         [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr windowHandle, int command);

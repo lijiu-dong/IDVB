@@ -7,15 +7,21 @@ namespace IDVBuff.Views;
 
 public sealed partial class MapListPage : UserControl
 {
+    private sealed record ClassPropertiesDialogState(ContentDialog Dialog, ToggleSwitch Toggle,
+        Slider Intensity, TextBlock IntensityValue, ComboBox Downsample, ComboBox ScanFloor, TextBlock ClassName);
+    private ClassPropertiesDialogState? _classPropertiesDialogState;
+    private bool _classPropertiesDialogShowing;
+
     private async Task ShowClassPropertiesDialogAsync()
     {
-        if (_isPackageOperation || string.IsNullOrWhiteSpace(_selectedClass))
+        if (_isPackageOperation || _classPropertiesDialogShowing || string.IsNullOrWhiteSpace(_selectedClass))
             return;
 
         var current = _classProperties.TryGetValue(_selectedClass, out var value)
             ? value.Clone()
             : new MapClassProperties();
-        var toggle = new ToggleSwitch
+        var state = _classPropertiesDialogState;
+        var toggle = state?.Toggle ?? new ToggleSwitch
         {
             Header = "去除背景",
             IsOn = current.RemoveBackground,
@@ -23,14 +29,16 @@ public sealed partial class MapListPage : UserControl
             OnContent = "开启",
             Foreground = FluentTheme.Brush(this, "TextFillColorPrimaryBrush")
         };
-        var intensityValue = new TextBlock
+        toggle.IsOn = current.RemoveBackground;
+        var intensityValue = state?.IntensityValue ?? new TextBlock
         {
             VerticalAlignment = VerticalAlignment.Center,
             Text = MapBackgroundProcessor.ClampBackgroundRemovalIntensity(
                 current.BackgroundRemovalIntensity).ToString(),
             Foreground = FluentTheme.Brush(this, "TextFillColorSecondaryBrush")
         };
-        var intensitySlider = new Slider
+        intensityValue.Text = MapBackgroundProcessor.ClampBackgroundRemovalIntensity(current.BackgroundRemovalIntensity).ToString();
+        var intensitySlider = state?.Intensity ?? new Slider
         {
             Header = "去除背景强度",
             Minimum = MapBackgroundProcessor.MinBackgroundRemovalIntensity,
@@ -43,19 +51,26 @@ public sealed partial class MapListPage : UserControl
             MinWidth = 240,
             HorizontalAlignment = HorizontalAlignment.Stretch
         };
-        intensitySlider.ValueChanged += (_, args) =>
-            intensityValue.Text = MapBackgroundProcessor.ClampBackgroundRemovalIntensity(
-                (int)Math.Round(args.NewValue)).ToString();
-        toggle.Toggled += (_, _) => intensitySlider.IsEnabled = toggle.IsOn;
-        var downsampleCombo = new ComboBox
+        intensitySlider.Value = MapBackgroundProcessor.ClampBackgroundRemovalIntensity(current.BackgroundRemovalIntensity);
+        intensitySlider.IsEnabled = toggle.IsOn;
+        if (state is null)
+        {
+            intensitySlider.ValueChanged += (_, args) =>
+                intensityValue.Text = MapBackgroundProcessor.ClampBackgroundRemovalIntensity((int)Math.Round(args.NewValue)).ToString();
+            toggle.Toggled += (_, _) => intensitySlider.IsEnabled = toggle.IsOn;
+        }
+        var downsampleCombo = state?.Downsample ?? new ComboBox
         {
             Header = "地图图片降采样",
             MinWidth = 280,
             HorizontalAlignment = HorizontalAlignment.Stretch
         };
-        downsampleCombo.Items.Add(new ComboBoxItem { Content = "0（不降低）", Tag = 0 });
-        for (var factor = 2; factor <= 8; factor++)
-            downsampleCombo.Items.Add(new ComboBoxItem { Content = $"降低 {factor} 倍", Tag = factor });
+        if (state is null)
+        {
+            downsampleCombo.Items.Add(new ComboBoxItem { Content = "0（不降低）", Tag = 0 });
+            for (var factor = 2; factor <= 8; factor++)
+                downsampleCombo.Items.Add(new ComboBoxItem { Content = $"降低 {factor} 倍", Tag = factor });
+        }
         var currentDownsampleFactor = MapRepository.ClampImageDownsampleFactor(
             current.ImageDownsampleFactor);
         downsampleCombo.SelectedItem = downsampleCombo.Items
@@ -67,13 +82,14 @@ public sealed partial class MapListPage : UserControl
                 _selectedClass,
                 StringComparison.OrdinalIgnoreCase))
             .ToArray();
-        var scanFloorCombo = new ComboBox
+        var scanFloorCombo = state?.ScanFloor ?? new ComboBox
         {
             Header = "用于扫描的楼层",
             MinWidth = 280,
             HorizontalAlignment = HorizontalAlignment.Stretch,
             PlaceholderText = "请选择楼层 ID"
         };
+        scanFloorCombo.Items.Clear();
         var configuredScanFloor = MapScanFloorRules.NormalizeFloorIdentity(
             current.ScanFloorKey);
         var compatibilityPrimaryFloor = classMaps.Length == 0
@@ -118,48 +134,53 @@ public sealed partial class MapListPage : UserControl
         scanFloorCombo.SelectedItem ??= scanFloorCombo.Items
             .OfType<ComboBoxItem>()
             .FirstOrDefault(item => item.IsEnabled);
-        var content = new StackPanel { Spacing = 12, MinWidth = 320 };
-        content.Children.Add(new TextBlock
+        var className = state?.ClassName ?? new TextBlock
         {
             Text = $"地图类：{_selectedClass}",
             FontSize = 16,
             FontWeight = Microsoft.UI.Text.FontWeights.SemiBold
-        });
-        content.Children.Add(new TextBlock
+        };
+        className.Text = $"地图类：{_selectedClass}";
+        var content = state?.Dialog.Content as StackPanel ?? new StackPanel { Spacing = 12, MinWidth = 320 };
+        if (state is null)
         {
-            Text = "该设置会重建此类的全部地图和楼层。人工遮瑕层始终保留。",
-            TextWrapping = TextWrapping.Wrap,
-            Foreground = FluentTheme.Brush(this, "TextFillColorSecondaryBrush")
-        });
-        content.Children.Add(toggle);
-        var intensityPanel = new Grid { ColumnSpacing = 12 };
-        intensityPanel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        intensityPanel.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        intensityPanel.Children.Add(intensitySlider);
-        Grid.SetColumn(intensityValue, 1);
-        intensityPanel.Children.Add(intensityValue);
-        content.Children.Add(intensityPanel);
-        content.Children.Add(new TextBlock
-        {
-            Text = "数值越高，越宽的颜色范围会被认定为背景。此强度仅保存在本机地图类设置中，不会写入 IDVM 数据包。",
-            TextWrapping = TextWrapping.Wrap,
-            Foreground = FluentTheme.Brush(this, "TextFillColorSecondaryBrush")
-        });
-        content.Children.Add(downsampleCombo);
-        content.Children.Add(new TextBlock
-        {
-            Text = "先缩小整张原图，再按映射后的归一化坐标裁剪。原图始终保留在本机，可随时切换为其他倍数或恢复为 0；原图与该设置不会写入 IDVM。",
-            TextWrapping = TextWrapping.Wrap,
-            Foreground = FluentTheme.Brush(this, "TextFillColorSecondaryBrush")
-        });
-        content.Children.Add(scanFloorCombo);
-        content.Children.Add(new TextBlock
-        {
-            Text = "默认主楼层使用大门与侧门；其他楼层必须标记可选的“次要门特征”。楼层 ID 忽略大小写，并且必须覆盖此地图类的每张地图。",
-            TextWrapping = TextWrapping.Wrap,
-            Foreground = FluentTheme.Brush(this, "TextFillColorSecondaryBrush")
-        });
-        var dialog = new ContentDialog
+            content.Children.Add(className);
+            content.Children.Add(new TextBlock
+            {
+                Text = "该设置会重建此类的全部地图和楼层。人工遮瑕层始终保留。",
+                TextWrapping = TextWrapping.Wrap,
+                Foreground = FluentTheme.Brush(this, "TextFillColorSecondaryBrush")
+            });
+            content.Children.Add(toggle);
+            var intensityPanel = new Grid { ColumnSpacing = 12 };
+            intensityPanel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            intensityPanel.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            intensityPanel.Children.Add(intensitySlider);
+            Grid.SetColumn(intensityValue, 1);
+            intensityPanel.Children.Add(intensityValue);
+            content.Children.Add(intensityPanel);
+            content.Children.Add(new TextBlock
+            {
+                Text = "数值越高，越宽的颜色范围会被认定为背景。此强度仅保存在本机地图类设置中，不会写入 IDVM 数据包。",
+                TextWrapping = TextWrapping.Wrap,
+                Foreground = FluentTheme.Brush(this, "TextFillColorSecondaryBrush")
+            });
+            content.Children.Add(downsampleCombo);
+            content.Children.Add(new TextBlock
+            {
+                Text = "先缩小整张原图，再按映射后的归一化坐标裁剪。原图始终保留在本机，可随时切换为其他倍数或恢复为 0；原图与该设置不会写入 IDVM。",
+                TextWrapping = TextWrapping.Wrap,
+                Foreground = FluentTheme.Brush(this, "TextFillColorSecondaryBrush")
+            });
+            content.Children.Add(scanFloorCombo);
+            content.Children.Add(new TextBlock
+            {
+                Text = "默认主楼层使用大门与侧门；其他楼层必须标记可选的“次要门特征”。楼层 ID 忽略大小写，并且必须覆盖此地图类的每张地图。",
+                TextWrapping = TextWrapping.Wrap,
+                Foreground = FluentTheme.Brush(this, "TextFillColorSecondaryBrush")
+            });
+            }
+        var dialog = state?.Dialog ?? new ContentDialog
         {
             XamlRoot = XamlRoot,
             Title = "地图类编辑",
@@ -170,15 +191,26 @@ public sealed partial class MapListPage : UserControl
             IsPrimaryButtonEnabled = scanFloorCombo.SelectedItem
                 is ComboBoxItem { IsEnabled: true }
         };
-        scanFloorCombo.SelectionChanged += (_, _) =>
-            dialog.IsPrimaryButtonEnabled = scanFloorCombo.SelectedItem
-                is ComboBoxItem { IsEnabled: true };
-        if (await dialog.ShowThemedAsync(this) != ContentDialogResult.Primary)
+        dialog.XamlRoot = XamlRoot;
+        dialog.IsPrimaryButtonEnabled = scanFloorCombo.SelectedItem is ComboBoxItem { IsEnabled: true };
+        if (state is null)
+        {
+            scanFloorCombo.SelectionChanged += (_, _) =>
+                dialog.IsPrimaryButtonEnabled = scanFloorCombo.SelectedItem is ComboBoxItem { IsEnabled: true };
+            _classPropertiesDialogState = new(dialog, toggle, intensitySlider, intensityValue, downsampleCombo, scanFloorCombo, className);
+            IDVBuff.Core.Diagnostics.MemoryJournal.ObserveManagedObject(dialog, "UI.MapClassProperties.Dialog");
+        }
+        ContentDialogResult dialogResult;
+        _classPropertiesDialogShowing = true;
+        try { dialogResult = await dialog.ShowThemedAsync(this); }
+        finally { _classPropertiesDialogShowing = false; }
+        if (dialogResult != ContentDialogResult.Primary)
             return;
 
         var selectedScanFloor = MapScanFloorRules.NormalizeFloorIdentity(
             (scanFloorCombo.SelectedItem as ComboBoxItem)?.Tag as string);
-        var removeBackgroundChanged = toggle.IsOn != current.RemoveBackground;
+        var removeBackground = toggle.IsOn;
+        var removeBackgroundChanged = removeBackground != current.RemoveBackground;
         var backgroundRemovalIntensity = MapBackgroundProcessor.ClampBackgroundRemovalIntensity(
             (int)Math.Round(intensitySlider.Value));
         var backgroundRemovalIntensityChanged = backgroundRemovalIntensity
@@ -197,32 +229,38 @@ public sealed partial class MapListPage : UserControl
         SetClassEditBusy(true);
         try
         {
-            if (downsampleChanged)
+            await RunMapOperationAsync(downsampleChanged ? "正在处理地图尺寸……" : "正在更新地图类……", async () =>
             {
-                await _repository.SetClassImageDownsamplingAsync(
-                    _selectedClass,
-                    downsampleFactor,
-                    toggle.IsOn,
-                    backgroundRemovalIntensity);
-            }
-            else if (removeBackgroundChanged || backgroundRemovalIntensityChanged)
-            {
-                await _repository.SetClassBackgroundRemovalAsync(
-                    _selectedClass,
-                    toggle.IsOn,
-                    backgroundRemovalIntensity);
-            }
-            if (scanFloorChanged)
-            {
-                await _repository.SetClassScanFloorAsync(
-                    _selectedClass,
-                    selectedScanFloor);
-            }
-            _classProperties = (await _repository.GetCatalogSnapshotAsync()).ClassProperties;
-            _selectedMapIds.Clear();
-            if (!App.IsSafeMode)
-                await App.Session.RefreshMapCacheAsync();
-            await ShowListAsync();
+                using (MapOperationProgress.Range(0, .9))
+                {
+                    if (downsampleChanged)
+                    {
+                        await Task.Run(() => _repository.SetClassImageDownsamplingAsync(
+                            _selectedClass,
+                            downsampleFactor,
+                            removeBackground,
+                            backgroundRemovalIntensity));
+                    }
+                    else if (removeBackgroundChanged || backgroundRemovalIntensityChanged)
+                    {
+                        await Task.Run(() => _repository.SetClassBackgroundRemovalAsync(
+                            _selectedClass,
+                            removeBackground,
+                            backgroundRemovalIntensity));
+                    }
+                    if (scanFloorChanged)
+                    {
+                        await _repository.SetClassScanFloorAsync(
+                            _selectedClass,
+                            selectedScanFloor);
+                    }
+                }
+                MapOperationProgress.Report(.9, "正在刷新地图……");
+                _selectedMapIds.Clear();
+                if (!App.IsSafeMode)
+                    await MapOperationProgress.RunAsync(.9, 1, () => App.Session.RefreshMapCacheAsync());
+                await ShowListAsync();
+            });
         }
         catch (Exception exception)
         {

@@ -3,7 +3,7 @@ using IDVBuff.Core.Contracts;
 namespace IDVBuff.Features.Maps.Adapters;
 
 /// <summary>IGameWindowCapture 适配器 — 委托给 DwrGameWindowCaptureService。</summary>
-public sealed class GameWindowCaptureAdapter : IGameWindowCapture
+public sealed class GameWindowCaptureAdapter : IGameWindowCapture, IDisposable
 {
     private readonly DwrGameWindowCaptureService _capture = new();
 
@@ -28,20 +28,11 @@ public sealed class GameWindowCaptureAdapter : IGameWindowCapture
         return result;
     }
 
-    public bool TryAcquireLatestViewportFrame(
-        object viewport,
-        TimeSpan maximumAge,
-        out object? frame)
-    {
-        var result = _capture.TryAcquireLatestViewportFrame(
-            (NormalizedRectangle)viewport,
-            maximumAge,
-            out var f);
-        frame = f;
-        return result;
-    }
-
     public void Reset() => _capture.Reset();
+
+    // The adapter owns the capture cache even when a plugin borrows it outside
+    // a match. DI disposal must retire that native storage as well.
+    public void Dispose() => _capture.Reset();
 
     public void PrepareViewportCapture() => _capture.PrepareViewportCapture();
 

@@ -11,7 +11,8 @@ internal sealed class ThemeResources
     private readonly List<(SolidColorBrush Brush, Windows.UI.Color From, Windows.UI.Color To)> _transition = [];
     private long _transitionStarted;
     private readonly Dictionary<ThemeToken, SolidColorBrush> _brushes = [];
-    public ResourceDictionary Dictionary { get; } = new();
+    private ResourceDictionary? _dictionary;
+    public ResourceDictionary Dictionary => _dictionary ??= new();
     public ThemeSnapshot Snapshot { get; private set; }
     public long Revision { get; private set; }
     public event Action<ThemeSnapshot>? Changed;
@@ -19,9 +20,13 @@ internal sealed class ThemeResources
     public ThemeResources(ThemeSnapshot snapshot, bool includeDictionary = true)
     {
         Snapshot = snapshot;
+        // Most owners only observe Snapshot/Changed (buttons) or consume a
+        // handful of brushes (an editor page). A full palette and native
+        // ResourceDictionary belong to actual XAML theme scopes, not each
+        // individual control. Materialize owner brushes when first consumed.
+        if (!includeDictionary) return;
         foreach (var token in Enum.GetValues<ThemeToken>())
             _brushes[token] = new SolidColorBrush(ToColor(snapshot[token]));
-        if (!includeDictionary) return;
         // Each dictionary belongs to one scope. Its brush identities stay stable even
         // when only the accent changes, which does not trigger a WinUI theme change.
         foreach (var theme in new[] { "Light", "Dark", "HighContrast" })
@@ -33,7 +38,15 @@ internal sealed class ThemeResources
         }
     }
 
-    public SolidColorBrush this[ThemeToken token] => _brushes[token];
+    public SolidColorBrush this[ThemeToken token]
+    {
+        get
+        {
+            if (!_brushes.TryGetValue(token, out var brush))
+                _brushes.Add(token, brush = new SolidColorBrush(ToColor(Snapshot[token])));
+            return brush;
+        }
+    }
 
     public void Apply(ThemeSnapshot snapshot, long revision, bool animateAccent = false)
     {
@@ -105,9 +118,10 @@ internal sealed class ThemeResources
     private void ProtectText(ThemeToken foreground, ThemeToken background)
     {
         static RgbColor Rgb(Windows.UI.Color color) => new(color.R, color.G, color.B);
-        var brush = _brushes[foreground];
+        if (!_brushes.TryGetValue(foreground, out var brush)) return;
         var current = Rgb(brush.Color);
-        var corrected = ThemeColorTransition.KeepReadable(current, Rgb(_brushes[background].Color),
+        var backgroundColor = _brushes.TryGetValue(background, out var fill) ? Rgb(fill.Color) : Snapshot[background];
+        var corrected = ThemeColorTransition.KeepReadable(current, backgroundColor,
             foreground == ThemeToken.SelectionText ? Snapshot.IsDark : current.Luminance > .5);
         if (corrected != current) brush.Color = ToColor(corrected);
     }

@@ -399,22 +399,66 @@ public sealed partial class SessionOrchestrator
             MapRouteRules.SupportsVectorRoutes(map));
     }
 
-    private void ReportFloorProposalTransient(
+    private void PresentDetectedFloorBeforeAlignment(
         RuntimeMapRecognition locked,
-        string proposedFloorKey,
-        CapturedGameFrame frame)
-    {
-        _lastGameBounds = frame.ClientBounds;
-        _lastGameWindowHandle = frame.WindowHandle;
-        _statusMessage = $"已检测到{MapFloorRules.GetFloorDisplayName(locked.Map, proposedFloorKey)}，正在验证……";
-        StateChanged?.Invoke(this, EventArgs.Empty);
-    }
+        string floorKey,
+        CapturedGameFrame frame,
+        MapOpenOperationContext context)
+        => PresentDetectedFloorBeforeAlignment(locked, floorKey, frame,
+            () => !context.IsManualFloor && IsMapOpenOperationCurrent(context));
 
     private void PresentDetectedFloorBeforeAlignment(
         RuntimeMapRecognition locked,
         string floorKey,
-        CapturedGameFrame frame) =>
-        ReportFloorProposalTransient(locked, floorKey, frame);
+        CapturedGameFrame frame,
+        Func<bool> isCurrent)
+    {
+        if (Settings.DisableAutoFloor || !isCurrent()
+            || frame.DetectedFloorKey != floorKey
+            || !locked.Map.Floors.Any(floor => floor.Key == floorKey))
+            return;
+
+        var previousFloor = _currentFloorKey ?? locked.Result.Floor;
+        _lastGameBounds = frame.ClientBounds;
+        _lastGameWindowHandle = frame.WindowHandle;
+        if (previousFloor != floorKey)
+        {
+            // Indicator evidence commits the visible floor, never a transform.
+            // Keep per-floor history for a later alignment, but stop the old
+            // floor's live publishers before presenting the new floor image.
+            CancelOrbTracking("detected floor changed");
+            SuspendActiveAdaptiveFloor("detected floor changed");
+            ClearOptimisticPresentation();
+            _alignmentCommitGuard.Invalidate();
+            _lowStructureRecoveryCursor.Reset();
+            _currentFloorKey = floorKey;
+            if (_pendingAlignmentIdentity is not null)
+            {
+                _pendingAlignmentIdentity = CreatePendingVariantIdentity(locked.Map, floorKey);
+                _pendingAlignmentSeed = null;
+            }
+            if (_mapOpenSession.Snapshot.RecalibrationReason == MapRecalibrationReason.VariantChanged)
+                _mapOpenSession.RetargetVariantFloor(locked.Map.Id, floorKey);
+            else
+                _mapOpenSession.ConfirmDetectedFloor(locked.Map.Id, floorKey);
+            MapOverlayPresentationBatch.Apply(_overlay, () =>
+            {
+                _overlay.ClearMap();
+                RefreshMiniMapForCurrentFloor();
+                _overlay.Show();
+            });
+            _logCollector.Append(MapLogCategory.FloorRecognition, MapLogLevel.Info,
+                $"楼层已切换，等待对齐 · floor={floorKey}", details: new()
+                {
+                    ["mapId"] = locked.Map.Id, ["previousFloor"] = previousFloor,
+                    ["floor"] = floorKey, ["commitReason"] = "floor-indicator-before-alignment",
+                    ["generation"] = Volatile.Read(ref _currentMapOpenGeneration)
+                });
+        }
+        SetConfirmedFloorPreference(locked.Map.Id, floorKey);
+        _statusMessage = $"已识别{MapFloorRules.GetFloorDisplayName(locked.Map, floorKey)}，正在对齐……";
+        NotifyStateChanged();
+    }
 
 }
 /*

@@ -201,25 +201,54 @@ public partial class App
     private FrameworkElement? _startupPlaceholder;
     private Frame? _mainFrame;
     private Grid? _startupHost;
+    private readonly object _mapListStartupGate = new();
     private MapListStartupData? _mapListStartupData;
+    private bool _mapListStartupConsumed;
 
     internal static MapListStartupData? TakeMapListStartupData()
     {
         var current = _currentApp;
-        var data = current?._mapListStartupData;
-        if (current is not null)
+        if (current is null) return null;
+        lock (current._mapListStartupGate)
+        {
+            // Taking an unfinished preload consumes the handoff too. The page
+            // loads its own fresh snapshot and must not leave a late result
+            // permanently rooted by App after that first page has gone away.
+            current._mapListStartupConsumed = true;
+            var data = current._mapListStartupData;
             current._mapListStartupData = null;
-        return data;
+            if (data is not null)
+                IDVBuff.Core.Diagnostics.MemoryJournal.ReleaseResource(data);
+            return data;
+        }
+    }
+
+    private bool HasConsumedMapListStartupData()
+    {
+        lock (_mapListStartupGate) return _mapListStartupConsumed;
     }
 
     private async Task PrepareMapListAsync(SessionOrchestrator? session)
     {
         try
         {
+            if (HasConsumedMapListStartupData())
+            {
+                WriteStartupTrace("Map list preload already consumed; page owns its fresh catalog.");
+                StartupSplash.Complete(StartupSplash.Stage.Catalog);
+                return;
+            }
             WriteStartupTrace("Map catalog preload begin.");
             var repository = new MapRepository();
-            var catalog = await repository.GetCatalogSnapshotAsync();
+            var catalog = await repository.GetListCatalogSnapshotAsync();
             if (IsApplicationStopping) return;
+            if (HasConsumedMapListStartupData())
+            {
+                IDVBuff.Core.Diagnostics.MemoryJournal.ObserveManagedObject(catalog.Maps, "UI.MapList.UnusedStartupMaps");
+                WriteStartupTrace("Map list consumed preload while catalog loaded; unused catalog released.");
+                StartupSplash.Complete(StartupSplash.Stage.Catalog);
+                return;
+            }
             WriteStartupTrace("Map catalog loaded; tag filters begin.");
             var filters = (await new MapTagStore().LoadAsync(catalog.Maps, catalog.Classes))
                 .Where(group => group.IsEnabled)
@@ -232,14 +261,28 @@ public partial class App
             if (IsApplicationStopping) return;
             WriteStartupTrace("Survey projects loaded; catalog data prepared.");
             var previews = new Dictionary<string, BitmapImage>(StringComparer.OrdinalIgnoreCase);
-            _mapListStartupData = new MapListStartupData(
-                repository.GetCatalogRevision(), catalog, filters, projects, previews);
-            WriteStartupTrace($"Map list prepared: {catalog.Maps.Count} maps.");
+            lock (_mapListStartupGate)
+            {
+                if (!_mapListStartupConsumed)
+                {
+                    var data = new MapListStartupData(
+                        repository.GetCatalogRevision(), catalog, filters, projects, previews);
+                    IDVBuff.Core.Diagnostics.MemoryJournal.TrackResource(data, "UI.MapList.StartupData", null);
+                    IDVBuff.Core.Diagnostics.MemoryJournal.ObserveManagedObject(data, "UI.MapList.StartupData");
+                    _mapListStartupData = data;
+                }
+            }
+            WriteStartupTrace($"Map list preload finished: {catalog.Maps.Count} maps; consumed={HasConsumedMapListStartupData()}.");
             StartupSplash.Complete(StartupSplash.Stage.Catalog);
         }
         catch (Exception exception)
         {
-            _mapListStartupData = null;
+            lock (_mapListStartupGate)
+            {
+                if (_mapListStartupData is { } data)
+                    IDVBuff.Core.Diagnostics.MemoryJournal.ReleaseResource(data);
+                _mapListStartupData = null;
+            }
             WriteStartupTrace("Map list preloading failed; the page will retry when opened.", exception);
             // The optional preload step has finished via its existing page-level retry path.
             StartupSplash.Complete(StartupSplash.Stage.Catalog);

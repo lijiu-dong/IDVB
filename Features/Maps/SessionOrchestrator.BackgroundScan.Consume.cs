@@ -123,6 +123,8 @@ public sealed partial class SessionOrchestrator
         MapMatchSnapshot operationMatch,
         CancellationToken cancellationToken)
     {
+        // The scan gate protects acquisition; this scope survives field clearing during consumption.
+        using var pendingResult = _pendingBackgroundScan.Rent();
         // ── 候选确认：仅歧义 / 强制候选场景需要玩家从候选列表选择 ──
         RuntimeMapRecognition? locked = null;
         RuntimeMapRecognition? verifiedAlignment = null;
@@ -239,7 +241,7 @@ public sealed partial class SessionOrchestrator
         // 确定性单候选路径 seed 已由扫描产出，无需重建。
         if (_pendingBackgroundSeed is null
             && locked.Result.Source != MapRecognitionSource.UserConfirmed
-            && _pendingBackgroundScan is { } pendingScan
+            && pendingResult is { } pendingScan
             && candidateFrame is not null)
         {
             var selectedCandidate = pendingScan.Candidates

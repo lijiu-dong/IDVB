@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using IDVBuff.Pipeline;
 
 namespace IDVBuff.Features.Maps;
 
@@ -9,6 +10,8 @@ public sealed partial class SessionOrchestrator
             MapRecognitionTuning sideAlignmentTuning, Dictionary<string, double> timings,
             ScanIdentitySelectionPolicy selectionPolicy)
     {
+        using var verification = MapOperationTraceAmbient.StartTopLevel(
+            "automatic_candidate_verification", MapOperationWaitKind.Compute);
         var context = ScanExecutionContext.Current;
         var evidenceFrame = context?.Frame;
         var reliable = new List<(SideEntranceScanCandidate Candidate, MapAlignmentSession Seed, MapRecognitionAttempt Attempt)>();

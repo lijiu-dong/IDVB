@@ -32,6 +32,7 @@ public sealed partial class SessionOrchestrator
         var displayName = string.Empty;
         var sideTimings = new Dictionary<string, double>();
         MapOperationTrace.MapOperationSpanScope? initialPostProcess = null;
+        MapOperationTrace.MapOperationSpanScope? identitySelection = null;
 
         try
         {
@@ -51,6 +52,7 @@ public sealed partial class SessionOrchestrator
                     progress: value => _scanProgressOverlay.Report(
                         0.38d + value * 0.38d,
                         "正在扫描地图特征..."));
+                Interlocked.Exchange(ref pendingSideEntranceScan, sideScan)?.Dispose();
             }
             finally
             {
@@ -59,8 +61,8 @@ public sealed partial class SessionOrchestrator
             initialPostProcess = MapOperationTraceAmbient.StartTopLevel(
                 "initial_recognition",
                 MapOperationWaitKind.Compute);
-            pendingSideEntranceScan = sideScan;
-            _lastSideEntranceScan = sideScan;
+            var retainedLastScan = sideScan.Retain();
+            Interlocked.Exchange(ref _lastSideEntranceScan, retainedLastScan)?.Dispose();
             _lastDiagnostics = new MapScanDiagnostics
             {
                 ReadyMapCount = _recognition.ReadyMapCount,
@@ -129,6 +131,8 @@ public sealed partial class SessionOrchestrator
 
             var reliable = VerifySideEntranceCandidates(frame, candidates, sideAlignmentTuning, sideTimings,
                 result.IdentitySelectionPolicy);
+            identitySelection = MapOperationTraceAmbient.StartTopLevel(
+                "automatic_identity_selection", MapOperationWaitKind.Compute);
             // Preserve the verified choices even if publication later loses its
             // deadline/context. Never rebuild an empty list from catalog order.
             if (!result.ObserveUntilConfirmed)
@@ -208,6 +212,7 @@ public sealed partial class SessionOrchestrator
         }
         catch (Exception alignEx)
         {
+            identitySelection?.Complete(MapOperationSpanStatus.Failed, "identity-selection-exception");
             if (ScanExecutionContext.Current is { Policy.Mode: ScanPerformanceMode.DeepScan } deepScan)
             {
                 deepScan.RetrievalCompleted = false;
@@ -235,6 +240,13 @@ public sealed partial class SessionOrchestrator
             return;
         }
 
+        finally
+        {
+            identitySelection?.Complete();
+        }
+
+        using var finalizeResult = MapOperationTraceAmbient.StartTopLevel(
+            "recognition_result_finalize", MapOperationWaitKind.Compute);
         _lastDiagnostics = sideAttempt.Diagnostics;
         _lastDiagnostics.SideEntranceReadyMapCount =
             pendingSideEntranceScan?.ReadyMapCount ?? 0;

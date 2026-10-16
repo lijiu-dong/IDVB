@@ -11,10 +11,33 @@ namespace IDVBuff.Features.Maps;
 /// </summary>
 public static class Vpsg3FastBootstrapSolver
 {
+    public static Vpsg3BootstrapResult TrySolve(Vpsg3LiveObservation observation,
+        Vpsg3PreparedFloor preparedFloor, Vpsg3TuningConfig? config = null,
+        Vpsg3SolverScratch? scratch = null, double? knownScaleSeed = null)
+    {
+        var result = TrySolveGeometry(observation, preparedFloor, config, scratch, knownScaleSeed);
+        if (!result.IsAccepted || preparedFloor.SemanticIndex is not { } index) return result;
+        var semanticStarted = Stopwatch.GetTimestamp();
+        var evidence = index.VerifyObservation(observation,
+            result.Scale, result.OffsetX, result.OffsetY, observation.ViewportBounds);
+        var semanticMs = Stopwatch.GetElapsedTime(semanticStarted).TotalMilliseconds;
+        var timing = result.Timing with
+        {
+            VerificationMs = result.Timing.VerificationMs + semanticMs,
+            TotalMs = result.Timing.TotalMs + semanticMs
+        };
+        return evidence.Accepted
+            ? new Vpsg3BootstrapResult(result.IsAccepted, result.FallbackReason, result.Scale,
+                result.OffsetX, result.OffsetY, result.Confidence, result.ApertureMargin,
+                result.HasDistinctRunnerUp, result.PassedPartitions, result.ScaleResult,
+                result.BestCandidate, result.RunnerUpCandidate, timing, result.TestedScaleHypotheses)
+            : Vpsg3BootstrapResult.Fallback(evidence.Reason, result.ScaleResult, timing);
+    }
+
     /// <summary>
     /// Attempts to solve structural alignment from a live observation against a prepared floor index.
     /// </summary>
-    public static Vpsg3BootstrapResult TrySolve(
+    private static Vpsg3BootstrapResult TrySolveGeometry(
         Vpsg3LiveObservation observation,
         Vpsg3PreparedFloor preparedFloor,
         Vpsg3TuningConfig? config = null,
@@ -25,7 +48,8 @@ public static class Vpsg3FastBootstrapSolver
         ArgumentNullException.ThrowIfNull(preparedFloor);
 
         var cfg = config ?? Vpsg3TuningConfig.Default;
-        var sc = scratch ?? Vpsg3SolverScratch.Current;
+        using var scratchLease = scratch is null ? Vpsg3SolverScratch.Rent() : null;
+        var sc = scratch ?? scratchLease!.Scratch;
 
         var swTotal = Stopwatch.StartNew();
         var extractionMs = observation.ExtractionMilliseconds;

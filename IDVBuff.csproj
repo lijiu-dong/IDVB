@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="UTF-8" ?>
+<?xml version="1.0" encoding="UTF-8" ?>
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
         <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
@@ -68,6 +68,7 @@
         <Using Include="IDVBuff.Presentation.Theming" />
         <FrameworkReference Include="Microsoft.WindowsDesktop.App.WindowsForms" />
         <ProjectReference Include="Core\IDVBuff.Core.csproj" />
+        <ProjectReference Include="IDVB.ScanRaster\IDVB.ScanRaster.csproj" />
         <ProjectReference Include="IDVB.Vision\IDVB.Vision.csproj" Aliases="VisionEngine" />
         <ProjectReference Include="IDVBuff.Appearance\IDVBuff.Appearance.csproj" />
         <ProjectReference Include="Infrastructure\IDVBuff.Infrastructure.csproj" />
@@ -114,6 +115,7 @@
         <Content Include="Assets\Algorithms\structure-zongcai-native-reference-v1.idva"
                  CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Assets\Games\*.png" CopyToOutputDirectory="PreserveNewest" />
+        <Content Include="Assets\CoCreationTemplates\**\*" CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Assets\Algorithms\structure-native-observed-v2.idva"
                  CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Assets\Algorithms\structure-doom-girl-hard-wangqingxin-v1.idva"
@@ -152,6 +154,7 @@
 
     <ItemGroup>
         <Compile Remove="Core\**\*.cs" />
+        <Compile Remove="IDVB.ScanRaster\**\*.cs" />
         <Compile Remove="IDVB.Vision.Contracts\**\*.cs" />
         <Compile Remove="IDVB.Vision\**\*.cs" />
         <Compile Remove="IDVB.Vision.Tests\**\*.cs" />

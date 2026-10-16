@@ -70,6 +70,8 @@ public sealed partial class MapRuntimeSettings
     public double MapOpacity { get; set; } = 0.46d;
     /// <summary>显示受当前地图类能力声明保护的矢量路线。</summary>
     public bool ShowRoutes { get; set; } = true;
+    /// <summary>Opacity of vector route content, independent of the map raster.</summary>
+    public double RouteOpacity { get; set; } = 1d;
     /// <summary>线路粗细：0 细（原始宽度）、1 中、2 粗、3 更粗。</summary>
     public int RouteLineThickness { get; set; } = 1;
     // Compatibility fields retained for older settings files. ShowRoutes is
@@ -161,6 +163,7 @@ public sealed partial class MapRuntimeSettings
         ReverseAlternateDisplay = false,
         MapOpacity = 0.46d,
         ShowRoutes = true,
+        RouteOpacity = 1d,
         ShowGateMarkers = true,
         ShowAuxiliaryAnchors = false,
         ShowTextAnnotations = true,
@@ -421,6 +424,7 @@ public sealed partial class MapRuntimeSettings
         MapOpacity = MapOpacity,
         RouteLineThickness = RouteLineThickness,
         ShowRoutes = ShowRoutes,
+        RouteOpacity = RouteOpacity,
         ShowGateMarkers = ShowGateMarkers,
         ShowAuxiliaryAnchors = ShowAuxiliaryAnchors,
         ShowTextAnnotations = ShowTextAnnotations,

@@ -12,6 +12,7 @@ public sealed class OverlayNotificationItem : IOverlayNotification
     private double? _progress;
     private bool _isDismissed;
     private TimeSpan? _displayLifetime;
+    internal TimeSpan CompletionDelay { get; set; } = TimeSpan.FromSeconds(1.5);
 
     public static readonly TimeSpan DefaultDuration = TimeSpan.FromSeconds(5);
 
@@ -81,11 +82,11 @@ public sealed class OverlayNotificationItem : IOverlayNotification
                 _message = newMessage;
                 changed = true;
             }
-            // 达到 100% 进度时，默认 1.5 秒后优雅退出
+            // 普通进度默认 1.5 秒；对局加载使用独立的 0.5 秒完成停留。
             if (clamped >= 1.0)
             {
-                _displayLifetime = TimeSpan.FromSeconds(1.5);
-                ExpireTime = DateTimeOffset.UtcNow.AddSeconds(1.5);
+                _displayLifetime = CompletionDelay;
+                ExpireTime = DateTimeOffset.UtcNow + CompletionDelay;
             }
         }
 

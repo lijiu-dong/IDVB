@@ -151,6 +151,11 @@ public sealed partial class SessionOrchestrator
                 && ScanExecutionContext.Current is not { CanCompute: false }
                 && stopwatch.ElapsedMilliseconds <= timeout)
             {
+                // The tracker owns its 160x100 previous observation. A rejected
+                // full-size frame has no consumer on the next attempt; release
+                // it before capture so its exclusive GDI storage can be reused.
+                DisposeViewportFrame(lastFrame, attempts);
+                lastFrame = null;
                 attempts++;
                 object? frameObj;
                 string failureReason;
@@ -196,13 +201,12 @@ public sealed partial class SessionOrchestrator
                         return null;
                     }
                     successfulCaptures++;
+                    lastFrame = current; // Also owns it if stability analysis throws.
                     var stable = tracker.Observe(
                         current.Image,
                         maximumDifference,
                         requiredFrames,
                         sessionTuning.ViewportIgnoreRegions);
-                    DisposeViewportFrame(lastFrame, attempts);
-                    lastFrame = current;
                     if (stable)
                     {
                         var signatureSpan = ActiveOperationTrace?.StartChild(

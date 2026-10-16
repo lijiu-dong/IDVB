@@ -11,7 +11,7 @@ public sealed partial class MapCvRecognitionService
         using var execution = ScanExecutionContext.Enter(mode, cancellationToken, startedTimestamp: startedTimestamp);
         execution.CatalogRevision = CatalogRevision;
         execution.VariantGroups = ScanVariantGroups;
-        var scan = RunSideEntranceScan(frame, new MapRecognitionTuning(), mapClass: mapClass);
+        using var scan = RunSideEntranceScan(frame, new MapRecognitionTuning(), mapClass: mapClass);
         var verified = new Dictionary<Guid, RuntimeMapRecognition>();
         var verifiedIndexes = new Dictionary<Guid, ScanStructureIndex>();
         if (execution.Frame is { } observation)

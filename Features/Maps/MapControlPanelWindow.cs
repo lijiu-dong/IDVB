@@ -18,7 +18,7 @@ namespace IDVBuff.Features.Maps;
 /// </summary>
 public sealed partial class MapControlPanelWindow : IDisposable
 {
-    private readonly Func<string, Task> _beginMatch;
+    private readonly Func<string, Task, Task> _beginMatch;
     private readonly Func<string, Task> _beginSurveyMatch;
     private readonly Func<Task<IReadOnlyList<string>>> _getMapClasses;
     private readonly Func<string?> _getLastSelectedMapClass;
@@ -112,9 +112,14 @@ public sealed partial class MapControlPanelWindow : IDisposable
         Func<Task<MapVariantSelectionContext?>>? getVariantContext = null,
         Func<Guid, Task>? switchVariant = null,
         ICaptureProtectionService? captureProtection = null,
-        Func<Task>? correctMap = null)
+        Func<Task>? correctMap = null,
+        Func<string, Task, Task>? beginMatchWithPendingSave = null)
     {
-        _beginMatch = beginMatch;
+        _beginMatch = beginMatchWithPendingSave ?? (async (mapClass, pendingSave) =>
+        {
+            await pendingSave;
+            await beginMatch(mapClass);
+        });
         _beginSurveyMatch = beginSurveyMatch ?? beginMatch;
         _getMapClasses = getMapClasses;
         _getLastSelectedMapClass = getLastSelectedMapClass;
@@ -432,7 +437,6 @@ public sealed partial class MapControlPanelWindow : IDisposable
         SetActionsEnabled(false);
         try
         {
-            await _lastMapClassSaveTask;
             var startSurvey = _surveyModeToggle.IsOn;
             if (startSurvey && !_isSurveyModeAllowed())
             {
@@ -444,10 +448,16 @@ public sealed partial class MapControlPanelWindow : IDisposable
             // 无论测绘还是正常对局，点击开始后立即隐藏面板并将前台焦点还给游戏
             Hide();
 
-            var begin = startSurvey
-                ? _beginSurveyMatch
-                : _beginMatch;
-            await begin(mapClass);
+            if (startSurvey)
+            {
+                await _lastMapClassSaveTask;
+                await _beginSurveyMatch(mapClass);
+            }
+            else
+            {
+                // The orchestrator posts loading before awaiting this save or resource preparation.
+                await _beginMatch(mapClass, _lastMapClassSaveTask);
+            }
         }
         catch (Exception exception)
         {

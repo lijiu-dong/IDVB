@@ -17,8 +17,6 @@ namespace IDVBuff.Plugins.CustomPhrases;
 internal sealed partial class CustomPhraseOverlay
 {
     private const uint WmInput = 0x00FF;
-    private const int RimInput = 0;
-    private const int WheelDelta = 120;
     private const uint RidInput = 0x10000003;
     private const uint RimTypeMouse = 0;
     private const uint RiMouseWheel = 0x0400;
@@ -32,7 +30,7 @@ internal sealed partial class CustomPhraseOverlay
     internal static readonly ConcurrentDictionary<IntPtr, CustomPhraseOverlay> Overlays = new();
 
     private bool _rawInputRegistered;
-    private int _wheelDeltaRemainder;
+    private int _scrollGate;
 
     /// <summary>注册鼠标 Raw Input（浮层窗口创建后做一次即可）。</summary>
     private void EnsureRawInput()
@@ -104,7 +102,7 @@ internal sealed partial class CustomPhraseOverlay
                 return;
 
             // 上滚（正值）= 上一条。
-            ScrollSelection(delta);
+            ScrollSelection(delta > 0 ? -1 : 1);
         }
         finally
         {
@@ -119,29 +117,33 @@ internal sealed partial class CustomPhraseOverlay
     internal void ResetSelectionToFirst()
     {
         lock (_sync)
-        {
             _selectedIndex = _phrases.Length == 0 ? -1 : 0;
-            _wheelDeltaRemainder = 0;
-        }
     }
 
-    /// <summary>每累计 120 单位移动一条；保留余量，到顶、到底就停住。</summary>
-    private void ScrollSelection(int delta)
+    /// <summary>把高亮上 / 下移动一条；到顶、到底就停住。</summary>
+    private void ScrollSelection(int step)
     {
+        if (Interlocked.CompareExchange(ref _scrollGate, 1, 0) != 0)
+            return;
+
         var changed = false;
-        lock (_sync)
+        try
         {
-            if (!_visible || _phrases.Length == 0)
-                return;
-            _wheelDeltaRemainder += delta;
-            var steps = _wheelDeltaRemainder / WheelDelta;
-            _wheelDeltaRemainder %= WheelDelta;
-            var next = Math.Clamp(_selectedIndex - steps, 0, _phrases.Length - 1);
-            if (next != _selectedIndex)
+            lock (_sync)
             {
-                _selectedIndex = next;
-                changed = true;
+                if (!_visible || _phrases.Length == 0)
+                    return;
+                var next = Math.Clamp(_selectedIndex + step, 0, _phrases.Length - 1);
+                if (next != _selectedIndex)
+                {
+                    _selectedIndex = next;
+                    changed = true;
+                }
             }
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _scrollGate, 0);
         }
 
         if (changed)

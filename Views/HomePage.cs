@@ -216,6 +216,16 @@ public sealed partial class HomePage : Page
 
     internal void SetAmbientAccent(Color color) => _scanModeBloom.AccentColor = color;
 
+    internal void UseBloomTextureCache(ScanModeBloomTextureCache cache) => _scanModeBloom.UseTextureCache(cache);
+
+    internal void RetireAmbientResources()
+    {
+        _gameStatusGeneration++;
+        _gameStatusTimer.Stop();
+        _scanModeBloom.Retire();
+        _scanModeSelector.Retire();
+    }
+
     public Task InitialReady => _initialReady.Task;
 
     private Border CreateMetricCard(
@@ -321,7 +331,7 @@ public sealed partial class HomePage : Page
                 }
             });
 
-            _mapCountValue.Text = (await _mapRepository.GetMapsAsync()).Count.ToString();
+            _mapCountValue.Text = (await _mapRepository.GetMapCountAsync()).ToString();
         }
         catch
         {

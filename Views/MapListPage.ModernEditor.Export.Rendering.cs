@@ -11,11 +11,17 @@ namespace IDVBuff.Views;
 public sealed partial class MapListPage : UserControl
 {
     private static byte[] RenderModernPngExport(
+        FloorRecognitionProfile profile, string imagePath, ModernPngExportOptions options,
+        Func<string, string, bool> isVisible, bool removeBackground) =>
+        RenderModernPngExportWithAppearance(profile, imagePath, options, isVisible, removeBackground, null);
+
+    private static byte[] RenderModernPngExportWithAppearance(
         FloorRecognitionProfile profile,
         string imagePath,
         ModernPngExportOptions options,
         Func<string, string, bool> isVisible,
-        bool removeBackground)
+        bool removeBackground,
+        string? appearancePath = null)
     {
         using var sourceMat = Cv2.ImRead(imagePath, ImreadModes.Unchanged);
         if (sourceMat.Empty())
@@ -23,7 +29,15 @@ public sealed partial class MapListPage : UserControl
         var processingProfile = profile.Clone();
         processingProfile.RecognitionRegion = null;
         using var processing = MapBackgroundProcessor.Process(sourceMat, processingProfile, removeBackground);
-        var sourceBytes = processing.Recognition.ImEncode(".png");
+        // Background classification always sees the canonical image. A chosen
+        // white/black fill must never be interpreted as a new background region.
+        using var displayed = appearancePath is null ? processing.Recognition.Clone()
+            : Cv2.ImRead(appearancePath, ImreadModes.Unchanged);
+        if (displayed.Channels() == 3) Cv2.CvtColor(displayed, displayed, ColorConversionCodes.BGR2BGRA);
+        using var alpha = new Mat();
+        Cv2.ExtractChannel(processing.Recognition, alpha, 3);
+        Cv2.InsertChannel(alpha, displayed, 3);
+        var sourceBytes = displayed.ImEncode(".png");
         using var sourceStream = new MemoryStream(sourceBytes);
         using var source = new SD.Bitmap(sourceStream);
         if (source.Width <= 0 || source.Height <= 0)
@@ -56,7 +70,7 @@ public sealed partial class MapListPage : UserControl
 
             if (isVisible("graphics", string.Empty))
             {
-                foreach (var annotation in profile.Annotations)
+                foreach (var annotation in profile.Annotations.Where(a => !a.IsMarker))
                 {
                     if (!annotation.IsValid || !isVisible("graphics", ModernAnnotationKey(annotation.Id)))
                         continue;
@@ -80,6 +94,10 @@ public sealed partial class MapListPage : UserControl
                     DrawModernPngAnchor(graphics, anchor, options.Width, options.Height, scale);
                 }
             }
+            if (isVisible("graphics", string.Empty))
+                foreach (var marker in profile.Annotations.Where(a => a.IsMarker && a.IsValid
+                    && isVisible("graphics", ModernAnnotationKey(a.Id))))
+                    DrawModernPngAnnotation(graphics, marker, region, options.Width, options.Height, scale);
         }
 
         var pixels = ModernPngToBgraBytes(output);
@@ -109,6 +127,19 @@ public sealed partial class MapListPage : UserControl
         int outHeight,
         double scale)
     {
+        if (annotation.Type == MapAnnotationType.Route && annotation.IsValid)
+        {
+            using var pen = CreateModernPngPen(annotation.EffectiveColorHex, 3d * scale, dashed: false);
+            pen.StartCap = SD2D.LineCap.Round; pen.EndCap = SD2D.LineCap.Round; pen.LineJoin = SD2D.LineJoin.Round;
+            var routePoints = annotation.Points.Select(point => new SD.PointF(
+                (float)((point.X - region.X) / region.Width * outWidth),
+                (float)((point.Y - region.Y) / region.Height * outHeight))).ToArray();
+            using var halo = CreateModernPngPen("#0A0F16", 5d * scale, dashed: false);
+            halo.StartCap = SD2D.LineCap.Round; halo.EndCap = SD2D.LineCap.Round; halo.LineJoin = SD2D.LineJoin.Round;
+            if (annotation.Text?.StartsWith("阶段 ", StringComparison.Ordinal) is true) graphics.DrawLines(halo, routePoints);
+            graphics.DrawLines(pen, routePoints);
+            return;
+        }
         if (annotation.Type == MapAnnotationType.Line
             && annotation.Start is not null && annotation.End is not null)
         {
@@ -159,7 +190,10 @@ public sealed partial class MapListPage : UserControl
         if (string.IsNullOrWhiteSpace(text) || rect.Width <= 0 || rect.Height <= 0)
             return;
         var fitting = CalculateFittingFontSize(text, rect.Width, rect.Height);
-        var requested = (annotation.FontSize ?? fitting) * scale;
+        // Marker bounds are already projected into output pixels; applying the
+        // image scale again would shrink the same symbol a second time.
+        var requested = annotation.IsMarker ? Math.Min(rect.Height * .8, rect.Width / Math.Max(1, text.Length * .65))
+            : (annotation.FontSize ?? fitting) * scale;
         var fontSize = Math.Clamp(Math.Min(requested, fitting), 1, 512);
 
         var legacyStyle = annotation.FontFamily is null && annotation.FontSize is null
@@ -183,6 +217,15 @@ public sealed partial class MapListPage : UserControl
             Trimming = SD.StringTrimming.None,
             FormatFlags = SD.StringFormatFlags.NoWrap
         };
+        if (annotation.IsMarker)
+        {
+            using var halo = new SD.SolidBrush(SD.Color.FromArgb(255, 10, 15, 22));
+            var offset = Math.Max(1f, (float)fontSize * .07f);
+            foreach (var x in new[] { -offset, 0, offset })
+            foreach (var y in new[] { -offset, 0, offset })
+                if (x != 0 || y != 0) graphics.DrawString(text, font, halo,
+                    new SD.RectangleF(rect.X + x, rect.Y + y, rect.Width, rect.Height), format);
+        }
         graphics.DrawString(text, font, brush, rect, format);
         if (annotation.IsStrikethrough is true)
         {
