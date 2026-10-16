@@ -52,9 +52,12 @@ public sealed partial class SessionOrchestrator
         var stopReason = execution.ComputeStopReason;
         execution.CompleteAutomaticPhase();
         execution.Reported = true;
-        var met = execution.ElapsedMilliseconds <= execution.Policy.BudgetMilliseconds;
+        var scanMet = execution.ScanPhaseMilliseconds <= execution.Policy.BudgetMilliseconds;
+        var alignmentMet = execution.AlignmentPhaseMilliseconds is not { } alignment
+            || alignment <= execution.Policy.AlignmentBudgetMilliseconds;
+        var met = scanMet && alignmentMet;
         _logCollector.Append(MapLogCategory.ScanLifecycle, met ? MapLogLevel.Info : MapLogLevel.Warning,
-            $"扫描自动阶段结束 · mode={execution.Policy.Mode} · elapsed={execution.ElapsedMilliseconds:F1}ms · budgetMet={met}",
+            $"扫描自动阶段结束 · mode={execution.Policy.Mode} · elapsed={execution.ElapsedMilliseconds:F1}ms · scan={execution.ScanPhaseMilliseconds:F1}ms · alignment={execution.AlignmentPhaseMilliseconds?.ToString("F1") ?? "-"}ms · budgetMet={met}",
             elapsedMs: execution.ElapsedMilliseconds,
             details: new()
             {
@@ -67,6 +70,12 @@ public sealed partial class SessionOrchestrator
                 ["cancelled"] = execution.CancellationToken.IsCancellationRequested,
                 ["superseded"] = execution.IsSuperseded,
                 ["budgetMs"] = execution.Policy.BudgetMilliseconds,
+                ["alignmentBudgetMs"] = execution.Policy.AlignmentBudgetMilliseconds,
+                ["scanPhaseMs"] = execution.ScanPhaseMilliseconds,
+                ["alignmentPhaseMs"] = execution.AlignmentPhaseMilliseconds,
+                ["scanBudgetMet"] = scanMet,
+                ["alignmentBudgetMet"] = alignmentMet,
+                ["lastPhase"] = execution.Phase.ToString(),
                 ["samplePoints"] = execution.Frame?.SearchPoints.Length ?? 0,
                 ["densePoints"] = execution.Frame?.DensePoints.Length ?? 0,
                 ["searchHypotheses"] = execution.TestedHypotheses,

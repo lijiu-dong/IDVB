@@ -31,6 +31,7 @@ public sealed partial class MapLogCollector : IDisposable, IAsyncDisposable
             if (!Equals(details["scanId"], scan.ScanId)) return details;
             details["scanElapsedMs"] = scan.ElapsedMilliseconds;
             details["scanRemainingMs"] = scan.RemainingMilliseconds;
+            details["scanPhase"] = scan.Phase.ToString();
             details["scanCancelled"] = scan.CancellationToken.IsCancellationRequested;
             details["scanSuperseded"] = scan.IsSuperseded;
         }

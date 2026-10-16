@@ -136,7 +136,7 @@ public sealed partial class SessionOrchestrator
     {
         using var pass = CancellationTokenSource.CreateLinkedTokenSource(token);
         var mode = _settings!.ScanPerformanceMode;
-        pass.CancelAfter(ScanExecutionPolicy.For(mode).BudgetMilliseconds);
+        pass.CancelAfter(ScanExecutionPolicy.For(mode).TotalBudgetMilliseconds);
         using var execution = ScanExecutionContext.Enter(mode, pass.Token,
             () => IsMapObservationCurrent(match, toggle, generation));
         using var suppressDiagnostics = MapDiagnosticModeCapture.Suppress();

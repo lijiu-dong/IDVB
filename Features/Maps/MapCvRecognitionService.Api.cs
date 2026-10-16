@@ -32,6 +32,8 @@ public sealed partial class MapCvRecognitionService
                     .ThenByDescending(item => item.State == ScanIdentityState.Unverified)
                     .ThenBy(ScanIdentityVerifier.FitCost).First();
             }
+            // Formal alignment has its own deadline, started only if comparison finished in time.
+            execution.BeginAlignmentPhase();
             foreach (var candidate in scan.Candidates.OrderBy(c => ScanIdentityVerifier.FitCost(c.IdentityEvidence)))
             {
                 if (execution.VariantGroups.Any(group => group.Contains(candidate.Map.Id)

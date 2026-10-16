@@ -56,17 +56,26 @@ public sealed record ScanExecutionPolicy(
 {
     public double MinimumScale { get; init; } = SideEntranceScanRules.MinimumScale;
     public double MaximumScale { get; init; } = SideEntranceScanRules.MaximumScale;
+    /// <summary>Deadline of the post-scan formal alignment, counted from the moment
+    /// identity comparison ends. It is separate from <see cref="BudgetMilliseconds"/>,
+    /// which bounds only capture, gate detection, retrieval and identity evidence.</summary>
+    public int AlignmentBudgetMilliseconds { get; init; }
+    public int TotalBudgetMilliseconds => BudgetMilliseconds + AlignmentBudgetMilliseconds;
     public static ScanExecutionPolicy For(ScanPerformanceMode mode) => mode switch
     {
-        ScanPerformanceMode.Fast => new(mode, 500, 256, .08, .02, 1, 3),
-        ScanPerformanceMode.Quality => new(mode, 1000, 256, .02, .005, 3, 1),
-        ScanPerformanceMode.DeepScan => new(mode, 2000, 384, .02, .0025, 8, 1),
-        _ => new(ScanPerformanceMode.Balanced, 1000, 256, .04, .01, 2, 3)
+        ScanPerformanceMode.Fast => new(mode, 500, 256, .08, .02, 1, 3) { AlignmentBudgetMilliseconds = 500 },
+        ScanPerformanceMode.Quality => new(mode, 1000, 256, .02, .005, 3, 1) { AlignmentBudgetMilliseconds = 1000 },
+        ScanPerformanceMode.DeepScan => new(mode, 2000, 384, .02, .0025, 8, 1) { AlignmentBudgetMilliseconds = 2000 },
+        _ => new(ScanPerformanceMode.Balanced, 1000, 256, .04, .01, 2, 3) { AlignmentBudgetMilliseconds = 1000 }
     };
 }
 
-/// <summary>One immutable policy and monotonic deadline from dispatch through publication.
-/// The lease flows into worker tasks; user selection explicitly ends automatic scanning.</summary>
+public enum ScanExecutionPhase { Scan, Alignment }
+
+/// <summary>One immutable policy and two monotonic deadlines from dispatch through publication:
+/// the scan deadline starts at dispatch, and a separate alignment deadline starts once
+/// identity comparison has finished inside the scan deadline. The lease flows into worker
+/// tasks; user selection explicitly ends automatic scanning.</summary>
 internal sealed partial class ScanExecutionContext : IDisposable
 {
     private static readonly AsyncLocal<ScanExecutionContext?> Ambient = new();
@@ -76,6 +85,7 @@ internal sealed partial class ScanExecutionContext : IDisposable
     private readonly CancellationToken _cancellation;
     private readonly Func<bool>? _isCurrent;
     private double? _completedMilliseconds;
+    private double? _scanPhaseMilliseconds;
     private bool _disposed;
     private (ScanStructureIndex Index, MapScreenRect Viewport)? _alignmentIdentity;
     public static ScanExecutionContext? Current => Ambient.Value;
@@ -104,8 +114,16 @@ internal sealed partial class ScanExecutionContext : IDisposable
     public bool Reported { get; set; }
     public double ElapsedMilliseconds => _completedMilliseconds
         ?? _timeProvider.GetElapsedTime(_started).TotalMilliseconds;
-    public int RemainingMilliseconds => Math.Max(0,
-        Policy.BudgetMilliseconds - (int)Math.Ceiling(ElapsedMilliseconds));
+    public ScanExecutionPhase Phase => _scanPhaseMilliseconds.HasValue
+        ? ScanExecutionPhase.Alignment : ScanExecutionPhase.Scan;
+    /// <summary>Time spent in the scan phase; frozen when alignment begins.</summary>
+    public double ScanPhaseMilliseconds => _scanPhaseMilliseconds ?? ElapsedMilliseconds;
+    public double? AlignmentPhaseMilliseconds => _scanPhaseMilliseconds is { } scan
+        ? ElapsedMilliseconds - scan : null;
+    public int PhaseBudgetMilliseconds => Phase == ScanExecutionPhase.Alignment
+        ? Policy.AlignmentBudgetMilliseconds : Policy.BudgetMilliseconds;
+    public int RemainingMilliseconds => Math.Max(0, PhaseBudgetMilliseconds - (int)Math.Ceiling(
+        Phase == ScanExecutionPhase.Alignment ? AlignmentPhaseMilliseconds!.Value : ElapsedMilliseconds));
     public bool IsAutomatic => !_completedMilliseconds.HasValue;
     public bool IsSuperseded => _isCurrent?.Invoke() == false;
     public bool Expired => IsAutomatic && (_cancellation.IsCancellationRequested || IsSuperseded || RemainingMilliseconds == 0);
@@ -142,6 +160,16 @@ internal sealed partial class ScanExecutionContext : IDisposable
     public void CompleteAutomaticPhase()
     {
         _completedMilliseconds ??= _timeProvider.GetElapsedTime(_started).TotalMilliseconds;
+    }
+    /// <summary>Ends the scan phase and starts the independent alignment deadline.
+    /// A scan that already lost its own deadline, was cancelled or superseded stays
+    /// expired: alignment time never extends identity retrieval.</summary>
+    public bool BeginAlignmentPhase()
+    {
+        if (Phase == ScanExecutionPhase.Alignment) return CanCompute;
+        if (!CanCompute) return false;
+        _scanPhaseMilliseconds = _timeProvider.GetElapsedTime(_started).TotalMilliseconds;
+        return CanCompute;
     }
     public IDisposable ConstrainAlignment(ScanStructureIndex index, MapScreenRect viewport)
     {

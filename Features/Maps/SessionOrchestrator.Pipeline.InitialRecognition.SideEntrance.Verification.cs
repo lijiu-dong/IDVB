@@ -38,6 +38,19 @@ public sealed partial class SessionOrchestrator
             candidate.Disposition = SideEntranceCandidateDisposition.NeedsVerification;
         }
         timings["scan_class_evidence"] = timer.Elapsed.TotalMilliseconds;
+        // Identity comparison is the end of the scan. Formal registration, VPSG
+        // rescue and the commit check run under their own alignment deadline, so
+        // a slow retrieval can no longer starve alignment of a dominant identity.
+        var alignmentStarted = context!.BeginAlignmentPhase();
+        _logCollector.Append(MapLogCategory.ScanLifecycle,
+            alignmentStarted ? MapLogLevel.Info : MapLogLevel.Warning,
+            $"扫描阶段结束 · alignmentStarted={alignmentStarted}", details: new()
+            {
+                ["scanPhaseMs"] = context.ScanPhaseMilliseconds,
+                ["scanBudgetMs"] = context.Policy.BudgetMilliseconds,
+                ["alignmentBudgetMs"] = context.Policy.AlignmentBudgetMilliseconds,
+                ["computeStopReason"] = context.ComputeStopReason
+            });
         var deferAmbiguousAlignment = ScanUncertainPolicies.DeferAmbiguousDeepScanAlignment(context!, candidates);
         var completed = 0;
         var formal = 0;
