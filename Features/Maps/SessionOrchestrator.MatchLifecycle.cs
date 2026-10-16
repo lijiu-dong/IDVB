@@ -87,7 +87,7 @@ public sealed partial class SessionOrchestrator
         _nativeMiniMapCaptureTask = Task.Run(() => RunNativeMiniMapCaptureAsync(nativeMiniMapToken));
     }
 
-    private void CancelMatchOperations()
+    private void CancelMatchOperations(bool preserveMapToggleState = false)
     {
         CancelMapObservation();
         EndAdaptiveMapOpen("match lifecycle changed");
@@ -103,7 +103,8 @@ public sealed partial class SessionOrchestrator
             // Disposal and match shutdown can race during application exit.
         }
         _alignmentCommitGuard.Invalidate();
-        _gameMapToggleState.Reset();
+        if (!preserveMapToggleState)
+            _gameMapToggleState.Reset();
     }
 
     private void QueueSelectedMapResourcePreparation(Guid mapId)

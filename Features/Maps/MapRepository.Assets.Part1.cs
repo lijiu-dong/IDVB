@@ -147,7 +147,7 @@ public sealed partial class MapRepository
                 foreach (var map in maps)
                 {
                     var stored = catalog.Maps.FirstOrDefault(candidate => candidate.Id == map.Id);
-                    if (stored is null)
+                    if (stored is null || stored.TemplateOrigin != map.TemplateOrigin)
                         continue;
                     stored.IsCoCreationTemplate |= map.IsCoCreationTemplate;
                     foreach (var floor in MapFloorRules.GetOrderedFloors(map))

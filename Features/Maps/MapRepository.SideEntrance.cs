@@ -26,41 +26,12 @@ public sealed partial class MapRepository
     }
 
     /// <summary>
-    /// 解析指定地图楼层侧门特征的生成源图像路径。
-    /// 严格只使用预制二值轮廓图（prebuilt-{floorKey}.png），彻底删除从攻略地图裁剪灰度图的旧路径。
-    /// </summary>
-    private (string path, string sourceKind) ResolveSideEntranceFeatureSource(MapRecord record, string floorKey)
-    {
-        var localPrebuilt = Path.Combine(GetMapDirectory(record.Id), $"prebuilt-{floorKey}.png");
-        if (File.Exists(localPrebuilt)) return (localPrebuilt, "PrebuiltStructureLine");
-        if (HasPrebuiltStructureLine(record, floorKey))
-        {
-            var prebuiltPath = GetPrebuiltStructureLinePath(record, floorKey);
-            if (File.Exists(prebuiltPath)) return (prebuiltPath, "PrebuiltStructureLine");
-        }
-        throw new InvalidOperationException($"地图 {record.DisplayName} 楼层 {floorKey} 缺少预制二值轮廓图 prebuilt-{floorKey}.png。");
-    }
-
-    /// <summary>
-    /// 在暂存目录（staging）中解析楼层侧门特征的生成源图像路径。
-    /// 严格只使用预制二值轮廓图。
-    /// </summary>
-    private static (string path, string sourceKind) ResolveSideEntranceStagingFeatureSource(
-        string stagingDirectory, string floorKey)
-    {
-        var prebuiltPath = Path.Combine(stagingDirectory, $"prebuilt-{floorKey}.png");
-        if (File.Exists(prebuiltPath))
-            return (prebuiltPath, "PrebuiltStructureLine");
-        throw new InvalidOperationException($"暂存目录缺少预制二值轮廓图 prebuilt-{floorKey}.png。");
-    }
-
-    /// <summary>
     /// 若扫描门锚点已标注，为该楼层生成门特征图并更新 profile 的相关字段。
     /// 若锚点未标注或源图像不存在，则静默跳过。
     /// </summary>
     private async Task TryGenerateSideEntranceFeatureAsync(
         string stagingDirectory,
-        FloorRecognitionProfile profile)
+        FloorRecognitionProfile profile, string? boundFileName = null)
     {
         if (IsCvDisabledForSafeMode())
             return;
@@ -73,7 +44,7 @@ public sealed partial class MapRepository
         try
         {
             (sourcePath, sourceKind) =
-                ResolveSideEntranceStagingFeatureSource(stagingDirectory, profile.FloorKey);
+                ResolveSideEntranceStagingFeatureSource(stagingDirectory, profile.FloorKey, boundFileName);
         }
         catch
         {
@@ -243,7 +214,7 @@ public sealed partial class MapRepository
                 {
                     var liveCatalog = await ReadCatalogAsync();
                     var stored = liveCatalog.Maps.FirstOrDefault(m => m.Id == record.Id);
-                    if (stored is not null)
+                    if (stored is not null && stored.TemplateOrigin == record.TemplateOrigin)
                     {
                         foreach (var floorDef in MapFloorRules.GetOrderedFloors(record))
                         {

@@ -233,6 +233,7 @@ public sealed partial class MapRepository
                 StringComparison.OrdinalIgnoreCase));
             catalog.Classes.Remove(canonicalName);
             catalog.ClassProperties.Remove(canonicalName);
+            catalog.TemplateInstances.RemoveAll(i => string.Equals(i.LocalClass, canonicalName, StringComparison.OrdinalIgnoreCase));
             await WriteCatalogAsync(catalog);
             foreach (var (_, staged) in stagedDirectories)
                 if (Directory.Exists(staged)) Directory.Delete(staged, recursive: true);

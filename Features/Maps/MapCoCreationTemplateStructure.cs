@@ -10,7 +10,7 @@ public sealed partial class MapCoCreationTemplateCatalog
 
     internal async Task<FixedTemplateStructure?> GetFixedStructureAsync(string? sourceHash)
     {
-        if (string.IsNullOrWhiteSpace(sourceHash) || !File.Exists(Path.Combine(_root, "catalog.json")))
+        if (_installedStore || string.IsNullOrWhiteSpace(sourceHash) || !File.Exists(Path.Combine(_root, "catalog.json")))
             return null;
         Task<Dictionary<string, FixedTemplateStructure>> load;
         lock (_fixedStructureGate)

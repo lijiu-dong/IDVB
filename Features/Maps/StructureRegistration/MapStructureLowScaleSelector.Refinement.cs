@@ -133,4 +133,89 @@ internal static partial class MapStructureScaleEstimator
             ? Math.Abs(Math.Log(scale / preferred))
             : Math.Abs(Math.Log(scale));
 
+    // Same requests, order and results as the sequential semantic loop below.
+    private static IReadOnlyList<ScaleScore> ScoreSemanticBatch(IEnumerable<double> candidates, int factor,
+        Size referenceSize, Mat livePatch, SemanticScaleSearch semantic, ScaleScore? anchor, int radius)
+    {
+        var requests = new List<(double Scale, Size Size, Rect? Region)>();
+        foreach (var scale in candidates)
+        {
+            var size = new Size(
+                Math.Max(1, (int)Math.Round(livePatch.Width / scale / factor)),
+                Math.Max(1, (int)Math.Round(livePatch.Height / scale / factor)));
+            if (size.Width < 3 || size.Height < 3
+                || size.Width >= referenceSize.Width || size.Height >= referenceSize.Height)
+                continue;
+            requests.Add((scale, size, SemanticSearchRegion(anchor, livePatch.Size(), size,
+                referenceSize, factor, radius)));
+        }
+        var costs = semantic.ScoreBatch(requests.Select(request => (request.Size, request.Region)).ToArray(),
+            factor, out var locations);
+        var scores = new List<ScaleScore>(requests.Count);
+        for (var i = 0; i < requests.Count; i++)
+            if (double.IsFinite(costs[i]))
+                scores.Add(new(requests[i].Scale, costs[i], locations[i].X * factor, locations[i].Y * factor));
+        return scores;
+    }
+
+    private static double AdjacentResolution(IReadOnlyList<double> grid, double scale)
+    {
+        var ordered = grid.OrderBy(item => item).ToArray();
+        var index = Array.FindIndex(ordered, item => Math.Abs(item - scale) < 1e-9d);
+        if (index < 0 || ordered.Length < 2)
+            return 0d;
+        var differences = new List<double>();
+        if (index > 0)
+            differences.Add(LowStructureScaleEvidenceRules.RelativeDifference(ordered[index], ordered[index - 1]));
+        if (index + 1 < ordered.Length)
+            differences.Add(LowStructureScaleEvidenceRules.RelativeDifference(ordered[index], ordered[index + 1]));
+        return differences.Count == 0 ? 0d : differences.Min();
+    }
+
+    private static IReadOnlyList<double> BuildRefinementRound(
+        IReadOnlyList<double> grid,
+        int winnerIndex,
+        int pointCount)
+    {
+        if (grid.Count == 0 || winnerIndex < 0)
+            return [];
+        winnerIndex = Math.Min(winnerIndex, grid.Count - 1);
+        var winner = grid[winnerIndex];
+        var lower = winnerIndex > 0
+            ? Math.Sqrt(grid[winnerIndex - 1] * winner)
+            : winner / Math.Sqrt(grid[Math.Min(1, grid.Count - 1)] / winner);
+        var upper = winnerIndex + 1 < grid.Count
+            ? Math.Sqrt(winner * grid[winnerIndex + 1])
+            : winner * Math.Sqrt(winner / grid[Math.Max(0, winnerIndex - 1)]);
+        if (!double.IsFinite(lower) || !double.IsFinite(upper) || lower <= 0d || upper < lower)
+            return [winner];
+        var count = Math.Clamp(pointCount, 3, 5);
+        return Enumerable.Range(0, count)
+            .Select(index => lower * Math.Exp(Math.Log(upper / lower) * index / (count - 1d)))
+            .ToArray();
+    }
+
+    internal static IReadOnlyList<double> BuildFineScaleGrid(
+        IReadOnlyList<double> coarseGrid,
+        int winnerIndex,
+        double maximumRelativeStep)
+    {
+        if (coarseGrid.Count == 0 || winnerIndex < 0)
+            return [];
+        winnerIndex = Math.Min(winnerIndex, coarseGrid.Count - 1);
+        var lower = coarseGrid[Math.Max(0, winnerIndex - 1)];
+        var upper = coarseGrid[Math.Min(coarseGrid.Count - 1, winnerIndex + 1)];
+        if (!double.IsFinite(lower) || !double.IsFinite(upper) || lower <= 0d || upper < lower)
+            return [];
+        if (Math.Abs(upper - lower) < 1e-9d)
+            return [lower];
+        var segments = Math.Clamp(
+            (int)Math.Ceiling(Math.Log(upper / lower)
+                / Math.Clamp(maximumRelativeStep, 0.0025d, 0.02d)),
+            2,
+            48);
+        return Enumerable.Range(0, segments + 1)
+            .Select(index => lower * Math.Exp(Math.Log(upper / lower) * index / segments))
+            .ToArray();
+    }
 }

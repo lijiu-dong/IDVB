@@ -115,7 +115,9 @@
         <Content Include="Assets\Algorithms\structure-zongcai-native-reference-v1.idva"
                  CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Assets\Games\*.png" CopyToOutputDirectory="PreserveNewest" />
-        <Content Include="Assets\CoCreationTemplates\**\*" CopyToOutputDirectory="PreserveNewest" />
+        <!-- Co-creation templates are installed by users from independent .idvmx packages. -->
+        <Content Remove="Assets\CoCreationTemplates\**\*" />
+        <None Remove="Assets\CoCreationTemplates\**\*" />
         <Content Include="Assets\Algorithms\structure-native-observed-v2.idva"
                  CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Assets\Algorithms\structure-doom-girl-hard-wangqingxin-v1.idva"

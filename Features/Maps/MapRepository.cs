@@ -12,7 +12,7 @@ public readonly record struct MapCatalogRevision(long LastWriteUtcTicks, long Le
 /// </summary>
 public sealed partial class MapRepository
 {
-    private const int CurrentStorageSchemaVersion = 19;
+    private const int CurrentStorageSchemaVersion = 20;
     private const string FloorOneRecognitionFileName = "floor-1-recognition.png";
     private const string FloorTwoRecognitionFileName = "floor-2-recognition.png";
     private const string FloorOneOverlayFileName = "floor-1-overlay.png";
@@ -75,6 +75,8 @@ public sealed partial class MapRepository
             var existing = draft.Id is { } id ? catalog.Maps.SingleOrDefault(map => map.Id == id) : null;
             if (draft.Id is not null && existing is null && !draft.CreateAsImportedCopy)
                 throw new InvalidOperationException("找不到要编辑的地图。");
+            if (existing?.TemplateOrigin is { } origin && draft.TemplateOrigin != origin)
+                throw new InvalidOperationException("模板基础资源已更新，请重新打开地图后保存；当前草稿未覆盖新版。");
 
             if (existing?.IsCoCreationTemplate is true)
             {
@@ -93,6 +95,7 @@ public sealed partial class MapRepository
             isNewRecord = existing is null;
             record.Title = draft.Title?.Trim() ?? string.Empty;
             record.IsCoCreationTemplate = draft.IsCoCreationTemplate || existing?.IsCoCreationTemplate is true;
+            record.TemplateOrigin = existing?.TemplateOrigin ?? draft.TemplateOrigin;
             record.AppearancePalette = record.IsCoCreationTemplate ? draft.AppearancePalette?.Normalize() : null;
             record.Source = string.Equals(draft.Source, "survey", StringComparison.Ordinal)
                 ? "survey"
@@ -348,7 +351,7 @@ public sealed partial class MapRepository
                 // 侧门特征预处理：若侧门锚点已标注，生成特征图
                 // Imported feature metadata does not include the current source
                 // hash or algorithm version. Generate against the staged prebuilt.
-                await TryGenerateSideEntranceFeatureAsync(stagingDirectory, profile);
+                await TryGenerateSideEntranceFeatureAsync(stagingDirectory, profile, floor.PrebuiltStructureLine?.FileName);
 
                 var recognitionSourcePath = needsIndependentRecognition || !UsesWholeSourceImage(profile)
                     ? Path.Combine(stagingDirectory, recognitionFileName)

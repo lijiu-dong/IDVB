@@ -144,9 +144,8 @@ public sealed partial class SessionOrchestrator
             var targetFloor = targetFloors.ElementAtOrDefault(floorIndex)?.Key
                 ?? targetFloors[0].Key;
 
-            var mapWasOpen = _gameMapToggleState.IsOpen;
             _matchSession.AdvanceOperationEpoch();
-            CancelMatchOperations();
+            CancelMatchOperations(preserveMapToggleState: true);
             _lowStructureRecoveryCursor.Reset();
             await DrainMatchOperationsAsync();
             await DrainMapCacheWritesAsync();
@@ -203,7 +202,9 @@ public sealed partial class SessionOrchestrator
                 MapLogLevel.Info,
                 $"切换地图变体 · from={currentMap.Id} · to={targetMap.Id} · floor={targetFloor}");
 
-            if (mapWasOpen)
+            // Read the live state after draining. External close/REST input must
+            // never be overwritten by a snapshot from before the variant change.
+            if (_gameMapToggleState.IsOpen)
             {
                 openTransition = _gameMapToggleState.SetOpenForExternalController(true);
                 realignImmediately = true;

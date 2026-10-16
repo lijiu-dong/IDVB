@@ -136,6 +136,8 @@ public sealed partial class SessionOrchestrator
                 var local = RunValidatedFixed(cachedScale);
                 if (local.Recognition is not null)
                 {
+                    if (!isHypothesis)
+                        NoteCacheValidationOutcome(lowCacheKey, succeeded: true);
                     return StampCacheTrust(CopyAttempt(
                         local,
                         MarkUsedCachedScale(local.Recognition)), validatedScaleSeed: true);

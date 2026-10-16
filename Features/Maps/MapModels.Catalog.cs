@@ -13,6 +13,8 @@ internal sealed class MapCatalogDocument
     public Dictionary<string, MapClassProperties> ClassProperties { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public List<MapRecord> Maps { get; set; } = [];
     public List<MapVariantGroup> VariantGroups { get; set; } = [];
+    public List<MapTemplateInstance> TemplateInstances { get; set; } = [];
+    public Dictionary<Guid, string> TemplateImports { get; set; } = [];
 }
 
 public sealed class MapVariantGroup

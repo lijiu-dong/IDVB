@@ -92,6 +92,7 @@ public sealed class MapSubscriptionService
                 }
                 if (action != MapSubscriptionReconciliationAction.ForceReapply)
                     continue;
+                record.InstalledMapIds.RemoveAll(id => !installedMapIds.Contains(id));
                 record.LastAppliedPlaintextSha256 = null;
                 incomplete++;
             }

@@ -8,7 +8,8 @@ public sealed partial class MapRepository
     // Install their assets without decoding/re-encoding each floor or committing
     // the entire catalog once per map. The existing journal covers crash recovery.
     internal async Task<MapImportBatchResult> AddPreparedTemplateClassAsync(string className,
-        IReadOnlyList<MapCoCreationPreparedMap> templates, string preparedRoot, CancellationToken token)
+        IReadOnlyList<MapCoCreationPreparedMap> templates,
+        IReadOnlyList<MapCoCreationTemplateVariantGroup> variantGroups, string preparedRoot, CancellationToken token)
     {
         await Gate.WaitAsync(token);
         var createdDirectories = new List<string>();
@@ -29,11 +30,19 @@ public sealed partial class MapRepository
                 record.CreatedAt = record.UpdatedAt = DateTimeOffset.UtcNow;
                 return record;
             }).ToArray();
+            var localIds = templates.Select((template, index) => (template.TemplateId, maps[index].Id))
+                .ToDictionary(item => item.TemplateId, item => item.Id, StringComparer.Ordinal);
+            var groups = variantGroups.Select(group => new MapVariantGroup
+            {
+                Id = Guid.NewGuid(), Class = localClass, PaletteSlot = group.PaletteSlot,
+                MapIds = group.TemplateIds.Select(id => localIds[id]).ToList()
+            }).ToArray();
             var journal = new IdvmImportJournal
             {
                 ProcessId = Environment.ProcessId,
                 CreatedClasses = [localClass],
-                ImportedMapIds = maps.Select(map => map.Id).ToList()
+                ImportedMapIds = maps.Select(map => map.Id).ToList(),
+                ImportedVariantGroupIds = groups.Select(group => group.Id).ToList()
             };
             journalPath = Path.Combine(_rootDirectory, $".idvm-import-{Guid.NewGuid():N}.json");
             WriteImportJournal(journalPath, journal);
@@ -69,13 +78,19 @@ public sealed partial class MapRepository
             catalog.Classes.Add(localClass);
             catalog.ClassProperties[localClass] = new MapClassProperties();
             catalog.Maps.AddRange(maps);
+            if (maps[0].TemplateOrigin is { } origin)
+                catalog.TemplateInstances.Add(new() { Id = origin.InstanceId, ClassId = origin.ClassId,
+                    LocalClass = localClass, KnownMapIds = templates.Select(t => t.TemplateId).ToHashSet(StringComparer.Ordinal),
+                    VariantBaselines = CloneTemplateVariants(variantGroups) });
+            catalog.VariantGroups.AddRange(groups);
             MapOperationProgress.Report(.98, "正在保存模板索引……");
             await WriteCatalogAsync(catalog);
             committed = true;
             journal.Completed = true;
             WriteImportJournal(journalPath, journal);
             File.Delete(journalPath);
-            return new MapImportBatchResult([localClass], maps.Select(map => map.Clone()).ToArray(), []);
+            return new MapImportBatchResult([localClass], maps.Select(map => map.Clone()).ToArray(),
+                groups.Select(group => group.Clone()).ToArray());
         }
         catch
         {
@@ -90,6 +105,15 @@ public sealed partial class MapRepository
             throw;
         }
         finally { Gate.Release(); }
+    }
+
+    internal static void ValidatePreparedTemplateAssets(MapCoCreationPreparedMap template, string directory)
+    {
+        var map = template.Record.Clone();
+        if (map.Floors.Count == 0 || !string.Equals(map.SourceVisualSha256, map.Floors[0].ImageSha256, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("模板来源原图绑定无效。");
+        BindPreparedTemplateAssets(map, template.Files, directory);
+        ValidateFloorDefinitions(map);
     }
 
     private static void BindPreparedTemplateAssets(MapRecord map, IReadOnlyDictionary<string, string> files, string directory)

@@ -19,6 +19,7 @@ public sealed partial class MapRecord
             Recognition = Recognition.Clone(includeEditableGeometry),
             Source = Source,
             IsCoCreationTemplate = IsCoCreationTemplate,
+            TemplateOrigin = TemplateOrigin,
             AppearancePalette = AppearancePalette,
             AcquisitionKind = AcquisitionKind,
             SubscriptionId = SubscriptionId,

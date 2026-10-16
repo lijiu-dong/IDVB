@@ -76,6 +76,8 @@ public sealed class MapCoCreationTemplateFloor
 }
 public sealed class MapCoCreationTemplate
 {
+    [System.Text.Json.Serialization.JsonIgnore]
+    internal string? PackageRoot { get; set; }
     public string Id { get; set; } = string.Empty;
     public string Title { get; set; } = string.Empty;
     public int Difficulty { get; set; }
@@ -88,18 +90,26 @@ public sealed partial class MapCoCreationTemplateCatalog
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
     private readonly string _root;
+    private readonly bool _installedStore;
     public MapCoCreationTemplateCatalog(string? root = null) =>
-        _root = Path.GetFullPath(root ?? Path.Combine(AppContext.BaseDirectory, "Assets", "CoCreationTemplates"));
+        (_root, _installedStore) = (Path.GetFullPath(root ?? Path.Combine(AppDataPaths.RootDirectory, "CoCreationTemplates")), root is null);
+    public MapCoCreationTemplateCatalog(string root, bool installedStore) =>
+        (_root, _installedStore) = (Path.GetFullPath(root), installedStore);
     public async Task<IReadOnlyList<MapCoCreationTemplate>> LoadAsync(CancellationToken cancellationToken = default)
+        => _installedStore ? (await LoadClassesAsync(cancellationToken)).SelectMany(c => c.Templates).ToArray()
+            : (await LoadDocumentAsync(cancellationToken)).Templates;
+
+    private async Task<CatalogDocument> LoadDocumentAsync(CancellationToken cancellationToken)
     {
         var bytes = await File.ReadAllBytesAsync(Path.Combine(_root, "catalog.json"), cancellationToken);
         var catalog = JsonSerializer.Deserialize<CatalogDocument>(bytes, JsonOptions)
             ?? throw new InvalidDataException("共创模板目录为空。");
-        if (catalog.SchemaVersion != 2 || catalog.Layout != "horizontal"
+        if (catalog.SchemaVersion != 2 || catalog.Layout != "horizontal" || catalog.VariantGroups is null
             || catalog.Templates.Select(t => t.Id).Distinct().Count() != catalog.Templates.Count)
             throw new InvalidDataException("共创模板目录版本或标识无效。");
         foreach (var template in catalog.Templates) Validate(template);
-        return catalog.Templates;
+        ValidateVariantGroups(catalog.Templates, catalog.VariantGroups);
+        return catalog;
     }
     private void Validate(MapCoCreationTemplate template)
     {
@@ -129,9 +139,12 @@ public sealed partial class MapCoCreationTemplateCatalog
     // Prepared recognition images are full-resolution crops of the individual floor.
     // The legacy 480px preview is a two-floor overview and must not be enlarged as a cover.
     public string GetPreviewPath(MapCoCreationTemplate template) =>
-        ResolvePath($"prepared/{template.Difficulty}/{template.Id}/floor-1-recognition.png");
+        _installedStore && template.PackageRoot is { } root ? new MapCoCreationTemplateCatalog(root).GetPreviewPath(template)
+            : ResolvePath($"prepared/{template.Difficulty}/{template.Id}/floor-1-recognition.png");
     public async Task<MapDraft> CreateDraftAsync(MapCoCreationTemplate template, CancellationToken cancellationToken = default)
     {
+        if (_installedStore && template.PackageRoot is { } root)
+            return await new MapCoCreationTemplateCatalog(root).CreateDraftAsync(template, cancellationToken);
         Validate(template);
         var ordered = template.Floors.OrderBy(f => f.SortOrder).ToArray();
         var imagePath = ResolvePath(ordered[0].ImageFile);
@@ -185,5 +198,6 @@ public sealed partial class MapCoCreationTemplateCatalog
         public int SchemaVersion { get; set; }
         public string Layout { get; set; } = string.Empty;
         public List<MapCoCreationTemplate> Templates { get; set; } = [];
+        public List<MapCoCreationTemplateVariantGroup> VariantGroups { get; set; } = [];
     }
 }

@@ -281,7 +281,8 @@ public sealed class CustomPhrasePlugin : PluginBase, IPluginSettingsProvider
                 _enableMouseBinding.Clone(),
                 windowHandle,
                 cancellation.Token);
-            if (!_menuHeld || cancellation.IsCancellationRequested)
+            if (!_menuHeld || cancellation.IsCancellationRequested
+                || !ReferenceEquals(_menuCancellation, cancellation))
                 return;
             if (_gameWindow is null
                 || !_gameWindow.TryGetForegroundClientBounds(
@@ -300,9 +301,12 @@ public sealed class CustomPhrasePlugin : PluginBase, IPluginSettingsProvider
         }
         catch (Exception exception)
         {
-            _menuHeld = false;
-            _activePhrases = null;
-            _overlay.Hide();
+            if (ReferenceEquals(_menuCancellation, cancellation))
+            {
+                _menuHeld = false;
+                _activePhrases = null;
+                _overlay.Hide();
+            }
             Context.Logger.Error($"自定义短语菜单显示失败：{exception.Message}");
         }
         finally
@@ -320,10 +324,11 @@ public sealed class CustomPhrasePlugin : PluginBase, IPluginSettingsProvider
 
         _menuHeld = false;
         CancelMenuOpening();
+        var wasVisible = _overlay.IsVisible;
         var selectedIndex = _overlay.Hide();
         var phrases = _activePhrases;
         _activePhrases = null;
-        if (phrases is null)
+        if (!wasVisible || phrases is null)
             return;
         if (selectedIndex < 0 || selectedIndex >= phrases.Length)
         {

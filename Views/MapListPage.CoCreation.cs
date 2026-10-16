@@ -61,15 +61,17 @@ public sealed partial class MapListPage
         refreshContent.Children.Add(new FontIcon { Glyph = "\uE72C", FontSize = 13 });
         refreshContent.Children.Add(new TextBlock { Text = "刷新", FontSize = 12 });
         var refresh = CreateCoCreationToolbarButton(refreshContent, "刷新当前选区");
-        refresh.HorizontalAlignment = HorizontalAlignment.Right;
-        Grid.SetColumn(refresh, 2);
         refresh.Click += async (_, _) => await ShowListAsync();
-        toolbar.Children.Add(refresh);
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, HorizontalAlignment = HorizontalAlignment.Right };
+        actions.Children.Add(refresh);
+        actions.Children.Add(CreateTemplateImportButton());
+        Grid.SetColumn(actions, 2);
+        toolbar.Children.Add(actions);
         content.Children.Add(toolbar);
         content.Children.Add(CreateCoCreationDescription(_coCreationSection switch
         {
             CoCreationSection.Community => "浏览地图社区官网展示的地图，获取后同步到你的账号。",
-            CoCreationSection.Templates => "选择本地内置模板，添加到地图列表后开始共创。",
+            CoCreationSection.Templates => "导入共创模板，添加到地图列表后开始共创。",
             _ => "联网查看当前账号已发布的地图和已获取的社区地图。"
         }));
         _workflowHost.Content = root;
@@ -90,6 +92,11 @@ public sealed partial class MapListPage
         {
             var classes = await _coCreationTemplates.LoadClassesAsync(token);
             if (token.IsCancellationRequested || _coCreationEditing || _coCreationSelectedClass is not null) return;
+            if (classes.Count == 0)
+            {
+                ReplaceCoCreationGallery(gallery, CreateTemplateEmptyState(root));
+                return;
+            }
             var status = CreateCoCreationDescription(string.Empty);
             status.Visibility = Visibility.Collapsed;
             var templates = new StackPanel { Spacing = 18 };

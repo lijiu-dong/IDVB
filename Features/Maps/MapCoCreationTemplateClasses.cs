@@ -1,24 +1,61 @@
 namespace IDVBuff.Features.Maps;
 
 public sealed record MapCoCreationTemplateClass(string Name, int Difficulty,
-    IReadOnlyList<MapCoCreationTemplate> Templates);
+    IReadOnlyList<MapCoCreationTemplate> Templates)
+{
+    public IReadOnlyList<MapCoCreationTemplateVariantGroup> VariantGroups { get; init; } = [];
+    internal string? PackageRoot { get; init; }
+    internal IdvmxManifest? Package { get; init; }
+    internal string? ManifestSha256 { get; init; }
+}
+
+public sealed class MapCoCreationTemplateVariantGroup
+{
+    public int Difficulty { get; set; }
+    public int PaletteSlot { get; set; }
+    // Stable source identities survive user-facing sequence/title changes.
+    public List<string> TemplateIds { get; set; } = [];
+}
 
 public sealed partial class MapCoCreationTemplateCatalog
 {
     public async Task<IReadOnlyList<MapCoCreationTemplateClass>> LoadClassesAsync(CancellationToken cancellationToken = default)
     {
-        var templates = await LoadAsync(cancellationToken);
-        return templates.GroupBy(template => template.Difficulty).OrderBy(group => group.Key)
-            .Select(group => new MapCoCreationTemplateClass(ClassName(group.Key), group.Key, group.ToArray())).ToArray();
+        if (_installedStore) return await new IdvmxTemplatePackageService(_root).LoadClassesAsync(cancellationToken);
+        var catalog = await LoadDocumentAsync(cancellationToken);
+        return catalog.Templates.GroupBy(template => template.Difficulty).OrderBy(group => group.Key)
+            .Select(group => new MapCoCreationTemplateClass(ClassName(group.Key), group.Key, group.ToArray())
+            {
+                VariantGroups = catalog.VariantGroups.Where(variant => variant.Difficulty == group.Key).ToArray()
+            }).ToArray();
     }
 
     public async Task<MapImportBatchResult> AddClassAsync(MapRepository repository,
         MapCoCreationTemplateClass templateClass, CancellationToken cancellationToken = default)
     {
+        if (_installedStore)
+        {
+            if (templateClass.PackageRoot is null) throw new InvalidDataException("模板包来源缺失。");
+            return await new IdvmxTemplatePackageService(_root).AddClassAsync(repository, templateClass, cancellationToken);
+        }
+        var manifest = await ReadPreparedClassAsync(templateClass, cancellationToken);
+        if (templateClass.Package is { } package)
+        {
+            var instance = Guid.NewGuid();
+            foreach (var map in manifest.Maps)
+                map.Record.TemplateOrigin = new(package.ClassId, instance, map.TemplateId, package.Version,
+                    templateClass.ManifestSha256!, package.Maps.Single(m => m.Id == map.TemplateId).GeometrySha256);
+        }
+        return await MapOperationProgress.RunAsync(.2, 1, () => repository.AddPreparedTemplateClassAsync(templateClass.Name, manifest.Maps,
+            templateClass.VariantGroups, Path.Combine(_root, "prepared", templateClass.Difficulty.ToString()), cancellationToken));
+    }
+
+    internal async Task<MapCoCreationPreparedClass> ReadPreparedClassAsync(MapCoCreationTemplateClass templateClass, CancellationToken cancellationToken)
+    {
         if (templateClass.Templates.Count == 0 || templateClass.Difficulty is not (3 or 4)
-            || templateClass.Name != ClassName(templateClass.Difficulty)
             || templateClass.Templates.Any(template => template.Difficulty != templateClass.Difficulty))
             throw new InvalidDataException("共创模板地图类无效。");
+        ValidateVariantGroups(templateClass.Templates, templateClass.VariantGroups);
         var manifestPath = ResolvePath($"prepared/{templateClass.Difficulty}/manifest.json");
         if (!File.Exists(manifestPath))
             throw new InvalidDataException("缺少共创模板预制资源，请重新安装模板资源。");
@@ -52,8 +89,26 @@ public sealed partial class MapCoCreationTemplateCatalog
             }
             record.Navigation = await LoadNavigationAsync(template, cancellationToken);
         }
-        return await MapOperationProgress.RunAsync(.2, 1, () => repository.AddPreparedTemplateClassAsync(templateClass.Name, manifest.Maps,
-            Path.GetDirectoryName(manifestPath)!, cancellationToken));
+        return manifest;
+    }
+
+    private static void ValidateVariantGroups(IReadOnlyList<MapCoCreationTemplate> templates,
+        IReadOnlyList<MapCoCreationTemplateVariantGroup> groups)
+    {
+        var byId = templates.ToDictionary(template => template.Id, StringComparer.Ordinal);
+        var members = new HashSet<string>(StringComparer.Ordinal);
+        var slots = new HashSet<(int Difficulty, int Slot)>();
+        foreach (var group in groups)
+        {
+            if (group is null || group.TemplateIds is null || group.Difficulty is not (3 or 4)
+                || group.PaletteSlot is < 0 or >= MapVariantGroup.PaletteSize
+                || !slots.Add((group.Difficulty, group.PaletteSlot)) || group.TemplateIds.Count < 2)
+                throw new InvalidDataException("共创模板变体组合的难度、颜色槽或成员数量无效。");
+            foreach (var id in group.TemplateIds)
+                if (string.IsNullOrWhiteSpace(id) || !byId.TryGetValue(id, out var template)
+                    || template.Difficulty != group.Difficulty || !members.Add(id))
+                    throw new InvalidDataException("共创模板变体组合包含缺失、重复或跨难度地图。");
+        }
     }
 
     private static string ClassName(int difficulty) => $"共创地图 · {(difficulty == 3 ? "困难" : "噩梦")}";

@@ -77,6 +77,7 @@ public sealed partial class MapRepository
                 ContentVersion = record.ContentVersion,
                 Source = record.Source,
                 IsCoCreationTemplate = record.IsCoCreationTemplate,
+                TemplateOrigin = record.TemplateOrigin,
                 AppearancePalette = record.AppearancePalette,
                 AcquisitionKind = record.AcquisitionKind,
                 SubscriptionId = record.SubscriptionId,

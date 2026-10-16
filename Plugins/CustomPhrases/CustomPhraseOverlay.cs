@@ -53,6 +53,11 @@ internal sealed partial class CustomPhraseOverlay : IDisposable
     private bool _visible;
     private bool _disposed;
 
+    public bool IsVisible
+    {
+        get { lock (_sync) return _visible; }
+    }
+
     public void Show(IReadOnlyList<string> phrases, PluginClientBounds gameBounds)
     {
         ArgumentNullException.ThrowIfNull(phrases);
@@ -118,7 +123,8 @@ internal sealed partial class CustomPhraseOverlay : IDisposable
         int selected;
         lock (_sync)
         {
-            selected = _selectedIndex;
+            selected = _visible ? _selectedIndex : -1;
+            _selectedIndex = -1;
             _visible = false;
             cancellation = _pollCancellation;
             _pollCancellation = null;

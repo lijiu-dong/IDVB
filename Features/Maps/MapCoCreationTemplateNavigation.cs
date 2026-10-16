@@ -34,6 +34,9 @@ public sealed partial class MapCoCreationTemplateCatalog
         CancellationToken cancellationToken = default)
     {
         var existing = draft.Navigation;
+        // Local maps own their exact base version. Import/update is the only writer
+        // allowed to upgrade it; a route fallback must never select the newest package.
+        if (_installedStore) return existing;
         if (!IsTemplateDraft(draft) || existing is { RoutingStyle: MapNavigationTopology.CurrentRoutingStyle,
             RouteMetadataVersion: >= MapNavigationTopology.CurrentRouteMetadataVersion }
             && MapSpecialRoomTeleports.HasCurrentMetadata(existing)) return existing;

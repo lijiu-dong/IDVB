@@ -4,7 +4,7 @@ namespace IDVBuff.Features.Maps;
 
 public sealed partial class MapRepository
 {
-    private void ValidateFloorDefinitions(MapRecord record)
+    private static void ValidateFloorDefinitions(MapRecord record)
     {
         var floors = MapFloorRules.GetOrderedFloors(record);
         if (floors.Count == 0)

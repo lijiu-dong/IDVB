@@ -88,6 +88,15 @@ public sealed partial class MapRepository
             catalog.Classes.Add(copyName);
             catalog.ClassProperties[copyName] = GetClassProperties(catalog, sourceName).Clone();
             catalog.Maps.AddRange(copies);
+            foreach (var instance in catalog.TemplateInstances.Where(i => i.LocalClass == sourceName).ToArray())
+            {
+                var copyInstance = new MapTemplateInstance { Id = Guid.NewGuid(), ClassId = instance.ClassId,
+                    LocalClass = copyName, KnownMapIds = new(instance.KnownMapIds, StringComparer.Ordinal),
+                    VariantBaselines = CloneTemplateVariants(instance.VariantBaselines) };
+                catalog.TemplateInstances.Add(copyInstance);
+                foreach (var copy in copies.Where(m => m.TemplateOrigin?.InstanceId == instance.Id))
+                    copy.TemplateOrigin = copy.TemplateOrigin! with { InstanceId = copyInstance.Id };
+            }
             catalog.VariantGroups.AddRange(catalog.VariantGroups
                 .Where(group => string.Equals(group.Class, sourceName, StringComparison.OrdinalIgnoreCase))
                 .Select(group => new MapVariantGroup
