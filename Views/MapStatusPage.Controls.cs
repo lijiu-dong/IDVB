@@ -18,7 +18,8 @@ public sealed partial class MapStatusPage : UserControl
             XamlRoot = XamlRoot,
             Title = "准备校准地图区域",
             Content =
-                "点击开始后，请在 3 秒内切换到第五人格并打开完整地图。"
+                "地图区域默认按游戏界面布局自动推算，通常无需校准；仅在识别区域明显偏移时手动校准。"
+                + "点击开始后，请在 3 秒内切换到第五人格并打开完整地图。"
                 + "随后框选整张地图画布的外边缘，不要只框建筑主体或两个门。"
                 + "程序只保存相对坐标，截图不会写入磁盘。",
             PrimaryButtonText = "开始",
@@ -45,7 +46,10 @@ public sealed partial class MapStatusPage : UserControl
                 frame,
                 _runtime.Settings.ResolveMapViewportRegion(
                     (int)Math.Round(frame.ClientBounds.Width),
-                    (int)Math.Round(frame.ClientBounds.Height)),
+                    (int)Math.Round(frame.ClientBounds.Height))
+                    ?? MapDisplayCalibrationProfile.CreateDefaultMapViewportRegion(
+                        (int)Math.Round(frame.ClientBounds.Width),
+                        (int)Math.Round(frame.ClientBounds.Height)),
                 "校准游戏地图区域",
                 "请沿完整地图画布的外边缘框选，不要只框建筑主体、两个门或它们之间的区域。只保存相对坐标，截图不会写入磁盘。");
             if (region is null)

@@ -295,16 +295,16 @@ public sealed partial class MapStatusPage : UserControl
             ? "正在显示（鼠标与键盘穿透）"
             : "当前隐藏";
         _permissionState.Text = _runtime.IntegrityStatus.Message;
-        _calibrationState.Text = _runtime.Settings.IsMapViewportCalibrated
-            ? $"已校准（基准 {_runtime.Settings.CalibrationClientWidth}×{_runtime.Settings.CalibrationClientHeight}）"
-            : _runtime.Settings.MapViewportRegion?.IsValid is true
-                ? "需要重新校准（旧校准区域已保留）"
-                : "尚未校准";
-        _floorCalibrationState.Text = _runtime.Settings.IsFloorDisplayCalibrated
-            ? $"已校准（基准 {_runtime.Settings.FloorCalibrationClientWidth}×{_runtime.Settings.FloorCalibrationClientHeight}）"
-            : _runtime.Settings.FloorDisplayRegion?.IsValid is true
-                ? "需要重新校准（旧校准区域已保留）"
-                : "尚未校准";
+        var manualViewports = _runtime.Settings.DisplayCalibrationProfiles
+            .Where(profile => profile.MapViewportRegion?.IsValid is true)
+            .Select(profile => $"{profile.ClientWidth}×{profile.ClientHeight}")
+            .ToArray();
+        _calibrationState.Text = manualViewports.Length > 0
+            ? $"{string.Join("、", manualViewports)} 使用手动校准，其他分辨率按游戏界面布局自动推算"
+            : "自动（按游戏界面布局推算，无需校准）";
+        // Floor recognition searches the header strip above the map viewport;
+        // the legacy floor-display calibration is no longer consumed.
+        _floorCalibrationState.Text = "自动（在地图区域上方识别楼层按钮，无需校准）";
         _floorState.Text = _runtime.LastFloorRecognition is { } floorResult
             ? floorResult.Succeeded && floorResult.Floor is { } floor
                 ? $"{floor.ToUpperInvariant()} · 置信度 {floorResult.Confidence:P0}"

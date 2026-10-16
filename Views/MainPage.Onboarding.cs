@@ -151,27 +151,17 @@ public sealed partial class MainPage
                 CheckAsync: _ => RequireRuntimeEnabledAsync())
         ], cancellationToken);
 
-        await ShowPreMatchVideoGuidesAsync(statusPage, cancellationToken);
+        await ShowPreMatchVideoGuidesAsync(cancellationToken);
     }
 
-    private async Task ShowPreMatchVideoGuidesAsync(MapStatusPage statusPage, CancellationToken cancellationToken)
+    private async Task ShowPreMatchVideoGuidesAsync(CancellationToken cancellationToken)
     {
-        var calibrationVideoOpened = false;
         var startMatchVideoOpened = false;
         var inGameVideoOpened = false;
         var endMatchVideoOpened = false;
         var guide = new EmphasisGuide(EmphasisGuideHost);
         await guide.ShowAsync(
         [
-            new EmphasisGuideStep(
-                "校准显示区域",
-                "请点击“校准地图区域”，完成一次完整地图画布的框选；如果已经校准并保存，可以直接继续。点击“观看视频教程”后，再点击检查。",
-                statusPage.GetMapViewportCalibrationControl(),
-                CheckAsync: _ => RequireCalibrationAndVideoAsync(
-                    calibrationVideoOpened),
-                EnterAsync: _ => BringCalibrationControlIntoViewAsync(statusPage),
-                TutorialVideoUri: TutorialVideoUri("vid1.mp4"),
-                VideoOpened: () => calibrationVideoOpened = true),
             new EmphasisGuideStep(
                 "如何开始对局",
                 "观看教程，了解如何打开外置控件层、选择本局地图并开始对局。",
@@ -247,23 +237,6 @@ public sealed partial class MainPage
         Task.FromResult(wasOpened
             ? EmphasisGuideCheckResult.Passed
             : EmphasisGuideCheckResult.TryAgain("请先点击“观看视频教程”并打开教程，再点击检查。"));
-
-    private static Task<EmphasisGuideCheckResult> RequireCalibrationAndVideoAsync(
-        bool videoWasOpened)
-    {
-        if (!videoWasOpened)
-            return Task.FromResult(EmphasisGuideCheckResult.TryAgain("请先点击“观看视频教程”并打开教程。"));
-
-        return Task.FromResult(App.Session.Settings.IsMapViewportCalibrated
-            ? EmphasisGuideCheckResult.Passed
-            : EmphasisGuideCheckResult.TryAgain("请先完成并保存“校准地图区域”，再点击检查。"));
-    }
-
-    private static async Task BringCalibrationControlIntoViewAsync(MapStatusPage page)
-    {
-        page.GetMapViewportCalibrationControl()?.StartBringIntoView();
-        await Task.Delay(50);
-    }
 
     private static IReadOnlyList<EmphasisGuideTextSegment> CreateQuickScanGuideDescription()
     {

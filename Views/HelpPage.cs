@@ -35,7 +35,6 @@ public sealed class HelpPage : Page
         };
         subscribeTutorialButton.Click += (_, _) => SubscribeMapsGuideRequested?.Invoke(this, EventArgs.Empty);
 
-        var calibrationVideoButton = CreateVideoButton("vid1.mp4");
         var startMatchVideoButton = CreateVideoButton("vid2.mp4");
         var inGameVideoButton = CreateVideoButton("vid3.mp4");
         var endMatchVideoButton = CreateVideoButton("vid4.mp4");
@@ -145,7 +144,6 @@ public sealed class HelpPage : Page
                     FontWeight = FontWeights.SemiBold,
                     Foreground = FluentTheme.Brush(this, "TextFillColorPrimaryBrush")
                 },
-                CreateCompactTutorialCard(calibrationVideoButton, "校准显示区域", "框选完整的游戏地图画布，让 IDVB 正确识别地图区域。", Symbol.Video),
                 CreateCompactTutorialCard(startMatchVideoButton, "如何开始对局", "打开外置控件层、选择本局地图并开始对局。", Symbol.Video),
                 CreateCompactTutorialCard(inGameVideoButton, "游戏实机操作", "在游戏中打开地图、快捷扫描并选择对应地图。", Symbol.Video),
                 CreateCompactTutorialCard(endMatchVideoButton, "结束游戏", "通过外置控件层结束本局。", Symbol.Video),

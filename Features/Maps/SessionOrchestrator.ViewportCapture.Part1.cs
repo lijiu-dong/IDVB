@@ -417,26 +417,23 @@ public sealed partial class SessionOrchestrator
         {
             var region = ResolveViewportRegion(
                 (int)Math.Round(physicalBounds.Width),
-                (int)Math.Round(physicalBounds.Height));
-            if (physicalBounds.IsValid && IDVBuff.Diagnostics.OutputLog.CurrentLogPath is not null)
-            {
-                var pixels = DwrGameWindowCaptureService.GetViewportBounds(physicalBounds, region);
-                IDVBuff.Diagnostics.OutputLog.UpdateCaptureContext(
-                    (int)Math.Round(physicalBounds.Width), (int)Math.Round(physicalBounds.Height),
-                    (int)pixels.Width, (int)pixels.Height, windowHandle);
-            }
+                (int)Math.Round(physicalBounds.Height),
+                out var source);
+            if (physicalBounds.IsValid)
+                RecordMapViewportResolution(physicalBounds, windowHandle, region, source);
             return region;
         }
 
         IDVBuff.Diagnostics.OutputLog.ClearCaptureContext();
-        return ResolveViewportRegion(0, 0);
+        return ResolveViewportRegion(0, 0, out _);
     }
 
     /// <summary>
     /// 解析地图视口区域：活跃预设的 viewport.toml 优先，
-    /// 缺失则回退 settings.json 的按分辨率 / 全局校准，最后整帧。
+    /// 缺失则回退 settings.json 的按分辨率 / 全局校准，
+    /// 都没有时按游戏参考画布的等比居中布局推算，无需用户校准。
     /// </summary>
-    private NormalizedRectangle ResolveViewportRegion(int width, int height)
+    private NormalizedRectangle ResolveViewportRegion(int width, int height, out string source)
     {
         var toml = _config.Get<ViewportCalibrationConfig>("viewport");
         if (toml.ClientWidth == width
@@ -444,6 +441,7 @@ public sealed partial class SessionOrchestrator
             && toml.MapRegionWidth >= 0.01
             && toml.MapRegionHeight >= 0.01)
         {
+            source = MapViewportSourcePreset;
             return new NormalizedRectangle
             {
                 X = toml.MapRegionX,
@@ -453,7 +451,15 @@ public sealed partial class SessionOrchestrator
             };
         }
 
-        return _settings!.ResolveMapViewportRegion(width, height)
-            ?? new NormalizedRectangle { X = 0, Y = 0, Width = 1, Height = 1 };
+        if (_settings!.ResolveMapViewportRegion(width, height) is { } calibrated)
+        {
+            source = MapViewportSourceManual;
+            return calibrated;
+        }
+
+        source = width > 0 && height > 0
+            ? MapViewportSourceLayout
+            : MapViewportSourceWholeClient;
+        return MapDisplayCalibrationProfile.CreateDefaultMapViewportRegion(width, height);
     }
 }
