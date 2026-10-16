@@ -90,7 +90,9 @@ public sealed partial class MapCvRecognitionService
                 identityPriorConfidence,
                 out var vpsg3Attempt,
                 out var vpsg3Status,
-                knownScaleSeed: effectiveScaleSeed))
+                knownScaleSeed: effectiveScaleSeed,
+                requireObservableScale: effectiveScaleSeed is null
+                    && structureTuning.Mode != MapStructureRegistrationMode.ScanVerification))
         {
             return vpsg3Attempt;
         }

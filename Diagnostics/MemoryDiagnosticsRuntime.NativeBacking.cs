@@ -11,6 +11,7 @@ internal sealed partial class MemoryDiagnosticsRuntime
     private readonly object _backingGate = new();
     private BackingPolicy? _backingPolicy;
     private MemoryJournal.NativeRetirement _retiredNativeResource;
+    private string? _requestedBackingReturn;
     private long _nativeRetirementRevision, _handledNativeRetirementRevision, _nativeRetirementTicks, _lastBackingAttemptTicks;
     private int _backingReturnsSuspended;
 
@@ -38,21 +39,34 @@ internal sealed partial class MemoryDiagnosticsRuntime
         }
     }
 
+    private void RequestNativeBackingReturn(string reason)
+    {
+        if (Volatile.Read(ref _backingPolicy) is null || Volatile.Read(ref _disposed) != 0
+            || Volatile.Read(ref _backingReturnsSuspended) != 0) return;
+        lock (_backingGate) _requestedBackingReturn = reason;
+    }
+
     private void ReturnRetiredNativeBacking()
     {
         if (Volatile.Read(ref _backingPolicy) is not { } policy || Volatile.Read(ref _backingReturnsSuspended) != 0
             || Volatile.Read(ref _disposed) != 0 || Volatile.Read(ref _faulted) != 0 || _stop.IsSet) return;
         MemoryJournal.NativeRetirement retirement;
         long revision, retiredAt;
+        string? requested;
         lock (_backingGate)
         {
             revision = _nativeRetirementRevision;
             retiredAt = _nativeRetirementTicks;
             retirement = _retiredNativeResource;
+            // One evaluation consumes a request: a match that already restarted
+            // keeps its resident state and its own end will ask again.
+            requested = _requestedBackingReturn;
+            _requestedBackingReturn = null;
         }
         var now = Stopwatch.GetTimestamp();
-        if (revision == _handledNativeRetirementRevision || Stopwatch.GetElapsedTime(retiredAt, now).TotalMilliseconds < 500
-            || Stopwatch.GetElapsedTime(_lastBackingAttemptTicks, now).TotalSeconds < 5) return;
+        if (requested is null && (revision == _handledNativeRetirementRevision
+            || Stopwatch.GetElapsedTime(retiredAt, now).TotalMilliseconds < 500
+            || Stopwatch.GetElapsedTime(_lastBackingAttemptTicks, now).TotalSeconds < 5)) return;
         _lastBackingAttemptTicks = now;
         if (!policy.CanReturn() || Volatile.Read(ref _backingReturnsSuspended) != 0) return;
 
@@ -61,16 +75,16 @@ internal sealed partial class MemoryDiagnosticsRuntime
         var before = _read();
         if (ObserveBudget(before)) return;
         _handledNativeRetirementRevision = revision;
-        using var operation = MemoryJournal.BeginOperation("Memory.ReturnRetiredNativeBacking", retirement.Resource);
+        using var operation = MemoryJournal.BeginOperation("Memory.ReturnRetiredNativeBacking", requested ?? retirement.Resource);
         var gcBefore = GC.GetGCMemoryInfo().TotalCommittedBytes;
-        _journal.Record("native-backing-return-start", new { revision, retirement, retiredAtTicks = retiredAt,
+        _journal.Record("native-backing-return-start", new { revision, retirement, requested, retiredAtTicks = retiredAt,
             before, gcCommittedBytes = gcBefore, api = "kernel32!HeapSetInformation/HeapOptimizeResources",
             meaning = "A native consumer relinquished ownership. Request eligible unused LFH backing only; this record does not prove business object or heap payload free." });
         // Run on the existing budget monitor, never the UI thread. No forced
         // GC, working-set eviction, memory-limit retry or external service.
         var result = policy.ReturnUnused();
         var after = _read();
-        _journal.Record("native-backing-return-result", new { revision, retirement, result.Succeeded, result.Error,
+        _journal.Record("native-backing-return-result", new { revision, retirement, requested, result.Succeeded, result.Error,
             result.ElapsedMs, before, after, gcCommittedBeforeBytes = gcBefore,
             gcCommittedAfterBytes = GC.GetGCMemoryInfo().TotalCommittedBytes,
             privateCommitDeltaBytes = after.PrivateCommitBytes - before.PrivateCommitBytes,

@@ -38,7 +38,8 @@ public sealed partial class MapCvRecognitionService
         [NotNullWhen(true)] out MapRecognitionAttempt? attempt,
         out IdvbStatus status,
         double? knownScaleSeed = null,
-        bool hasValidatedFloorScale = false)
+        bool hasValidatedFloorScale = false,
+        bool requireObservableScale = false)
     {
         attempt = null;
         var alignmentStarted = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -145,6 +146,27 @@ public sealed partial class MapCvRecognitionService
             var solverStarted = System.Diagnostics.Stopwatch.GetTimestamp();
             var preSolverMs = System.Diagnostics.Stopwatch.GetElapsedTime(alignmentStarted, solverStarted).TotalMilliseconds;
             var result = Vpsg3FastBootstrapSolver.TrySolve(observation, lease.Floor, knownScaleSeed: knownScaleSeed);
+            if (requireObservableScale && knownScaleSeed is null && !result.IsAccepted
+                && TrySolveScaleHarmonic(observation, lease.Floor, result.Scale, out var harmonic, out var harmonicCount))
+            {
+                MapLogCollector.Instance.Append(
+                    MapLogCategory.StructureRegistration,
+                    MapLogLevel.Info,
+                    "VPSG3 scale harmonic corrected",
+                    details: new()
+                    {
+                        ["mapId"] = map.Id,
+                        ["floor"] = floorKey,
+                        ["estimatedScale"] = result.Scale,
+                        ["estimateRejection"] = result.FallbackReason,
+                        ["correctedScale"] = harmonic.Scale,
+                        ["confidence"] = harmonic.Confidence,
+                        ["testedHarmonics"] = harmonicCount
+                    });
+                // A harmonic of a coarse pitch estimate is a basin, not a
+                // calibrated scale: leave precision refinement free to move it.
+                result = harmonic;
+            }
             var solverWallMs = System.Diagnostics.Stopwatch.GetElapsedTime(solverStarted).TotalMilliseconds;
             var refreshStarted = System.Diagnostics.Stopwatch.GetTimestamp();
             var refreshComparisonMs = 0d;
@@ -237,6 +259,30 @@ public sealed partial class MapCvRecognitionService
                         ["confidence"] = result.Confidence,
                         ["margin"] = result.ApertureMargin,
                         ["totalMs"] = result.Timing.TotalMs
+                    });
+                return false;
+            }
+
+            if (requireObservableScale && !IsVpsg3ScaleObservable(observation, lease.Floor, result))
+            {
+                status = IdvbStatus.Fallback(
+                    IdvbHttpCode.Vpsg3FallbackToLegacy,
+                    IdvbSubCode.Vpsg3FallbackNotConverged,
+                    Vpsg3ScaleUnobservableReason,
+                    "VPSG 3.0 快速对齐未接受 · 可见结构不足以确定本楼层尺度",
+                    technicalDetail: $"map={map.SequenceNumber}#{floorKey}, scale={result.Scale:F5}, conf={result.Confidence:F3}",
+                    stage: "Vpsg3.ScaleObservability");
+                MapLogCollector.Instance.AppendStatus(
+                    status,
+                    MapLogCategory.StructureRegistration,
+                    elapsedMs: System.Diagnostics.Stopwatch.GetElapsedTime(alignmentStarted).TotalMilliseconds,
+                    details: new()
+                    {
+                        ["mapId"] = map.Id,
+                        ["floor"] = floorKey,
+                        ["scale"] = result.Scale,
+                        ["confidence"] = result.Confidence,
+                        ["probeStep"] = ScaleObservabilityStep
                     });
                 return false;
             }
@@ -473,4 +519,70 @@ public sealed partial class MapCvRecognitionService
         }
     }
 
+    internal const string Vpsg3ScaleUnobservableReason = "Vpsg3ScaleUnobservable";
+    internal const double ScaleObservabilityStep = .08d;
+    private static readonly double[] ScaleHarmonics = [2d, 1.5d, .5d, 2d / 3d, 3d, 1d / 3d];
+
+    // The 1D pitch estimate can lock onto a harmonic of the room pitch: half,
+    // two thirds and triple the floor scale were seen on first floor visits.
+    // Re-solve this frame's own estimate at its harmonics before the slower
+    // structure scale search. The winner still faces the observability check.
+    internal static bool TrySolveScaleHarmonic(Vpsg3LiveObservation observation, Vpsg3PreparedFloor floor,
+        double estimate, [NotNullWhen(true)] out Vpsg3BootstrapResult? best, out int tested)
+    {
+        best = null;
+        tested = 0;
+        if (!double.IsFinite(estimate) || estimate <= 0d)
+            return false;
+        foreach (var factor in ScaleHarmonics)
+        {
+            var scale = estimate * factor;
+            // An out-of-range seed would make the solver estimate scale itself.
+            if (scale < Vpsg3TuningConfig.Default.MinSupportedScale
+                || scale > Vpsg3TuningConfig.Default.MaxSupportedScale)
+                continue;
+            tested++;
+            var candidate = Vpsg3FastBootstrapSolver.TrySolve(observation, floor, knownScaleSeed: scale);
+            if (candidate.IsAccepted && (best is null || candidate.Confidence > best.Confidence))
+                best = candidate;
+        }
+        if (best is null)
+            return false;
+        // The harmonic inherits the coarse estimate's error (about 1%); a
+        // locked solve cannot move it, so sample the basin around it.
+        var center = best.Scale;
+        foreach (var step in new[] { -.02d, -.01d, .01d, .02d })
+        {
+            var scale = center * Math.Exp(step);
+            if (scale < Vpsg3TuningConfig.Default.MinSupportedScale
+                || scale > Vpsg3TuningConfig.Default.MaxSupportedScale)
+                continue;
+            tested++;
+            var candidate = Vpsg3FastBootstrapSolver.TrySolve(observation, floor, knownScaleSeed: scale);
+            if (candidate.IsAccepted && candidate.Confidence > best.Confidence)
+                best = candidate;
+        }
+        return true;
+    }
+
+    // A sparse view, such as one corridor beside a room corner, fits almost any
+    // scale. Without a validated scale for this floor, the fit must collapse
+    // 8% away from the accepted scale; otherwise a wrong scale would become
+    // this floor's lock. Correct first-visit frames lose >=0.2 confidence there.
+    internal static bool IsVpsg3ScaleObservable(Vpsg3LiveObservation observation,
+        Vpsg3PreparedFloor floor, Vpsg3BootstrapResult accepted)
+    {
+        foreach (var step in new[] { -ScaleObservabilityStep, ScaleObservabilityStep })
+        {
+            var scale = accepted.Scale * Math.Exp(step);
+            // An out-of-range seed would make the solver estimate scale itself.
+            if (scale < Vpsg3TuningConfig.Default.MinSupportedScale
+                || scale > Vpsg3TuningConfig.Default.MaxSupportedScale)
+                continue;
+            var probe = Vpsg3FastBootstrapSolver.TrySolve(observation, floor, knownScaleSeed: scale);
+            if (probe.IsAccepted && probe.Confidence >= accepted.Confidence - .10d)
+                return false;
+        }
+        return true;
+    }
 }

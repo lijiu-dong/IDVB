@@ -40,6 +40,10 @@ public sealed class MemoryJournal : IDisposable
     // Subscribers receive identifiers only, never the resource or its pixels.
     public readonly record struct NativeRetirement(long Id, string Module, string Resource, string NativeModule);
     public event Action<NativeRetirement>? NativeOwnershipReleased;
+    // A lifecycle owner finished releasing a large graph, such as at match end.
+    // Periodic capture leases never leave the retirement stream quiet, so the
+    // owner asks explicitly instead of waiting for a quiet window.
+    public event Action<string>? NativeBackingReturnRequested;
     public string DirectoryPath => _directory;
 
     public MemoryJournal(string directory)
@@ -394,6 +398,13 @@ public sealed class MemoryJournal : IDisposable
     private void NotifyNativeOwnershipReleased(NativeRetirement retirement)
     {
         if (Volatile.Read(ref _disposed) == 0) NativeOwnershipReleased?.Invoke(retirement);
+    }
+
+    public static void RequestNativeBackingReturn(string reason)
+    {
+        var journal = Current;
+        if (journal is not null && Volatile.Read(ref journal._disposed) == 0)
+            journal.NativeBackingReturnRequested?.Invoke(reason);
     }
 
     private sealed class Operation : IDisposable

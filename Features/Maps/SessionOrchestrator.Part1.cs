@@ -83,6 +83,10 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
             if (!_headless)
                 await Task.Run(() => IDVBuff.Diagnostics.RealtimePerformanceTracker.AuditLifecycle(
                     "Match.Ended", triggerGcAudit: true));
+            // Finalized match graphs leave free native heap blocks committed.
+            // Between matches capture leases retire every ~450ms, so the quiet
+            // window never opens on its own; request one return explicitly.
+            IDVBuff.Core.Diagnostics.MemoryJournal.RequestNativeBackingReturn("Match.Ended");
 
             _statusMessage = "对局已结束。";
             _logCollector.Append(

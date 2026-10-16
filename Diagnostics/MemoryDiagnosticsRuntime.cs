@@ -37,6 +37,7 @@ internal sealed partial class MemoryDiagnosticsRuntime : IDisposable
         _journal.WriteFailed += DiagnosticFailure;
         _journal.Activate();
         _journal.NativeOwnershipReleased += QueueNativeBackingReturn;
+        _journal.NativeBackingReturnRequested += RequestNativeBackingReturn;
         _journal.Record("session-start", new { build, dataRoot = Path.GetFullPath(root),
             limitBytes = MemoryBudget.LimitBytes, enforceLimit,
             acceptance = "Comparable idle recovery and no unreclaimable growth across repeated cycles; peak is observed, not capped",
@@ -180,6 +181,7 @@ internal sealed partial class MemoryDiagnosticsRuntime : IDisposable
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         SuspendNativeBackingReturns();
         _journal.NativeOwnershipReleased -= QueueNativeBackingReturn;
+        _journal.NativeBackingReturnRequested -= RequestNativeBackingReturn;
         _stop.Set();
         // Never close the file while a sampler still writes to it.
         if (Thread.CurrentThread != _monitor) _monitor.Join();

@@ -159,6 +159,7 @@ public sealed partial class MapCvRecognitionService
             // native observation through VPSG3's spatial/uniqueness/color gates
             // before falling back to the legacy registrar's translation search.
             MapRecognitionAttempt? nativeAttempt = null;
+            var scaleUnobservable = false;
             if (usedVpsg && bootstrap.Structure is not null)
             {
                 // A rasterized scale basin has sub-pixel uncertainty. Validate
@@ -168,15 +169,27 @@ public sealed partial class MapCvRecognitionService
                 {
                     var scale = candidateFit.Scale * Math.Exp(delta);
                     if (TryAlignWithVpsg3(frame, map, floorKey, identityPriorConfidence,
-                            out nativeAttempt, out _, knownScaleSeed: scale))
+                            out nativeAttempt, out var nativeStatus, knownScaleSeed: scale,
+                            requireObservableScale: true))
                     {
                         candidateFit = candidateFit with { Scale = scale };
                         break;
                     }
                     nativeAttempt = null;
+                    // Neighbouring samples see the same sparse view. The legacy
+                    // registrar must not lock the basin VPSG3 found unobservable.
+                    if (nativeStatus.ReasonPhrase == Vpsg3ScaleUnobservableReason)
+                    {
+                        scaleUnobservable = true;
+                        break;
+                    }
                 }
             }
-            var attempt = nativeAttempt ?? AlignWithCachedScale(
+            var attempt = nativeAttempt ?? (scaleUnobservable
+                ? MapCvRecognitionDiagnostics.Failure(
+                    MapCvRecognitionDiagnostics.CreateDiagnostics(ReadyMapCount, TotalMapCount),
+                    "可见结构不足以确定本楼层尺度，请继续探索后重新开图。")
+                : null) ?? AlignWithCachedScale(
                 frame,
                 selectedMapId,
                 floorKey,

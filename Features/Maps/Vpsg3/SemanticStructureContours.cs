@@ -72,7 +72,33 @@ public static class SemanticStructureContours
         Cv2.BitwiseAnd(warm, observed, warm); Cv2.BitwiseAnd(cool, observed, cool);
         var labels = new Mat(observed.Size(), MatType.CV_8UC1, Scalar.Black);
         labels.SetTo(Warm, warm); labels.SetTo(Cool, cool); labels.SetTo(0, overlap);
+        RemoveMarkerArtifacts(labels, Warm, warm);
+        RemoveMarkerArtifacts(labels, Cool, warm);
         return labels;
+    }
+
+    // Player, teammate and hunter markers are floor-coloured blobs, so their
+    // rims receive a floor class. On a sparsely explored floor one marker can
+    // be the only warm or cool evidence and veto a correct pose. Markers are
+    // compact while walls are long: clear compact blobs and specks from the
+    // class labels only. Observed structure edges keep every pixel.
+    private static void RemoveMarkerArtifacts(Mat labels, byte kind, Mat scratch)
+    {
+        var speck = Math.Max(3, (int)Math.Round(labels.Height * .0095));
+        var markerLong = Math.Max(6, (int)Math.Round(labels.Height * .03));
+        var markerShort = Math.Max(3, (int)Math.Round(labels.Height * .0076));
+        Cv2.InRange(labels, new Scalar(kind), new Scalar(kind), scratch);
+        Cv2.FindContours(scratch, out var contours, out _, RetrievalModes.External, ContourApproximationModes.ApproxSimple);
+        var artifacts = new List<Point[]>();
+        foreach (var contour in contours)
+        {
+            var box = Cv2.BoundingRect(contour);
+            var longSide = Math.Max(box.Width, box.Height);
+            if (longSide <= speck || (longSide <= markerLong && Math.Min(box.Width, box.Height) >= markerShort))
+                artifacts.Add(contour);
+        }
+        if (artifacts.Count > 0)
+            Cv2.DrawContours(labels, artifacts, -1, Scalar.Black, -1);
     }
 }
 
