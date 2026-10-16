@@ -2,6 +2,8 @@
   <PropertyGroup>
     <TargetFramework>net10.0-windows</TargetFramework>
     <OutputType>WinExe</OutputType>
+    <!-- Old Windows 10/11 builds on CET-capable CPUs fail fast with "Your Windows doesn't fully support CET". -->
+    <CetCompat>false</CetCompat>
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
