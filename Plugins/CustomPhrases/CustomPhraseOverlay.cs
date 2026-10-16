@@ -120,7 +120,6 @@ internal sealed partial class CustomPhraseOverlay : IDisposable
         {
             selected = _selectedIndex;
             _visible = false;
-            _wheelDeltaRemainder = 0;
             cancellation = _pollCancellation;
             _pollCancellation = null;
             _pollThread = null;
@@ -215,23 +214,13 @@ internal sealed partial class CustomPhraseOverlay : IDisposable
             Math.Max(40, (usableWidth - (BoxGap * (columns - 1))) / columns));
 
         var totalWidth = (columns * width) + (BoxGap * (columns - 1));
-        var preferredHeight = (rows * BoxHeight) + (BoxGap * (rows - 1));
-        var verticalMargin = Math.Min(OuterMargin,
-            Math.Max(0, (gameBounds.Height - preferredHeight) / 2));
-        var usableHeight = Math.Max(1, gameBounds.Height - (verticalMargin * 2));
-        var verticalGap = rows > 1
-            ? Math.Min(BoxGap, Math.Max(0, (usableHeight - rows) / (rows - 1)))
-            : 0;
-        var height = Math.Min(BoxHeight,
-            Math.Max(1, (usableHeight - (verticalGap * (rows - 1))) / rows));
-        var totalHeight = (rows * height) + (verticalGap * (rows - 1));
+        var totalHeight = (rows * BoxHeight) + (BoxGap * (rows - 1));
         var left = gameBounds.X + ((gameBounds.Width - totalWidth) / 2);
         var centerY = gameBounds.Y + (int)Math.Round(gameBounds.Height * 0.70d);
         var top = Math.Clamp(
             centerY - (totalHeight / 2),
-            gameBounds.Y + verticalMargin,
-            gameBounds.Y + Math.Max(verticalMargin,
-                gameBounds.Height - verticalMargin - totalHeight));
+            gameBounds.Y + OuterMargin,
+            gameBounds.Y + gameBounds.Height - OuterMargin - totalHeight);
 
         var boxes = new List<PhraseBox>(count);
         for (var index = 0; index < count; index++)
@@ -243,9 +232,9 @@ internal sealed partial class CustomPhraseOverlay : IDisposable
                 phrases[index],
                 new Rectangle(
                     left + ((width + BoxGap) * column),
-                    top + ((height + verticalGap) * row),
+                    top + ((BoxHeight + BoxGap) * row),
                     width,
-                    height)));
+                    BoxHeight)));
         }
         return boxes.ToArray();
     }
@@ -365,14 +354,6 @@ internal sealed partial class CustomPhraseOverlay : IDisposable
         uint message,
         IntPtr wParam,
         IntPtr lParam)
-        => WindowProcedureCore(window, message, wParam, lParam, DefWindowProc);
-
-    private static IntPtr WindowProcedureCore(
-        IntPtr window,
-        uint message,
-        IntPtr wParam,
-        IntPtr lParam,
-        WindowProcedureDelegate defaultProcedure)
     {
         if (message == WmNchittest)
             return new IntPtr(HtTransparent);
@@ -382,21 +363,11 @@ internal sealed partial class CustomPhraseOverlay : IDisposable
         {
             // 滚轮：这层窗口是鼠标穿透的，收不到 WM_MOUSEWHEEL（滚轮消息只发给焦点窗口），
             // 所以改从 Raw Input 读——既不抢焦点，也不吞掉游戏自己的滚轮。
-            try
-            {
-                if (Overlays.TryGetValue(window, out var overlay))
-                    overlay.HandleRawInput(lParam);
-            }
-            finally
-            {
-                // GET_RAWINPUT_CODE_WPARAM uses the low byte. Foreground raw
-                // input requires DefWindowProc cleanup; INPUTSINK does not.
-                if ((wParam.ToInt64() & 0xff) == RimInput)
-                    defaultProcedure(window, message, wParam, lParam);
-            }
+            if (Overlays.TryGetValue(window, out var overlay))
+                overlay.HandleRawInput(lParam);
             return IntPtr.Zero;
         }
-        return defaultProcedure(window, message, wParam, lParam);
+        return DefWindowProc(window, message, wParam, lParam);
     }
 
     private readonly record struct PhraseBox(int Index, string Phrase, Rectangle Bounds);

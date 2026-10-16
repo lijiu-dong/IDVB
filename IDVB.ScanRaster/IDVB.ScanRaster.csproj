@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <PlatformTarget>x64</PlatformTarget>
+    <AssemblyName>IdentityVisionBridge.ScanRaster</AssemblyName>
+    <!-- Pixel loops must have the same optimized implementation in the
+         development client, tests and release. No UI or session state lives here. -->
+    <Optimize>true</Optimize>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Core\IDVBuff.Core.csproj" />
+    <!-- The host already supplies its platform native runtime. This kernel
+         needs the core API, without desktop/WPF extension dependencies. -->
+    <PackageReference Include="OpenCvSharp4" Version="4.13.0.20260627" />
+  </ItemGroup>
+</Project>

@@ -54,7 +54,7 @@ public sealed class SideEntranceFeaturePreprocessor
     /// Increment when generated feature pixels or their matching semantics change.
     /// Persisted features from another version must be rebuilt before scanning.
     /// </summary>
-    public const string AlgorithmVersion = "6-prebuilt-structure";
+    public const string AlgorithmVersion = "7-semantic-prebuilt-structure";
 
     /// <summary>
     /// 处理侧门特征。
@@ -149,18 +149,9 @@ public sealed class SideEntranceFeaturePreprocessor
         var left = (int)Math.Round(cx - featureWidth / 2d);
         var top  = (int)Math.Round(cy - featureHeight / 2d);
 
-        // 统一保证为单通道 CV_8UC1 二值结构线图（0=背景，255=结构线）
-        using var binary = new Mat();
-        if (recognitionImage.Channels() == 1)
-        {
-            Cv2.Threshold(recognitionImage, binary, 128, 255, ThresholdTypes.Binary);
-        }
-        else
-        {
-            using var gray = new Mat();
-            Cv2.CvtColor(recognitionImage, gray, ColorConversionCodes.BGR2GRAY);
-            Cv2.Threshold(gray, binary, 128, 255, ThresholdTypes.Binary);
-        }
+        // Keep semantic RGB categories intact; legacy single-channel contours remain binary.
+        using var validated = SemanticStructureContours.Decode(recognitionImage);
+        using var binary = recognitionImage.Channels() == 3 ? recognitionImage.Clone() : validated.Clone();
 
         var imageRect = new Rect(0, 0, imageWidth, imageHeight);
         var requestedRect = new Rect(left, top, featureWidth, featureHeight);

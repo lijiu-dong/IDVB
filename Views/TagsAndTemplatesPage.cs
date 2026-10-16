@@ -76,7 +76,7 @@ public sealed partial class TagsAndTemplatesPage : UserControl
     private async Task ReloadAsync()
     {
         _customTemplates = (await _templateStore.LoadAsync()).ToList();
-        var catalog = await _repository.GetCatalogSnapshotAsync();
+        var catalog = await _repository.GetTagCatalogSnapshotAsync();
         _maps = catalog.Maps;
         _classes = catalog.Classes;
         _groups = (await _tagStore.LoadAsync(_maps, _classes)).ToList();

@@ -5,6 +5,8 @@ namespace IDVBuff.Views;
 internal sealed class ShellLayoutMemory
 {
     private static readonly object Gate = new();
+    private static readonly JsonSerializerOptions ReadJson = new() { PropertyNameCaseInsensitive = true };
+    private static readonly JsonSerializerOptions WriteJson = new() { WriteIndented = true };
     private static readonly string FilePath = Path.Combine(
         AppDataPaths.RootDirectory,
         "ui-memory.json");
@@ -24,7 +26,7 @@ internal sealed class ShellLayoutMemory
 
                 return JsonSerializer.Deserialize<ShellLayoutMemory>(
                     File.ReadAllText(FilePath),
-                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
+                    ReadJson)
                     ?? new ShellLayoutMemory();
             }
             catch
@@ -44,7 +46,7 @@ internal sealed class ShellLayoutMemory
                 var temporaryPath = $"{FilePath}.tmp";
                 File.WriteAllText(
                     temporaryPath,
-                    JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
+                    JsonSerializer.Serialize(this, WriteJson));
                 File.Move(temporaryPath, FilePath, overwrite: true);
             }
             catch (Exception exception)

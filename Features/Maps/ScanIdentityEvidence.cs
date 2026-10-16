@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using OpenCvSharp;
+using IDVBuff.Core.Imaging;
 
 namespace IDVBuff.Features.Maps;
 
@@ -31,8 +32,9 @@ public sealed record ScanIdentityEvidence(ScanIdentityState State, int TestedPoi
 }
 
 /// <summary>Managed immutable full-floor distance index; never a cropped template.
-/// Lifetime is tied to the catalog Mat, including its map/floor/anchor revision.</summary>
-internal sealed class ScanStructureIndex
+/// Runtime ownership belongs to the scan cache for its map/floor/anchor revision.
+/// The Mat association only shares construction work while the source is alive.</summary>
+internal sealed partial class ScanStructureIndex : IDisposable
 {
     // Identity verification only distinguishes sub-pixel support bands up to
     // 5.5 px. Keeping an IEEE float for every authored-map pixel made the
@@ -48,8 +50,18 @@ internal sealed class ScanStructureIndex
     private static readonly ConditionalWeakTable<Mat, ScanStructureIndex> Cache = new();
     public int Width { get; }
     public int Height { get; }
-    internal int RetainedDistanceBytes => _distances.Length;
-    private readonly byte[] _distances;
+    internal long RetainedDistanceBytes => _distanceBytes;
+    private readonly IDVBuff.Core.Collections.CompactByteField? _distances;
+    internal SemanticStructureIndex? SemanticIndex { get; }
+    internal DeepScanStructureIndex? LocalGeometry { get; set; }
+    internal long RetainedMemoryBytes => RetainedDistanceBytes + (SemanticIndex?.MemoryBytes ?? 0);
+    internal void PrepareLocalGeometry(Mat line)
+    {
+        DeepScanStructureIndex.Prewarm(line);
+        if (DeepScanStructureIndex.TryGet(line, out var geometry)) LocalGeometry = geometry;
+    }
+    internal void PrepareLocalGeometryFromLabels(Mat labels) =>
+        LocalGeometry = DeepScanStructureIndex.FromPreparedLabels(this, labels);
     private readonly Rect _unknownBounds;
     // Candidate views share immutable distance storage and retain only this
     // floor's explicitly erased anchor rectangle, evaluated at each candidate pose.
@@ -57,6 +69,9 @@ internal sealed class ScanStructureIndex
     {
         Width = source.Width; Height = source.Height;
         _distances = source._distances;
+        _distanceReader = source._distanceReader;
+        _distanceBytes = source._distanceBytes;
+        SemanticIndex = source.SemanticIndex;
         _unknownBounds = unknownBounds.Intersect(new(0, 0, Width, Height));
     }
     internal ScanStructureIndex WithUnknownBounds(Rect bounds) => new(this, bounds);
@@ -84,41 +99,67 @@ internal sealed class ScanStructureIndex
     }
     internal static bool HasEnoughKnownPoints(int known, int total, int minimum) =>
         known >= minimum && known >= total * .65;
-    private ScanStructureIndex(Mat line)
+    private ScanStructureIndex(Mat labels, bool semantic, bool deterministicDistanceStorage, bool nativeSemanticStorage)
     {
-        Width = line.Width; Height = line.Height;
-        using var inverse = new Mat();
-        Cv2.Threshold(line, inverse, 128, 255, ThresholdTypes.BinaryInv);
-        using var distances = new Mat();
-        Cv2.DistanceTransform(inverse, distances, DistanceTypes.L2, DistanceTransformMasks.Precise);
-        using var encodedDistances = new Mat();
-        distances.ConvertTo(
-            encodedDistances,
-            MatType.CV_8UC1,
-            FineDistanceUnitsPerPixel);
-        using var coarseDistances = new Mat();
-        distances.ConvertTo(
-            coarseDistances,
-            MatType.CV_8UC1,
-            CoarseDistanceUnitsPerPixel,
-            CoarseDistanceOffset);
-        using var coarseMask = new Mat();
-        Cv2.Compare(distances, FineDistanceLimit, coarseMask, CmpTypes.GT);
-        coarseDistances.CopyTo(encodedDistances, coarseMask);
-        _distances = new byte[Width * Height];
-        Marshal.Copy(encodedDistances.Data, _distances, 0, _distances.Length);
+        Width = labels.Width; Height = labels.Height;
+        // Preserve the exact quantized distance field without overlapping
+        // full-floor float, inverse, mask and coarse conversion rasters.
+        using (var encoded = ScanDistanceRaster.Encode(labels))
+        {
+            var encodedDistances = encoded.Image;
+            if (!encodedDistances.IsContinuous())
+                throw new InvalidOperationException("扫描距离场必须连续存储。");
+            var data = MemoryMarshal.CreateReadOnlySpan(ref encodedDistances.At<byte>(0, 0), checked(Width * Height));
+            if (deterministicDistanceStorage)
+            {
+                using var owner = IDVBuff.Core.Collections.NativeEncodedByteField.Encode(data, Width, Height, "ScanStructureIndex.NativeDistance");
+                _distanceReader = owner.TryRent() ?? throw new InvalidOperationException("New native index was retired during construction.");
+                _distanceBytes = _distanceReader.PayloadBytes;
+                _ownsDistanceReader = true;
+            }
+            else
+            {
+                _distances = new IDVBuff.Core.Collections.CompactByteField(data, Width, Height, "ScanStructureIndex.Distance");
+                _distanceBytes = _distances.MemoryBytes;
+            }
+        }
+        try
+        {
+            if (semantic) SemanticIndex = new(labels, prepareCorrelationBits: false, nativeStorage: nativeSemanticStorage);
+            _ownsSemanticReader = SemanticIndex?.UsesNativeStorage == true;
+        }
+        catch { _distanceReader?.Dispose(); throw; }
     }
-    public static ScanStructureIndex Get(Mat line) => Cache.GetValue(line, m => new(m));
+    // Borrow already validated, anchor-masked labels only during construction.
+    // Both fields own their compressed bytes; neither retains this native Mat.
+    internal static ScanStructureIndex FromPreparedLabels(Mat labels, bool semantic, bool deterministicDistanceStorage = false, bool nativeSemanticStorage = false)
+    {
+        if (labels.Empty() || labels.Type() != MatType.CV_8UC1)
+            throw new ArgumentException("扫描标签必须为非空单通道图。", nameof(labels));
+        return new(labels, semantic, deterministicDistanceStorage, nativeSemanticStorage);
+    }
+    public static ScanStructureIndex Get(Mat line) => Cache.GetValue(line, m =>
+    {
+        using var labels = SemanticStructureContours.Decode(m);
+        return FromPreparedLabels(labels, m.Channels() == 3);
+    });
+    internal static void ForgetSource(Mat line) => Cache.Remove(line);
     public double Distance(double x, double y, double scale)
     {
         if (!double.IsFinite(x) || !double.IsFinite(y) || x < 0 || y < 0 || x >= Width - 1 || y >= Height - 1)
             return 50d;
         var ix = (int)x; var iy = (int)y;
         var fx = x - ix; var fy = y - iy;
-        var distance = (DecodeDistance(_distances[iy * Width + ix]) * (1 - fx)
-                + DecodeDistance(_distances[iy * Width + ix + 1]) * fx) * (1 - fy)
-            + (DecodeDistance(_distances[(iy + 1) * Width + ix]) * (1 - fx)
-                + DecodeDistance(_distances[(iy + 1) * Width + ix + 1]) * fx) * fy;
+        if (_distanceReader is not null)
+        {
+            var pixels = _distanceReader.ReadQuad(ix, iy);
+            return ((DecodeDistance((byte)pixels) * (1 - fx) + DecodeDistance((byte)(pixels >> 8)) * fx) * (1 - fy)
+                + (DecodeDistance((byte)(pixels >> 16)) * (1 - fx) + DecodeDistance((byte)(pixels >> 24)) * fx) * fy) * scale;
+        }
+        var distance = (DecodeDistance(_distances!.At(ix, iy)) * (1 - fx)
+                + DecodeDistance(_distances!.At(ix + 1, iy)) * fx) * (1 - fy)
+            + (DecodeDistance(_distances!.At(ix, iy + 1)) * (1 - fx)
+                + DecodeDistance(_distances!.At(ix + 1, iy + 1)) * fx) * fy;
         return distance * scale;
     }
 
@@ -141,18 +182,28 @@ internal sealed class ScanStructureIndex
         var ix = (int)x; var iy = (int)y;
         var fx = x - ix; var fy = y - iy;
         var lookup = DeepScanDecoder.Values;
-        var row = iy * Width + ix;
-        var distance = (lookup[_distances[row]] * (1 - fx)
-                + lookup[_distances[row + 1]] * fx) * (1 - fy)
-            + (lookup[_distances[row + Width]] * (1 - fx)
-                + lookup[_distances[row + Width + 1]] * fx) * fy;
+        if (_distanceReader is not null)
+        {
+            var pixels = _distanceReader.ReadQuad(ix, iy);
+            return ((lookup[(byte)pixels] * (1 - fx) + lookup[(byte)(pixels >> 8)] * fx) * (1 - fy)
+                + (lookup[(byte)(pixels >> 16)] * (1 - fx) + lookup[(byte)(pixels >> 24)] * fx) * fy) * scale;
+        }
+        var distance = (lookup[_distances!.At(ix, iy)] * (1 - fx)
+                + lookup[_distances!.At(ix + 1, iy)] * fx) * (1 - fy)
+            + (lookup[_distances!.At(ix, iy + 1)] * (1 - fx)
+                + lookup[_distances!.At(ix + 1, iy + 1)] * fx) * fy;
         return distance * scale;
     }
     public double Score(ReadOnlySpan<Point> points, double scale, double x, double y,
-        double minimumCompetitiveScore = 0)
+        double minimumCompetitiveScore = 0, byte[]? semanticLabels = null)
     {
+        if (_distanceReader is not null && (SemanticIndex is null || SemanticIndex.UsesNativeStorage))
+            return NativeScanScoring.Score(points, scale, x, y, minimumCompetitiveScore, semanticLabels,
+                _unknownBounds, ScanIdentityVerifier.SupportTolerancePixels, Width, Height, _distanceReader,
+                SemanticIndex?.NativeWarm, SemanticIndex?.NativeCool, DeepScanDecoder.Values);
         var sum = 0d;
         var known = 0;
+        var semanticRadius = Math.Max(2d, 2d / scale);
         for (var i = 0; i < points.Length; i++)
         {
             var p = points[i];
@@ -161,7 +212,9 @@ internal sealed class ScanStructureIndex
             if (IsUnknownWithinSupport(rx, ry, scale)) continue;
             // The shared byte decoder preserves the exact distance bands, while
             // the span avoids allocating an interface enumerator for every pose.
-            var d = DeepScanDistance(rx, ry, scale);
+            var d = SemanticIndex is not null && semanticLabels is not null && semanticLabels[i] != 0
+                && !SemanticIndex.IsHit((int)Math.Round(rx), (int)Math.Round(ry), semanticLabels[i], semanticRadius)
+                ? 50d : DeepScanDistance(rx, ry, scale);
             known++;
             sum += d <= .8 ? 1 : d <= 2.5 ? .7 : d <= 5.5 ? .4 : 0;
             // Assume every remaining point is known and matches perfectly. This
@@ -269,6 +322,18 @@ internal static class ScanIdentityVerifier
             || Math.Abs(transform.ScaleX - transform.ScaleY) > .000001
             || !double.IsFinite(transform.OffsetX) || !double.IsFinite(transform.OffsetY))
             return ScanIdentityEvidence.Unverified("invalid-transform");
+        if (index.SemanticIndex is { } semantics)
+        {
+            var colors = semantics.VerifyObservation(frame.Observation,
+                transform.ScaleX, transform.OffsetX, transform.OffsetY, viewport,
+                (x, y) => index.IsUnknownWithinSupport(x, y, transform.ScaleX));
+            // Support failure has enough observed samples and has already
+            // disproved this pose. Only missing/insufficient evidence is unknown;
+            // treating a compared loser as unverified vetoes every valid winner.
+            if (!colors.Accepted) return new(colors.Reason is "semantic-color-conflict" or "semantic-support-insufficient"
+                    ? ScanIdentityState.Excluded : ScanIdentityState.Unverified, colors.Tested, colors.Tested,
+                0, colors.Tested == 0 ? 0 : colors.Hits / (double)colors.Tested, 0, colors.Reason);
+        }
         var scale = transform.ScaleX;
         var tx = transform.OffsetX - viewport.X;
         var ty = transform.OffsetY - viewport.Y;

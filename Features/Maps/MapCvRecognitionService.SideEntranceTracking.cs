@@ -31,11 +31,11 @@ public sealed partial class MapCvRecognitionService
             TotalMapCount);
 
         var stopwatch = Stopwatch.StartNew();
-        var candidate = RunSideEntranceScan(
+        using var candidates = RunSideEntranceScan(
                 frame.Image,
                 topK: 1,
-                selectedMapId: selectedMapId)
-            .FirstOrDefault(item => string.Equals(
+                selectedMapId: selectedMapId);
+        var candidate = candidates.FirstOrDefault(item => string.Equals(
                 item.FloorKey,
                 session.FloorKey,
                 StringComparison.Ordinal));

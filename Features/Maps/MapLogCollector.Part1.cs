@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Text;
 using IDVBuff.Core.Diagnostics;
 using IDVBuff.Diagnostics;
 
@@ -80,18 +81,19 @@ public sealed partial class MapLogCollector : IDisposable, IAsyncDisposable
         try
         {
             var outputMessage = message;
-            if (elapsedMs is not null)
+            if (elapsedMs is not null || details?.Count > 0)
             {
-                outputMessage += $" | elapsedMs="
-                    + elapsedMs.Value.ToString("0.###", CultureInfo.InvariantCulture);
-            }
-            if (details is not null)
-            {
-                foreach (var detail in details)
+                // Build the complete entry once. Repeated concatenation copies
+                // every earlier field again for each diagnostic detail.
+                var builder = new StringBuilder(message);
+                if (elapsedMs is not null)
+                    builder.Append(" | elapsedMs=").Append(elapsedMs.Value.ToString("0.###", CultureInfo.InvariantCulture));
+                if (details is not null)
                 {
-                    outputMessage += $" | {detail.Key}="
-                        + FormatDetail(detail.Value);
+                    foreach (var detail in details)
+                        builder.Append(" | ").Append(detail.Key).Append('=').Append(FormatDetail(detail.Value));
                 }
+                outputMessage = builder.ToString();
             }
             OutputLog.Write(level.ToString(), $"MAP/{category}", outputMessage);
         }

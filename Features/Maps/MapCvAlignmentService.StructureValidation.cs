@@ -39,7 +39,7 @@ internal static partial class MapCvAlignmentService
             return false;
         }
 
-        using var preparedReference = service.StructureCache.GetOrCreate(
+        using var referenceLease = service.StructureCache.RentOrCreate(
             fingerprint.Map.Id,
             fingerprint.Map.UpdatedAt,
             reference,
@@ -50,6 +50,7 @@ internal static partial class MapCvAlignmentService
                 .WholeImageIgnoreRegions,
             fingerprint.FloorKey,
             structureTuning.Generation);
+        var preparedReference = referenceLease.Features;
 
         var effectiveDynamicIgnoreRegions = dynamicIgnoreRegions
             .Concat(MapCvRecognitionBuilders.BuildProjectedOutsideIgnoreRegions(

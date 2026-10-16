@@ -1,4 +1,6 @@
 using IDVBuff.Features.Maps;
+using IDVBuff.Appearance;
+using IDVBuff.Presentation.Theming;
 using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -19,7 +21,32 @@ public sealed partial class MapListPage : UserControl
         if (_draft is null || !HasAnyFloorImage(_draft))
             return;
 
+        ++_workflowRevision;
+
+        // The list is no longer a consumer. Unbind its decoded surfaces before
+        // creating the editor's first floor, rather than waiting for Unloaded.
+        ReleaseMapCardPreviews();
+        if (_mapCardsRepeater is { } list)
+        {
+            list.ItemsSource = null;
+            list.ItemTemplate = new DataTemplate();
+        }
+        if (_mapCardsSurface is not null) _mapCardsSurface.Child = null;
+        _mapCardsSurface = null;
+        _mapCardsRepeater = null;
+        _mapCardsEmpty = null;
+        _mapCardRowFactory = null;
+        _cardBorders.Clear();
+        _classComboBox = null;
+        _mapFilterButton = null;
+        _editButton = _deleteButton = _variantButton = _classEditButton = _importButton = _publishButton = null;
+
         EnterModernEditorEnvironment();
+        _draft.IsCoCreationTemplate |= _coCreationMode || _coCreationTemplates.IsTemplateDraft(_draft);
+        _modernToolState.SpecialElementsReadOnly = _coCreationMode || _draft.IsCoCreationTemplate;
+        _modernSnapEnabled = false;
+        _modernDisplayScale = 1;
+        _modernFitPending = true;
         _draft.Recognition.EnsureStandardAnchors();
         var floors = _draft.Floors.OrderBy(floor => floor.SortOrder).ToArray();
         if (floors.Length == 0)
@@ -51,7 +78,7 @@ public sealed partial class MapListPage : UserControl
         _workflowHost.VerticalContentAlignment = VerticalAlignment.Stretch;
         var root = new Grid
         {
-            Background = new SolidColorBrush(EditorBackground),
+            Background = EditorBackground,
             Width = viewportWidth,
             Height = viewportHeight,
             MinWidth = 0,
@@ -108,7 +135,7 @@ public sealed partial class MapListPage : UserControl
         var header = new Grid
         {
             Padding = new Thickness(22, 12, 16, 10),
-            Background = new SolidColorBrush(Color.FromArgb(255, 14, 22, 32))
+            Background = EditorPanel
         };
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(2, GridUnitType.Star) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(3, GridUnitType.Star) });
@@ -118,7 +145,7 @@ public sealed partial class MapListPage : UserControl
         {
             Glyph = "\uE809",
             FontSize = 30,
-            Foreground = new SolidColorBrush(Color.FromArgb(255, 48, 187, 255)),
+            Foreground = EditorBrush(ThemeToken.AccentText),
             VerticalAlignment = VerticalAlignment.Center
         });
         var titles = new StackPanel { Spacing = 1 };
@@ -127,13 +154,13 @@ public sealed partial class MapListPage : UserControl
             Text = "地图编辑器",
             FontSize = 19,
             FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-            Foreground = new SolidColorBrush(EditorText)
+            Foreground = EditorText
         });
         titles.Children.Add(new TextBlock
         {
             Text = "Identity Vision Bridge",
             FontSize = 12,
-            Foreground = new SolidColorBrush(EditorMuted)
+            Foreground = EditorMuted
         });
         identity.Children.Add(titles);
         header.Children.Add(identity);
@@ -151,12 +178,10 @@ public sealed partial class MapListPage : UserControl
                 Height = 43,
                 Padding = new Thickness(18, 7, 18, 7),
                 CornerRadius = new CornerRadius(6, 6, 0, 0),
-                Background = new SolidColorBrush(selected ? AccentBlue : EditorPanel),
-                Foreground = new SolidColorBrush(EditorText),
-                BorderBrush = new SolidColorBrush(selected ? Color.FromArgb(255, 73, 169, 255) : EditorBorder),
                 BorderThickness = new Thickness(1)
             };
             button.Click += (_, _) => SwitchModernFloor(floorKey, fitWhenLoaded: true);
+            ThemeButton.Apply(button, selected ? ThemeButtonRole.Accent : ThemeButtonRole.Standard);
             tabs.Children.Add(button);
         }
         var tabScroller = new ScrollViewer
@@ -180,7 +205,10 @@ public sealed partial class MapListPage : UserControl
         var regular = new StackPanel { Spacing = 2 };
         regular.Children.Add(CreateModernToolButton(MapEditorTool.Select, "\uE8B0", "选择"));
         regular.Children.Add(CreateModernToolButton(MapEditorTool.Text, "\uE8D2", "文字"));
+        regular.Children.Add(CreateModernToolButton(MapEditorTool.Marker, "\uE734", "标记工具"));
         regular.Children.Add(CreateModernToolButton(MapEditorTool.Line, "\uE8A1", "直线"));
+        regular.Children.Add(CreateModernToolButton(MapEditorTool.AutomaticRoute, "\uE707", "自动连线"));
+        regular.Children.Add(CreateModernRoutePlanningButton());
         regular.Children.Add(CreateModernToolButton(MapEditorTool.Rectangle, "\uE7FB", "矩形"));
         rail.Children.Add(CreateToolGroup(regular));
 
@@ -197,18 +225,19 @@ public sealed partial class MapListPage : UserControl
         {
             Margin = new Thickness(0, 4, 0, 0),
             Padding = new Thickness(7),
-            Background = new SolidColorBrush(Color.FromArgb(255, 12, 20, 29)),
-            BorderBrush = new SolidColorBrush(EditorBorder),
+            Background = EditorPanel,
+            BorderBrush = EditorBorder,
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(8),
             VerticalAlignment = VerticalAlignment.Stretch,
-            Child = rail
+            Child = new ScrollViewer { Content = rail, VerticalScrollMode = ScrollMode.Enabled,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled }
         };
     }
 
-    private static Border CreateToolGroup(UIElement content) => new()
+    private Border CreateToolGroup(UIElement content) => new()
     {
-        Background = new SolidColorBrush(EditorPanel),
+        Background = EditorPanel,
         CornerRadius = new CornerRadius(6),
         Padding = new Thickness(2),
         Child = content
@@ -229,11 +258,16 @@ public sealed partial class MapListPage : UserControl
             CornerRadius = new CornerRadius(6),
             HorizontalContentAlignment = HorizontalAlignment.Center,
             VerticalContentAlignment = VerticalAlignment.Center,
-            Foreground = new SolidColorBrush(EditorText)
+            Foreground = EditorText
         };
-        button.Click += (_, _) => SelectModernTool(tool, button);
+        button.Click += async (_, _) =>
+        {
+            if (tool == MapEditorTool.AutomaticRoute) await SelectModernAutomaticRouteAsync();
+            else if (tool == MapEditorTool.Marker) ShowModernMarkerPicker(button);
+            else SelectModernTool(tool, button);
+        };
         _editorToolButtons[tool] = button;
-        return button;
+        return ThemeButton.Apply(button, ThemeButtonRole.Standard);
     }
 
     private Button CreateModernColorButton()
@@ -244,7 +278,7 @@ public sealed partial class MapListPage : UserControl
             Width = 23,
             Height = 23,
             CornerRadius = new CornerRadius(12),
-            BorderBrush = new SolidColorBrush(EditorText),
+            BorderBrush = EditorText,
             BorderThickness = new Thickness(1),
             Background = new SolidColorBrush(ParseEditorColor(_currentAnnotationColor))
         };
@@ -257,11 +291,11 @@ public sealed partial class MapListPage : UserControl
             Height = 60,
             Padding = new Thickness(2),
             CornerRadius = new CornerRadius(6),
-            Foreground = new SolidColorBrush(EditorText),
+            Foreground = EditorText,
             HorizontalContentAlignment = HorizontalAlignment.Center
         };
         button.Click += (_, _) => ShowModernColorPicker(button);
-        return button;
+        return ThemeButton.Apply(button, ThemeButtonRole.Standard);
     }
 
     private Border CreateModernViewport()
@@ -270,7 +304,7 @@ public sealed partial class MapListPage : UserControl
         {
             Width = 1280,
             Height = 720,
-            Background = new SolidColorBrush(Color.FromArgb(255, 8, 12, 18)),
+            Background = EditorPanelRaised,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center
         };
@@ -290,9 +324,11 @@ public sealed partial class MapListPage : UserControl
         _modernCanvas.DoubleTapped += ModernCanvas_DoubleTapped;
         _modernScene.Children.Add(_modernCanvas);
 
+        _modernSceneHost = new Viewbox { Child = _modernScene, Width = 1280, Height = 720, Stretch = Stretch.Uniform };
         _modernViewport = new ScrollViewer
         {
-            Content = _modernScene,
+            Content = _modernSceneHost,
+            IsTabStop = true,
             ZoomMode = ZoomMode.Enabled,
             MinZoomFactor = .1f,
             MaxZoomFactor = 8f,
@@ -302,23 +338,17 @@ public sealed partial class MapListPage : UserControl
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalContentAlignment = HorizontalAlignment.Center,
             VerticalContentAlignment = VerticalAlignment.Center,
-            Background = new SolidColorBrush(Color.FromArgb(255, 5, 10, 16))
+            Background = EditorBackground
         };
-        _modernViewport.ViewChanged += (_, _) =>
-        {
-            UpdateModernZoomText();
-            RenderModernEditor();
-        };
-        _modernViewport.SizeChanged += (_, _) =>
-        {
-            if (_modernBitmap is { PixelWidth: > 0 })
-                DispatcherQueue.TryEnqueue(() => FitModernCanvas());
-        };
+        var viewport = _modernViewport;
+        viewport.ViewChanged += (_, _) => ModernViewportViewChanged(viewport);
+        viewport.SizeChanged += ModernViewport_SizeChanged;
+        _modernViewport.LayoutUpdated += ModernViewport_LayoutUpdated;
         return new Border
         {
             Margin = new Thickness(0, 4, 0, 0),
-            Background = new SolidColorBrush(Color.FromArgb(255, 5, 10, 16)),
-            BorderBrush = new SolidColorBrush(EditorBorder),
+            Background = EditorBackground,
+            BorderBrush = EditorBorder,
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(8),
             Child = _modernViewport

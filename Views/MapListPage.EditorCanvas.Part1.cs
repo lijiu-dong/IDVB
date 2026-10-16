@@ -39,11 +39,44 @@ public sealed partial class MapListPage : UserControl
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
-        MapClassDiagnosticCoordinator.Instance.Trigger(_repository);
+        ++_workflowRevision;
+        IDVBuff.Features.Accounts.AccountSession.Changed -= CoCreationAccountChanged;
+        _initialListReady.TrySetCanceled();
+        LocalTemplateClassAdded = null;
         CloseHoldPreviewImmediately();
         ResetMarkerEditorSession();
-        _previewImages.Clear();
+        ResetBatchImport();
+        ResetBatchOperation();
+        ReleaseMapCardPreviews();
+        if (_mapCardsRepeater is { } repeater)
+        {
+            repeater.ItemsSource = null;
+            repeater.ItemTemplate = new DataTemplate();
+        }
+        if (_mapCardsSurface is not null) _mapCardsSurface.Child = null;
+        _mapCardsSurface = null;
+        _mapCardsRepeater = null;
+        _mapCardsEmpty = null;
+        _mapCardRowFactory = null;
+        _cardBorders.Clear();
+        // The unloaded page has no catalog consumer. WinRT wrappers can outlive
+        // this navigation boundary; they must not keep a whole catalog/draft
+        // attached while waiting for the CLR/WinUI lifetime sweep.
+        _draft = null;
+        _loadedMaps = [];
+        _classes = [];
+        _classProperties = new Dictionary<string, MapClassProperties>(StringComparer.OrdinalIgnoreCase);
+        _variantGroups = [];
+        _filterGroups = [];
+        _surveyProjects = [];
+        _loadedCatalogRevision = null;
+        _selectedMapIds.Clear();
+        _selectedTagFilters.Clear();
+        _classComboBox = null;
+        _mapFilterButton = null;
+        _editButton = _deleteButton = _variantButton = _classEditButton = _importButton = _publishButton = null;
         _workflowHost.Content = null;
+        _ = CloseCoCreationAsync();
         DetachMarkerHostScroller();
         if (ParentScrollViewer is not null)
             ParentScrollViewer.SizeChanged -= OnParentScrollViewerSizeChanged;

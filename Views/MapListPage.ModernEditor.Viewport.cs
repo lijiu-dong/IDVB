@@ -1,4 +1,5 @@
 using IDVBuff.Features.Maps;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
@@ -8,6 +9,35 @@ namespace IDVBuff.Views;
 
 public sealed partial class MapListPage : UserControl
 {
+    private long _modernViewRevision;
+    private double _modernRenderedZoom = double.NaN;
+    private long _modernRenderCount;
+
+    private void ModernViewportViewChanged(ScrollViewer viewport)
+    {
+        if (!ReferenceEquals(viewport, _modernViewport)) return;
+        UpdateModernZoomText();
+        // Coordinates live in the source canvas. Panning translates the same
+        // visuals; only zoom changes their screen-sized strokes and handles.
+        if (double.IsNaN(_modernRenderedZoom) || Math.Abs(_modernRenderedZoom - ModernZoomFactor) > .000001)
+            RenderModernEditor();
+    }
+
+    private void QueueAutomaticModernCanvasFit(long? expectedRevision = null)
+    {
+        var revision = expectedRevision ?? _modernViewRevision;
+        var viewport = _modernViewport;
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (revision == _modernViewRevision && ReferenceEquals(viewport, _modernViewport)) FitModernCanvas();
+        });
+    }
+
+    private void CancelModernCanvasFit()
+    {
+        ++_modernViewRevision;
+        _modernFitPending = false;
+    }
     private void ModernEditorRoot_SizeChanged(object sender, SizeChangedEventArgs e) =>
         UpdateModernResponsiveLayout(e.NewSize.Width);
 
@@ -25,7 +55,7 @@ public sealed partial class MapListPage : UserControl
         if (Math.Abs(_modernEditorRoot.Height - height) > .5)
             _modernEditorRoot.Height = height;
         UpdateModernResponsiveLayout(width);
-        DispatcherQueue.TryEnqueue(FitModernCanvas);
+        QueueAutomaticModernCanvasFit();
     }
 
     private void UpdateModernResponsiveLayout(double width)
@@ -49,7 +79,7 @@ public sealed partial class MapListPage : UserControl
             _modernLayerColumn.Width = _modernLayerDrawerOpen ? new GridLength(286) : new GridLength(0);
         if (_modernLayerPane is not null)
             _modernLayerPane.Visibility = _modernLayerDrawerOpen ? Visibility.Visible : Visibility.Collapsed;
-        DispatcherQueue.TryEnqueue(FitModernCanvas);
+        QueueAutomaticModernCanvasFit();
     }
 
     private void ToggleModernFocusMode()
@@ -63,23 +93,77 @@ public sealed partial class MapListPage : UserControl
         if (_modernLayerColumn is not null)
             _modernLayerColumn.Width = showLayerPane ? new GridLength(286) : new GridLength(0);
         SetModernStatus(_modernFocusMode ? "已进入专注模式，按 Esc 退出。" : "已退出专注模式。", false);
-        DispatcherQueue.TryEnqueue(FitModernCanvas);
+        QueueAutomaticModernCanvasFit();
     }
 
     private void FitModernCanvas()
     {
-        if (_modernViewport is null || _modernScene is null || _modernScene.Width <= 0 || _modernScene.Height <= 0)
-            return;
-        var availableWidth = Math.Max(1, _modernViewport.ActualWidth - 24);
-        var availableHeight = Math.Max(1, _modernViewport.ActualHeight - 24);
-        var zoom = (float)Math.Clamp(Math.Min(availableWidth / _modernScene.Width, availableHeight / _modernScene.Height), .1, 8);
-        _modernViewport.ChangeView(0, 0, zoom, true);
+        ++_modernViewRevision;
+        _modernFitPending = true;
+        QueueModernCanvasFit();
+    }
+
+    private void ModernViewport_LayoutUpdated(object? sender, object e)
+    {
+        if (_modernFitPending) QueueModernCanvasFit();
+    }
+
+    private void ModernViewport_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (ReferenceEquals(sender, _modernViewport) && _modernBitmap is { PixelWidth: > 0 })
+            QueueAutomaticModernCanvasFit();
+    }
+
+    private void QueueModernCanvasFit()
+    {
+        if (_modernFitQueued || _modernViewport is not { } viewport) return;
+        _modernFitQueued = true;
+        // LayoutUpdated fires within a layout pass. Changing the content extent
+        // or zoom there feeds back into layout, especially while the shell's
+        // navigation column animates. Coalesce requests after that pass instead.
+        if (!DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () =>
+        {
+            // A closed editor's queued callback must not own a replacement viewport.
+            if (!ReferenceEquals(viewport, _modernViewport)) return;
+            _modernFitQueued = false;
+            if (_modernFitPending) TryFitModernCanvas();
+        })) _modernFitQueued = false;
+    }
+
+    private void TryFitModernCanvas()
+    {
+        if (_modernViewport is null || !_modernViewport.IsLoaded || _modernScene is null || _modernSceneHost is null
+            || _modernBitmap is not { PixelWidth: > 0 } || _modernViewport.ViewportWidth <= 0 || _modernViewport.ViewportHeight <= 0) return;
+        var fit = MapEditorViewportFit.Calculate(_modernScene.Width, _modernScene.Height,
+            Math.Min(_modernViewport.ActualWidth, _modernViewport.ViewportWidth),
+            Math.Min(_modernViewport.ActualHeight, _modernViewport.ViewportHeight));
+        if (fit is not { } target) return;
+        var width = _modernScene.Width * target.DisplayScale;
+        var height = _modernScene.Height * target.DisplayScale;
+        _modernDisplayScale = target.DisplayScale;
+        if (Math.Abs(_modernSceneHost.Width - width) > .01 || Math.Abs(_modernSceneHost.Height - height) > .01)
+        {
+            _modernSceneHost.Width = width;
+            _modernSceneHost.Height = height;
+            return; // ChangeView must use the realized content extent.
+        }
+        _modernFitPending = false;
+        if (Math.Abs(_modernViewport.ZoomFactor - target.ZoomFactor) >= .00001
+            || _modernViewport.HorizontalOffset >= .01 || _modernViewport.VerticalOffset >= .01)
+        {
+            // ChangeView can synchronously raise ViewChanged and invalidate the
+            // canvas; clear ownership first so those callbacks cannot reenter fit.
+            if (!_modernViewport.ChangeView(0, 0, target.ZoomFactor, true))
+                _modernFitPending = true;
+        }
+        ModernViewportViewChanged(_modernViewport);
     }
 
     private void ChangeModernZoom(float multiplier)
     {
         if (_modernViewport is null)
             return;
+        CancelModernCanvasFit();
         var zoom = Math.Clamp(_modernViewport.ZoomFactor * multiplier, .1f, 8f);
         var centerX = _modernViewport.HorizontalOffset + _modernViewport.ViewportWidth / 2;
         var centerY = _modernViewport.VerticalOffset + _modernViewport.ViewportHeight / 2;
@@ -94,7 +178,7 @@ public sealed partial class MapListPage : UserControl
     private void UpdateModernZoomText()
     {
         if (_modernZoomText is not null && _modernViewport is not null)
-            _modernZoomText.Text = $"{Math.Round(_modernViewport.ZoomFactor * 100):0}%";
+            _modernZoomText.Text = $"{Math.Round(_modernViewport.ZoomFactor * _modernDisplayScale * 100):0}%";
     }
 
     private void SetModernStatus(string text, bool isError = false)
@@ -102,7 +186,7 @@ public sealed partial class MapListPage : UserControl
         if (_modernStatusText is null)
             return;
         _modernStatusText.Text = text;
-        _modernStatusText.Foreground = new SolidColorBrush(isError ? Color.FromArgb(255, 255, 125, 104) : EditorMuted);
+        _modernStatusText.Foreground = isError ? EditorBrush(IDVBuff.Appearance.ThemeToken.ErrorText) : EditorMuted;
     }
 
     private static Color ParseEditorColor(string? value)

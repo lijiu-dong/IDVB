@@ -18,21 +18,49 @@ internal sealed class DeepScanStructureIndex
     public int Height { get; }
     public bool HasGeometry => _corners.Count > 0;
 
-    private DeepScanStructureIndex(Mat line)
+    private DeepScanStructureIndex(Mat line) : this(ScanStructureIndex.Get(line), SourceCorners(line)) { }
+
+    // Geometry dictionaries are immutable. Rebind their distance reader to the
+    // operation lease so a retired cache owner is never used through this view.
+    private DeepScanStructureIndex(DeepScanStructureIndex source, ScanStructureIndex distances)
     {
-        Width = line.Width;
-        Height = line.Height;
-        Distances = ScanStructureIndex.Get(line);
-        using var copy = line.Clone();
-        Cv2.FindContours(copy, out Point[][] contours, out _, RetrievalModes.List, ContourApproximationModes.ApproxNone);
-        var corners = ExtractCorners(contours);
+        Width = distances.Width; Height = distances.Height; Distances = distances;
+        _corners = source._corners; _orientedCorners = source._orientedCorners;
+    }
+    internal DeepScanStructureIndex BorrowWithDistances(ScanStructureIndex distances) => new(this, distances);
+
+
+    private DeepScanStructureIndex(ScanStructureIndex distances, Corner[] corners)
+    {
+        Width = distances.Width;
+        Height = distances.Height;
+        Distances = distances;
         _corners = corners.GroupBy(Key).ToDictionary(g => g.Key, g => g.ToArray());
         _orientedCorners = corners.GroupBy(c => (Angle(c.A, c.B), Angle(c.C, c.B)))
             .ToDictionary(g => g.Key, g => g.ToArray());
     }
 
+    private static Corner[] SourceCorners(Mat line)
+    {
+        using var copy = SemanticStructureContours.Geometry(line);
+        return ExtractPreparedCorners(copy);
+    }
+
+    internal static DeepScanStructureIndex FromPreparedLabels(ScanStructureIndex distances, Mat labels)
+    {
+        if (labels.Empty() || labels.Type() != MatType.CV_8UC1
+            || labels.Width != distances.Width || labels.Height != distances.Height)
+            throw new ArgumentException("局部几何标签必须与当前楼层索引一致。", nameof(labels));
+        using var geometry = new Mat();
+        // Validated RGB labels include warm=127; both classes are geometry.
+        // Legacy grayscale labels were already thresholded by Decode.
+        Cv2.Threshold(labels, geometry, 0, 255, ThresholdTypes.Binary);
+        return new(distances, ExtractPreparedCorners(geometry));
+    }
+
     public static void Prewarm(Mat line) => Cache.GetValue(line, m => new(m));
     public static bool TryGet(Mat line, out DeepScanStructureIndex? index) => Cache.TryGetValue(line, out index);
+    internal static void ForgetSource(Mat line) => Cache.Remove(line);
 
     internal static Corner[] SelectQueryCorners(IEnumerable<Point[]> contours, int width, int height) =>
         ExtractCorners(contours)
@@ -53,9 +81,44 @@ internal sealed class DeepScanStructureIndex
         foreach (var contour in contours)
         {
             var polygon = Cv2.ApproxPolyDP(contour, 1.5, true);
-            if (polygon.Length < 3) continue;
-            for (var i = 0; i < polygon.Length; i++)
+            AddPolygonCorners(polygon, result);
+        }
+        return result.ToArray();
+    }
+
+    internal static Corner[] ExtractPreparedCorners(Mat geometry)
+    {
+        using var operation = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("DeepScan.BuildGeometry");
+        // Preserve ApproxNone and the exact native ApproxPolyDP input. Keeping
+        // complete contours in native Mats avoids a second full Point[][] copy.
+        var request = IDVBuff.Core.Diagnostics.MemoryJournal.Request("DeepScan.NativeContours", nativeModule: "OpenCvSharpExtern.dll");
+        var contours = Cv2.FindContoursAsMat(geometry, RetrievalModes.List, ContourApproximationModes.ApproxNone);
+        IDVBuff.Core.Diagnostics.MemoryJournal.TrackResource(contours, "DeepScan.NativeContours",
+            contours.Sum(contour => contour.Total() * contour.ElemSize()), "OpenCvSharpExtern.dll", request);
+        try
+        {
+            var result = new HashSet<Corner>();
+            foreach (var contour in contours)
             {
+                using var polygon = new Mat();
+                Cv2.ApproxPolyDP(contour, polygon, 1.5, true);
+                polygon.GetArray(out Point[] points);
+                AddPolygonCorners(points, result);
+            }
+            return result.ToArray();
+        }
+        finally
+        {
+            foreach (var contour in contours) contour.Dispose();
+            IDVBuff.Core.Diagnostics.MemoryJournal.ReleaseResource(contours);
+        }
+    }
+
+    private static void AddPolygonCorners(Point[] polygon, HashSet<Corner> result)
+    {
+        if (polygon.Length < 3) return;
+        for (var i = 0; i < polygon.Length; i++)
+        {
                 var corner = new Corner(polygon[(i + polygon.Length - 1) % polygon.Length],
                     polygon[i], polygon[(i + 1) % polygon.Length]);
                 var ab = Length(corner.A, corner.B);
@@ -66,9 +129,7 @@ internal sealed class DeepScanStructureIndex
                 if (ab < 10 || cb < 10 || Math.Abs(cross) / (ab * cb) < .3) continue;
                 result.Add(corner);
                 result.Add(new(corner.C, corner.B, corner.A));
-            }
         }
-        return result.ToArray();
     }
 
     internal IEnumerable<Corner> Lookup(Corner live)

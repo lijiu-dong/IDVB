@@ -13,6 +13,12 @@ public sealed partial class MapGlobalInputService
         foreach (var (pluginId, bindings) in _pluginBindings)
         foreach (var (bindingKey, binding) in bindings)
         {
+            if (binding.Kind == MapInputBindingKind.Mouse)
+            {
+                if (TryMouseVirtualKey(binding.MouseButton, out var mouseKey) && mouseKey == key)
+                    (matches ??= []).Add((pluginId, bindingKey, binding, isDown));
+                continue;
+            }
             if (binding.Kind != MapInputBindingKind.Keyboard) continue;
             if (!binding.NormalizedCompanionVirtualKeys().Any())
             {
@@ -29,37 +35,6 @@ public sealed partial class MapGlobalInputService
             if (edge is { } pressed) (matches ??= []).Add((pluginId, bindingKey, binding, pressed));
         }
     }
-    private void DispatchPluginMouseInput(
-        MapMouseButton button,
-        long timestamp,
-        bool isDown)
-    {
-        List<(string PluginId, string BindingKey)> matches;
-        lock (_keyboardStateLock)
-        {
-            matches = [];
-            foreach (var (pluginId, bindings) in _pluginBindings)
-            {
-                foreach (var (bindingKey, binding) in bindings)
-                {
-                    if (binding.Kind == MapInputBindingKind.Mouse
-                        && binding.MouseButton == button)
-                    {
-                        matches.Add((pluginId, bindingKey));
-                    }
-                }
-            }
-        }
-        foreach (var match in matches)
-        {
-            DispatchPluginInput(new PluginInputInvokedEventArgs(
-                match.PluginId,
-                match.BindingKey,
-                timestamp,
-                isDown));
-        }
-    }
-
     public void ApplyPluginBinding(
         string pluginId,
         string bindingKey,
@@ -79,6 +54,7 @@ public sealed partial class MapGlobalInputService
                 _pluginBindings[pluginId] = bindings;
             }
             bindings[bindingKey] = binding.Clone();
+            _keyboardPollKeysDirty = true;
         }
         RestartMonitoring();
     }
@@ -88,7 +64,10 @@ public sealed partial class MapGlobalInputService
         if (string.IsNullOrWhiteSpace(pluginId))
             return;
         lock (_keyboardStateLock)
+        {
             _pluginBindings.Remove(pluginId);
+            _keyboardPollKeysDirty = true;
+        }
         if (HasAnyBinding())
             RestartMonitoring();
         else
@@ -213,13 +192,20 @@ public sealed partial class MapGlobalInputService
             : MapMouseButton.XButton1;
     }
 
-    private static bool IsMouseButtonDown(MapMouseButton button) => button switch
+    internal static bool TryMouseVirtualKey(MapMouseButton button, out uint virtualKey)
     {
-        MapMouseButton.Left => IsKeyDown(1),
-        MapMouseButton.Right => IsKeyDown(2),
-        MapMouseButton.Middle => IsKeyDown(4),
-        MapMouseButton.XButton1 => IsKeyDown(5),
-        MapMouseButton.XButton2 => IsKeyDown(6),
-        _ => false
-    };
+        virtualKey = button switch
+        {
+            MapMouseButton.Left => 1,
+            MapMouseButton.Right => 2,
+            MapMouseButton.Middle => 4,
+            MapMouseButton.XButton1 => 5,
+            MapMouseButton.XButton2 => 6,
+            _ => 0
+        };
+        return virtualKey != 0;
+    }
+
+    private static bool IsMouseButtonDown(MapMouseButton button) =>
+        TryMouseVirtualKey(button, out var virtualKey) && IsKeyDown(virtualKey);
 }

@@ -143,7 +143,10 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
         _mapRepository = new MapRepository();
         _rtSettingsRepo = new MapRuntimeSettingsRepository();
         _recognition = new MapCvRecognitionService(_mapRepository, MapOverlayBitmapRenderer.InvalidateImageCache,
-            matchScopedResources: true);
+            matchScopedResources: true, deterministicScanStorage: true,
+            // Experimental semantic backend remains isolated to the validated
+            // development memory-test root until end-to-end gates pass.
+            deterministicSemanticStorage: AppDataPaths.IsMemoryTest);
         _playerMarkerDetector = new MapPlayerMarkerDetector();
         _researchCollector = researchCollector;
         _logCollector = new MapLogCollector();
@@ -190,7 +193,8 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
                 GetCurrentVariantContextAsync,
                 SwitchVariantAsync,
                 _captureProtection,
-                CorrectMapAsync);
+                CorrectMapAsync,
+                beginMatchWithPendingSave: (mapClass, pendingSave) => BeginMatchAsync(mapClass, pendingSave));
         }
 
         // 全局输入事件仅在 GUI 模式订阅（headless CLI 无输入设备）

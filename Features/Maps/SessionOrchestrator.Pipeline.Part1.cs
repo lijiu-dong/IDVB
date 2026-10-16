@@ -71,7 +71,7 @@ using IDVBuff.Core.Contracts; using IDVBuff.Core.Diagnostics; using IDVBuff.Core
         {
             proposedFloorKey = detectedFloor;
             LogFloorProposal(context, proposedFloorKey, autoFloor?.Score, autoFloor?.Margin);
-            ReportFloorProposalTransient(locked, proposedFloorKey, frame);
+            PresentDetectedFloorBeforeAlignment(locked, proposedFloorKey, frame, context);
         }
         else
         {

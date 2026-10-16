@@ -6,6 +6,19 @@ public sealed partial class SessionOrchestrator
 {
     private const int VkLButton = 0x01;
 
+    private static bool TryGetTrackingCursor(out NativePoint point)
+    {
+#if IDVB_DEVELOPMENT_BUILD
+        if (IDVBuff.Lifecycle.BackgroundTestRuntime.Enabled)
+        {
+            var valid = IDVBuff.Lifecycle.BackgroundTestRuntime.TryInput(out var x, out var y, out _, out _);
+            point = new NativePoint { X = x, Y = y };
+            return valid;
+        }
+#endif
+        return GetCursorPos(out point);
+    }
+
     [DllImport("user32.dll")]
     private static extern short GetAsyncKeyState(int vKey);
 

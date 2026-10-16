@@ -1,4 +1,5 @@
 using System.Numerics;
+using IDVBuff.Core.Diagnostics;
 using Microsoft.UI.Composition;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -16,6 +17,7 @@ internal sealed class DeepScanLattice : UserControl
     private InsetClip? _fillClip;
     private double _fillBoundary;
     private bool _running;
+    private bool _active;
     private CompositionPropertySet? _selectionGeometry;
 
     public DeepScanLattice()
@@ -31,6 +33,14 @@ internal sealed class DeepScanLattice : UserControl
         if (_running == running) return;
         _running = running;
         UpdateMotion();
+    }
+
+    internal void SetActive(bool active)
+    {
+        if (_active == active) return;
+        _active = active;
+        if (active) Rebuild();
+        else Release();
     }
 
     internal void SetFillBoundary(double leadingEdge)
@@ -49,6 +59,12 @@ internal sealed class DeepScanLattice : UserControl
         _fillClip.StartAnimation("RightInset", boundary);
     }
 
+    internal void UnbindFillBoundary()
+    {
+        _selectionGeometry = null;
+        _fillClip?.StopAnimation("RightInset");
+    }
+
     private void Release()
     {
         ElementCompositionPreview.SetElementChildVisual(this, null);
@@ -59,7 +75,11 @@ internal sealed class DeepScanLattice : UserControl
             cell.Visual.Dispose();
         }
         _cells.Clear();
-        _root?.Dispose();
+        if (_root is { } root)
+        {
+            root.Dispose();
+            MemoryJournal.ReleaseResource(root);
+        }
         _root = null;
         _fillClip?.Dispose();
         _fillClip = null;
@@ -69,10 +89,12 @@ internal sealed class DeepScanLattice : UserControl
 
     private void Rebuild()
     {
-        if (!IsLoaded || ActualWidth < 20 || ActualHeight < 20) return;
+        if (!_active || !IsLoaded || ActualWidth < 20 || ActualHeight < 20) return;
         Release();
         var compositor = ElementCompositionPreview.GetElementVisual(this).Compositor;
         _root = compositor.CreateContainerVisual();
+        var request = MemoryJournal.Request("UI.Home.DeepScan.Lattice", nativeModule: "Microsoft.UI.Composition.dll");
+        MemoryJournal.TrackResource(_root, "UI.Home.DeepScan.Lattice", null, "Microsoft.UI.Composition.dll", request);
         _root.Size = new Vector2((float)ActualWidth, (float)ActualHeight);
         _fillClip = compositor.CreateInsetClip();
         _root.Clip = _fillClip;

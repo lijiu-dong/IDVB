@@ -46,10 +46,6 @@ public static class RealtimePerformanceTracker
     [DllImport("kernel32.dll")]
     private static extern IntPtr GetCurrentProcess();
 
-    [DllImport("psapi.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool EmptyWorkingSet(IntPtr hProcess);
-
     public readonly record struct PerformanceSnapshot(
         double WorkingSetMb,
         double PrivateWorkingSetMb,
@@ -143,21 +139,6 @@ public static class RealtimePerformanceTracker
     }
 
     /// <summary>
-    /// 将进程中未使用的物理内存页剥离出物理工作集，返还给操作系统。
-    /// </summary>
-    public static void TrimWorkingSet()
-    {
-        try
-        {
-            EmptyWorkingSet(GetCurrentProcess());
-        }
-        catch
-        {
-            // 修剪工作集属于辅助优化，失败时安全忽略
-        }
-    }
-
-    /// <summary>
     /// 开始对能够调用大资源的关键函数进行性能与内存增量打点。
     /// 退出 using 时自动计算增量、耗时并输出日志。
     /// </summary>
@@ -199,10 +180,8 @@ public static class RealtimePerformanceTracker
         GC.WaitForPendingFinalizers();
         GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
 
-        // 原生堆（C++ CRT/OpenCV）与托管堆释放后，Windows 物理工作集默认保留页面不归还给系统。
-        // 在对局重置等非高频生命周期节点剥离空闲物理页，退还给操作系统。
-        TrimWorkingSet();
-
+        // Observe actual post-GC residency. Paging live allocations out would
+        // hide ownership problems and falsify the 300MB acceptance metric.
         var (privAfter, totalAfter, _) = GetMemoryMetrics();
         var gcAfter = GC.GetTotalMemory(false) / (1024.0 * 1024.0);
         var deltaPriv = privAfter - privBefore;
@@ -255,10 +234,12 @@ public static class RealtimePerformanceTracker
         private readonly double _startTotalWs;
         private readonly double _startGc;
         private readonly Stopwatch _stopwatch;
+        private readonly IDisposable? _memoryOperation;
         private bool _disposed;
 
         public ResourceScope(string functionName, string? context, bool forceLog)
         {
+            _memoryOperation = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation(functionName, context);
             _functionName = functionName;
             _context = context;
             _forceLog = forceLog;
@@ -277,6 +258,7 @@ public static class RealtimePerformanceTracker
         {
             if (_disposed) return;
             _disposed = true;
+            _memoryOperation?.Dispose();
             _stopwatch.Stop();
             var elapsedMs = _stopwatch.Elapsed.TotalMilliseconds;
 

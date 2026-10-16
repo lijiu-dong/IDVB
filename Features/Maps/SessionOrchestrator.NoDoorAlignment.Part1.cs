@@ -65,7 +65,6 @@ public sealed partial class SessionOrchestrator
             referenceProfile);
         cacheTimer.Stop();
         diagnostics.ReferenceCacheMilliseconds = cacheTimer.Elapsed.TotalMilliseconds;
-        MapStructureFeatures? ownedPreparedReference = null;
         Mat? decodedReference = null;
         if (residentLease is null)
         {
@@ -87,7 +86,7 @@ public sealed partial class SessionOrchestrator
             }
 
             cacheTimer.Restart();
-            ownedPreparedReference = _recognition.StructureCache.GetOrCreate(
+            residentLease = _recognition.StructureCache.RentOrCreate(
                 locked.Map.Id,
                 locked.Map.UpdatedAt,
                 decodedReference,
@@ -100,10 +99,9 @@ public sealed partial class SessionOrchestrator
         }
         using var ownedDecodedReference = decodedReference;
         using var leaseScope = residentLease;
-        using var ownedPreparedReferenceScope = ownedPreparedReference;
         using var emptyReference = decodedReference is null ? new Mat() : null;
         var reference = decodedReference ?? emptyReference!;
-        var preparedReference = residentLease?.Features ?? ownedPreparedReference!;
+        var preparedReference = residentLease!.Features;
         MapStructureFeatures preparedLive;
         MapStructureFeatures? ownedPreparedLive = null;
         MapStructureFeatures? ownedPreparedOriginalLive = null;

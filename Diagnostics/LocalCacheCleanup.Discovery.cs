@@ -103,11 +103,16 @@ internal static partial class LocalCacheCleanup
         EnsureSafePath(root, path);
         try
         {
-            using var doc = JsonDocument.Parse(File.ReadAllText(path));
-            var maps = doc.RootElement.GetProperty("Maps");
+            using var operation = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("CacheCleanup.ReadCatalogMetadata", path);
+            using var stream = File.OpenRead(path);
+            var catalog = JsonSerializer.Deserialize<CleanupCatalog>(stream);
+            if (catalog?.Maps is null) return null;
             var result = new Dictionary<Guid, long>();
-            foreach (var map in maps.EnumerateArray())
-                result.Add(map.GetProperty("Id").GetGuid(), map.GetProperty("UpdatedAt").GetDateTimeOffset().UtcTicks);
+            foreach (var map in catalog.Maps)
+            {
+                if (map?.Id is not { } id || map.UpdatedAt is not { } updatedAt) return null;
+                result.Add(id, updatedAt.UtcTicks);
+            }
             return result;
         }
         catch (Exception error) when (error is JsonException or IOException or InvalidOperationException
@@ -115,6 +120,21 @@ internal static partial class LocalCacheCleanup
         {
             return null; // Never infer "all maps removed" from an unavailable catalog.
         }
+    }
+
+    // Cleanup owns identity/version metadata only. Recognition drawings and
+    // asset bindings are skipped by the streaming serializer, never copied to
+    // a full-file string or JsonDocument retained by the shared array pool.
+    private sealed class CleanupCatalog
+    {
+        public CleanupCatalog() { }
+        public List<CleanupMap?>? Maps { get; set; }
+    }
+    private sealed class CleanupMap
+    {
+        public CleanupMap() { }
+        public Guid? Id { get; set; }
+        public DateTimeOffset? UpdatedAt { get; set; }
     }
 
     private static bool IsCurrentPublication(string root, string file)

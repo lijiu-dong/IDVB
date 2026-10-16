@@ -4,7 +4,30 @@ namespace IDVBuff.Features.Maps;
 
 internal static partial class MapStructureScaleEstimator
 {
-    private sealed record ScaleScore(double Scale, double Cost);
+    private sealed record ScaleScore(double Scale, double Cost, double X = double.NaN, double Y = double.NaN);
+
+    // Scale hypotheses are independent, so a cold floor scores them
+    // concurrently. Leave cores to the game and the capture threads.
+    private static readonly int ParallelScoreWorkers = Math.Clamp(Environment.ProcessorCount - 2, 1, 4);
+
+    private static void RunParallel(int count, Action<int> body)
+    {
+        if (count <= 1 || ParallelScoreWorkers <= 1)
+        {
+            for (var index = 0; index < count; index++) body(index);
+            return;
+        }
+        try
+        {
+            Parallel.For(0, count, new ParallelOptions { MaxDegreeOfParallelism = ParallelScoreWorkers }, body);
+        }
+        catch (AggregateException exception) when (exception.InnerExceptions.Count > 0)
+        {
+            // Callers handle OpenCV failures by type; keep the original exception.
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(exception.InnerExceptions[0]).Throw();
+            throw;
+        }
+    }
 
     internal static IReadOnlyList<double> Rank(
         MapStructureFeatures live,
@@ -25,7 +48,8 @@ internal static partial class MapStructureScaleEstimator
         MapStructureRegistrationTuning tuning,
         bool includeAppearanceScale = true,
         double? preferredScale = null,
-        bool useScaleHint = false)
+        bool useScaleHint = false,
+        bool refineNativeResolution = false)
     {
         var minimumScale = tuning.LowStructureMinimumScale;
         var maximumScale = tuning.LowStructureMaximumScale;
@@ -62,8 +86,7 @@ internal static partial class MapStructureScaleEstimator
                 tuning.MinimumUsableScale)
             .OrderBy(scale => scale)
             .ToArray();
-        var points = MapStructureScaleSearch.FindNonZeroPoints(live.Edges);
-        if (points.Length < tuning.MinimumEdgePixels)
+        if (Cv2.CountNonZero(live.Edges) < tuning.MinimumEdgePixels)
             return new([], 0d, coarseGrid.Length, true,
                 HintScale: hint?.Scale,
                 HintConfidence: hint?.Confidence ?? 0d,
@@ -78,22 +101,32 @@ internal static partial class MapStructureScaleEstimator
                 SearchMaximumScale: maximumScale);
 
         using var livePatch = new Mat(live.Edges, bounds);
+        using var semantic = refineNativeResolution
+            ? SemanticScaleSearch.CreateCached(reference, live.SemanticLabels,
+                live.Edges, bounds, tuning.DistanceClipPixels) : null;
         var asymmetricObserved = live.RawVisibleMask is not null
             && live.DiagnosticTiming?.Profile ==
                 MapStructurePreprocessingProfile.NativeObservedStructureLine;
-        var referenceDistance = reference.GetOrCreateClippedReferenceDistanceMap(
-            tuning.DistanceClipPixels);
-        var coarseFactor = Math.Max(4, tuning.FastCoarseDownsampleFactor * 2);
-        using var coarseDistance = Resize(referenceDistance, coarseFactor);
-        using var coarseEdges = Resize(reference.Edges, coarseFactor);
+        // Semantic scoring uses its own color distance channels. The geometry
+        // distance was previously allocated solely to supply their dimensions.
+        var referenceDistance = semantic is null
+            ? reference.GetOrCreateClippedReferenceDistanceMap(tuning.DistanceClipPixels)
+            : null;
+        // A narrow observed strip can collapse to a few rows at factor eight,
+        // eliminating the correct basin before any fine search gets to see it.
+        var coarseFactor = refineNativeResolution
+            ? 2 : Math.Max(4, tuning.FastCoarseDownsampleFactor * 2);
+        using var coarseDistance = referenceDistance is null ? null : Resize(referenceDistance, coarseFactor);
+        using var coarseEdges = semantic is null ? Resize(reference.Edges, coarseFactor) : null;
         var coarse = ScoreScales(
                 coarseGrid,
                 coarseFactor,
+                ReducedSize(reference.Edges.Size(), coarseFactor),
                 coarseDistance,
                 coarseEdges,
                 livePatch,
                 tuning.DistanceClipPixels,
-                asymmetricObserved)
+                asymmetricObserved, semantic)
             .OrderBy(item => item.Cost)
             .ThenBy(item => PreferredScaleDistance(item.Scale, preferredScale))
             .ToArray();
@@ -109,9 +142,14 @@ internal static partial class MapStructureScaleEstimator
                 SearchMaximumScale: maximumScale,
                 TopBasinScales: topBasinScales);
 
+        if (refineNativeResolution)
+            return RefineNativeBasins(coarse, coarseGrid, referenceDistance,
+                reference.Edges, livePatch, tuning.DistanceClipPixels,
+                asymmetricObserved, hint, minimumScale, maximumScale, semantic);
+
         var ambiguous = IsAmbiguous(coarse);
         var fineFactor = Math.Max(2, tuning.FastCoarseDownsampleFactor);
-        using var fineDistance = Resize(referenceDistance, fineFactor);
+        using var fineDistance = Resize(referenceDistance!, fineFactor);
         using var fineEdges = Resize(reference.Edges, fineFactor);
         var winnerIndex = Array.FindIndex(
             coarseGrid,
@@ -120,6 +158,7 @@ internal static partial class MapStructureScaleEstimator
         var firstScores = ScoreScales(
                 firstRound,
                 fineFactor,
+                fineDistance.Size(),
                 fineDistance,
                 fineEdges,
                 livePatch,
@@ -147,6 +186,7 @@ internal static partial class MapStructureScaleEstimator
         var finalScores = ScoreScales(
                 secondRound,
                 fineFactor,
+                fineDistance.Size(),
                 fineDistance,
                 fineEdges,
                 livePatch,
@@ -209,15 +249,6 @@ internal static partial class MapStructureScaleEstimator
             count,
             minimumUsableScale,
             preferredScale);
-
-    private static double PreferredScaleDistance(
-        double scale,
-        double? preferredScale) =>
-        preferredScale is { } preferred
-            && double.IsFinite(preferred)
-            && preferred > 0d
-            ? Math.Abs(Math.Log(scale / preferred))
-            : Math.Abs(Math.Log(scale));
 
     private static double? FindAppearanceScale(
         MapStructureFeatures live,
@@ -351,21 +382,41 @@ internal static partial class MapStructureScaleEstimator
     private static IReadOnlyList<ScaleScore> ScoreScales(
         IEnumerable<double> candidates,
         int factor,
-        Mat referenceDistance,
-        Mat referenceEdges,
+        Size referenceSize,
+        Mat? referenceDistance,
+        Mat? referenceEdges,
         Mat livePatch,
         double distanceClipPixels,
-        bool asymmetricObserved)
+        bool asymmetricObserved,
+        SemanticScaleSearch? semantic = null, ScaleScore? anchor = null, int radius = 0)
     {
         var scores = new List<ScaleScore>();
+        if (semantic is not null && factor == 1 && anchor is not null)
+        {
+            candidates = candidates as IReadOnlyList<double> ?? candidates.ToArray();
+            if (ScoreLocalSemanticGrid(candidates, referenceSize, livePatch, semantic, anchor, radius) is { } local)
+                return local;
+        }
+        if (semantic is not null && factor != 1)
+            return ScoreSemanticBatch(candidates, factor, referenceSize, livePatch, semantic, anchor, radius);
+        if (semantic is not null && anchor is null)
+            candidates = ReserveSemanticGrid(candidates, factor, referenceSize, livePatch, semantic);
         foreach (var scale in candidates)
         {
             var size = new Size(
                 Math.Max(1, (int)Math.Round(livePatch.Width / scale / factor)),
                 Math.Max(1, (int)Math.Round(livePatch.Height / scale / factor)));
             if (size.Width < 3 || size.Height < 3
-                || size.Width >= referenceDistance.Width || size.Height >= referenceDistance.Height)
+                || size.Width >= referenceSize.Width || size.Height >= referenceSize.Height)
                 continue;
+            if (semantic is not null)
+            {
+                var region = SemanticSearchRegion(anchor, livePatch.Size(), size,
+                    referenceSize, factor, radius);
+                var cost = semantic.Score(size, factor, region, out var location);
+                if (double.IsFinite(cost)) scores.Add(new(scale, cost, location.X * factor, location.Y * factor));
+                continue;
+            }
             using var template = new Mat();
             Cv2.Resize(livePatch, template, size, interpolation: InterpolationFlags.Area);
             using var templateFloat = new Mat();
@@ -374,7 +425,7 @@ internal static partial class MapStructureScaleEstimator
             if (mass < 1d)
                 continue;
             using var scoreMap = new Mat();
-            Cv2.MatchTemplate(referenceDistance, templateFloat, scoreMap, TemplateMatchModes.CCorr);
+            Cv2.MatchTemplate(referenceDistance!, templateFloat, scoreMap, TemplateMatchModes.CCorr);
             Cv2.MinMaxLoc(scoreMap, out var minimum, out _, out var minimumLocation, out _);
             if (!double.IsFinite(minimum))
                 continue;
@@ -390,7 +441,7 @@ internal static partial class MapStructureScaleEstimator
                 DistanceTypes.L2,
                 DistanceTransformMasks.Mask3);
             using var referenceWindow = new Mat(
-                referenceEdges,
+                referenceEdges!,
                 new Rect(minimumLocation.X, minimumLocation.Y, size.Width, size.Height));
             using var referenceBinary = new Mat();
             Cv2.Threshold(referenceWindow, referenceBinary, 32d, 1d, ThresholdTypes.Binary);
@@ -407,15 +458,29 @@ internal static partial class MapStructureScaleEstimator
         return scores;
     }
 
-    private static Mat Resize(Mat source, int factor)
+    // Same requests, order and results as the sequential semantic loop below.
+    private static IReadOnlyList<ScaleScore> ScoreSemanticBatch(IEnumerable<double> candidates, int factor,
+        Size referenceSize, Mat livePatch, SemanticScaleSearch semantic, ScaleScore? anchor, int radius)
     {
-        var result = new Mat();
-        Cv2.Resize(
-            source,
-            result,
-            new Size(Math.Max(1, source.Width / factor), Math.Max(1, source.Height / factor)),
-            interpolation: InterpolationFlags.Area);
-        return result;
+        var requests = new List<(double Scale, Size Size, Rect? Region)>();
+        foreach (var scale in candidates)
+        {
+            var size = new Size(
+                Math.Max(1, (int)Math.Round(livePatch.Width / scale / factor)),
+                Math.Max(1, (int)Math.Round(livePatch.Height / scale / factor)));
+            if (size.Width < 3 || size.Height < 3
+                || size.Width >= referenceSize.Width || size.Height >= referenceSize.Height)
+                continue;
+            requests.Add((scale, size, SemanticSearchRegion(anchor, livePatch.Size(), size,
+                referenceSize, factor, radius)));
+        }
+        var costs = semantic.ScoreBatch(requests.Select(request => (request.Size, request.Region)).ToArray(),
+            factor, out var locations);
+        var scores = new List<ScaleScore>(requests.Count);
+        for (var i = 0; i < requests.Count; i++)
+            if (double.IsFinite(costs[i]))
+                scores.Add(new(requests[i].Scale, costs[i], locations[i].X * factor, locations[i].Y * factor));
+        return scores;
     }
 
     private static double AdjacentResolution(IReadOnlyList<double> grid, double scale)
@@ -479,3 +544,4 @@ internal static partial class MapStructureScaleEstimator
             .ToArray();
     }
 }
+

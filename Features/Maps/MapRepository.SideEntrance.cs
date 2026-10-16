@@ -85,7 +85,7 @@ public sealed partial class MapRepository
 
         try
         {
-            using var sourceMat = Cv2.ImRead(sourcePath, ImreadModes.Grayscale);
+            using var sourceMat = Cv2.ImRead(sourcePath, ImreadModes.Unchanged);
             if (sourceMat.Empty())
                 return;
 
@@ -187,7 +187,7 @@ public sealed partial class MapRepository
 
                 try
                 {
-                    using var sourceMat = Cv2.ImRead(sourcePath, ImreadModes.Grayscale);
+                    using var sourceMat = Cv2.ImRead(sourcePath, ImreadModes.Unchanged);
                     if (sourceMat.Empty())
                         continue;
 
@@ -417,7 +417,7 @@ public sealed partial class MapRepository
 
         try
         {
-            using var sourceMat = Cv2.ImRead(sourcePath, ImreadModes.Grayscale);
+            using var sourceMat = Cv2.ImRead(sourcePath, ImreadModes.Unchanged);
             if (sourceMat.Empty())
                 return false;
             using var result = _sideEntrancePreprocessor.Value.Process(

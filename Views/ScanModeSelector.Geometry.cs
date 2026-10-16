@@ -10,62 +10,117 @@ public sealed partial class ScanModeSelector
 {
     private CompositionPropertySet? _geometry;
     private readonly List<(Border Host, CompositionRoundedRectangleGeometry Geometry,
-        CompositionColorBrush Fill, CompositionColorBrush Stroke)> _pills = [];
+        CompositionColorBrush Fill, CompositionColorBrush Stroke, ShapeVisual Visual,
+        CompositionSpriteShape Shape, int Height)> _pills = [];
     private CompositionLinearGradientBrush? _selectionFill;
+    private InsetClip? _speedClip;
     private double _geometryTrackWidth;
 
     private void EnsureGeometry()
     {
-        if (_geometry is not null) return;
+        if (_retired || _geometry is not null || !IsLoaded) return;
         var compositor = ElementCompositionPreview.GetElementVisual(_track).Compositor;
+        var request = IDVBuff.Core.Diagnostics.MemoryJournal.Request("UI.Home.ScanSelector.Geometry",
+            nativeModule: "Microsoft.UI.Composition.dll");
         _geometry = compositor.CreatePropertySet();
-        _geometry.InsertScalar("Width", (float)_track.ActualWidth);
-        _geometry.InsertScalar("Expansion", (float)_appearanceFrame.Expansion);
-        _geometry.InsertScalar("Index", (float)_appearanceFrame.Index);
-        _geometry.InsertScalar("Pointer", 0);
-        _geometry.InsertScalar("Dragging", 0);
-        _geometry.InsertScalar("Segments", _visibleSegments);
-        _geometry.InsertScalar("SegmentWidth", 1);
-        _geometry.InsertScalar("SelectionX", 4);
-        BindGeometry(_geometry, "SegmentWidth", "Max(1, pose.Width / (3 + pose.Expansion))");
-        BindGeometry(_geometry, "SelectionX",
-            "Clamp(pose.Dragging > 0 ? pose.Pointer / pose.SegmentWidth - 0.5 : pose.Index, 0, pose.Dragging > 0 ? Min(pose.Segments - 1, 2 + pose.Expansion) : 2 + pose.Expansion) * pose.SegmentWidth + 4");
-
-        AddPill(_selection, 0, 0);
-        AddPill(_fastGlow, 0, 0);
-        AddPill(_glowOuter, 72, -36);
-        AddPill(_glowInner, 44, -22);
-        AddPill(_qualityHaloOuter, 26, -13);
-        AddPill(_qualityHaloInner, 10, -5);
-        _selectionFill = compositor.CreateLinearGradientBrush();
-        _selectionFill.StartPoint = new Vector2(0, .2f);
-        _selectionFill.EndPoint = new Vector2(1, .8f);
-        foreach (var offset in new[] { 0f, .5f, 1f })
-            _selectionFill.ColorStops.Add(compositor.CreateColorGradientStop(offset, Microsoft.UI.Colors.Transparent));
-        var selectionVisual = (ShapeVisual)ElementCompositionPreview.GetElementChildVisual(_selection);
-        ((CompositionSpriteShape)selectionVisual.Shapes[0]).FillBrush = _selectionFill;
-
-        // Text is measured once at the rail center. All slots use the same
-        // unrounded Composition coordinates as the pill, including the reveal.
-        for (var i = 0; i < _labels.Length; i++)
+        IDVBuff.Core.Diagnostics.MemoryJournal.TrackResource(_geometry, "UI.Home.ScanSelector.Geometry",
+            null, "Microsoft.UI.Composition.dll", request);
+        IDVBuff.Core.Diagnostics.MemoryJournal.ObserveManagedObject(_geometry, "UI.Home.ScanSelector.Geometry");
+        try
         {
-            var visual = ElementCompositionPreview.GetElementVisual(_labels[i]);
-            visual.Properties.InsertVector3("Translation", Vector3.Zero);
-            BindGeometry(visual, "Translation.X", i == 3
-                ? "(2.5 + pose.Expansion) * pose.SegmentWidth - pose.Width / 2"
-                : $"({i} + 0.5) * pose.SegmentWidth - pose.Width / 2");
+            _geometry.InsertScalar("Width", (float)_track.ActualWidth);
+            _geometry.InsertScalar("Expansion", (float)_appearanceFrame.Expansion);
+            _geometry.InsertScalar("Index", (float)_appearanceFrame.Index);
+            _geometry.InsertScalar("Pointer", 0);
+            _geometry.InsertScalar("Dragging", 0);
+            _geometry.InsertScalar("Segments", _visibleSegments);
+            _geometry.InsertScalar("SegmentWidth", 1);
+            _geometry.InsertScalar("SelectionX", 4);
+            BindGeometry(_geometry, "SegmentWidth", "Max(1, pose.Width / (3 + pose.Expansion))");
+            BindGeometry(_geometry, "SelectionX",
+                "Clamp(pose.Dragging > 0 ? pose.Pointer / pose.SegmentWidth - 0.5 : pose.Index, 0, pose.Dragging > 0 ? Min(pose.Segments - 1, 2 + pose.Expansion) : 2 + pose.Expansion) * pose.SegmentWidth + 4");
+
+            AddPill(_selection, 0, 0);
+            AddPill(_fastGlow, 0, 0);
+            AddPill(_glowOuter, 72, -36);
+            AddPill(_glowInner, 44, -22);
+            AddPill(_qualityHaloOuter, 26, -13);
+            AddPill(_qualityHaloInner, 10, -5);
+            _selectionFill = compositor.CreateLinearGradientBrush();
+            _selectionFill.StartPoint = new Vector2(0, .2f);
+            _selectionFill.EndPoint = new Vector2(1, .8f);
+            foreach (var offset in new[] { 0f, .5f, 1f })
+                _selectionFill.ColorStops.Add(compositor.CreateColorGradientStop(offset, Microsoft.UI.Colors.Transparent));
+            var selectionVisual = (ShapeVisual)ElementCompositionPreview.GetElementChildVisual(_selection);
+            ((CompositionSpriteShape)selectionVisual.Shapes[0]).FillBrush = _selectionFill;
+
+            // Text is measured once at the rail center. All slots use the same
+            // unrounded Composition coordinates as the pill, including the reveal.
+            for (var i = 0; i < _labels.Length; i++)
+            {
+                var visual = ElementCompositionPreview.GetElementVisual(_labels[i]);
+                visual.Properties.InsertVector3("Translation", Vector3.Zero);
+                BindGeometry(visual, "Translation.X", i == 3
+                    ? "(2.5 + pose.Expansion) * pose.SegmentWidth - pose.Width / 2"
+                    : $"({i} + 0.5) * pose.SegmentWidth - pose.Width / 2");
+            }
+            for (var i = 0; i < _dividers.Length; i++)
+            {
+                ElementCompositionPreview.SetIsTranslationEnabled(_dividers[i], true);
+                BindGeometry(ElementCompositionPreview.GetElementVisual(_dividers[i]), "Translation.X",
+                    $"{i + 1} * pose.SegmentWidth");
+            }
+            BindGeometry(ElementCompositionPreview.GetElementVisual(_speedField), "Translation.X", "pose.SelectionX - 4");
+            _speedClip = compositor.CreateInsetClip();
+            BindGeometry(_speedClip, "RightInset", "Max(0, pose.Width - pose.SegmentWidth)");
+            ElementCompositionPreview.GetElementVisual(_speedField).Clip = _speedClip;
+            _deepTrack.BindFillBoundary(_geometry);
         }
-        for (var i = 0; i < _dividers.Length; i++)
+        catch { ReleaseGeometry(); throw; }
+    }
+
+    private void ReleaseGeometry()
+    {
+        if (_geometry is not { } geometry) return;
+        _geometry = null;
+        _deepTrack.UnbindFillBoundary();
+        foreach (var pill in _pills)
         {
-            ElementCompositionPreview.SetIsTranslationEnabled(_dividers[i], true);
-            BindGeometry(ElementCompositionPreview.GetElementVisual(_dividers[i]), "Translation.X",
-                $"{i + 1} * pose.SegmentWidth");
+            var host = ElementCompositionPreview.GetElementVisual(pill.Host);
+            host.StopAnimation("Translation.X");
+            host.StopAnimation("CenterPoint");
+            ElementCompositionPreview.SetElementChildVisual(pill.Host, null);
+            pill.Visual.StopAnimation("Size");
+            pill.Geometry.StopAnimation("Size");
+            pill.Visual.Shapes.Clear();
+            pill.Shape.Dispose();
+            pill.Visual.Dispose();
+            pill.Geometry.Dispose();
+            pill.Fill.Dispose();
+            pill.Stroke.Dispose();
+            // AddPill uses this original height when the same control reloads.
+            pill.Host.Height = pill.Height;
         }
-        BindGeometry(ElementCompositionPreview.GetElementVisual(_speedField), "Translation.X", "pose.SelectionX - 4");
-        var speedClip = compositor.CreateInsetClip();
-        BindGeometry(speedClip, "RightInset", "Max(0, pose.Width - pose.SegmentWidth)");
-        ElementCompositionPreview.GetElementVisual(_speedField).Clip = speedClip;
-        _deepTrack.BindFillBoundary(_geometry);
+        _pills.Clear();
+        foreach (var label in _labels) ElementCompositionPreview.GetElementVisual(label).StopAnimation("Translation.X");
+        foreach (var divider in _dividers) ElementCompositionPreview.GetElementVisual(divider).StopAnimation("Translation.X");
+        var speed = ElementCompositionPreview.GetElementVisual(_speedField);
+        speed.StopAnimation("Translation.X");
+        speed.Clip = null;
+        _speedClip?.StopAnimation("RightInset");
+        _speedClip?.Dispose();
+        _speedClip = null;
+        if (_selectionFill is { } fill)
+        {
+            foreach (var stop in fill.ColorStops) stop.Dispose();
+            fill.ColorStops.Clear();
+            fill.Dispose();
+        }
+        _selectionFill = null;
+        foreach (var property in new[] { "SegmentWidth", "SelectionX", "Expansion", "Index" }) geometry.StopAnimation(property);
+        geometry.Dispose();
+        IDVBuff.Core.Diagnostics.MemoryJournal.ReleaseResource(geometry);
+        _geometryTrackWidth = 0;
     }
 
     private void BindGeometry(CompositionObject target, string property, string expression)
@@ -95,6 +150,7 @@ public sealed partial class ScanModeSelector
         var fill = compositor.CreateColorBrush();
         var stroke = compositor.CreateColorBrush();
         var shape = compositor.CreateSpriteShape(geometry);
+        _pills.Add((host, geometry, fill, stroke, visual, shape, height));
         shape.FillBrush = fill;
         shape.StrokeBrush = stroke;
         shape.StrokeThickness = 1;
@@ -106,12 +162,12 @@ public sealed partial class ScanModeSelector
         hostVisual.Properties.InsertVector3("Translation", new Vector3(0, (58 - height) / 2f, 0));
         BindGeometry(hostVisual, "Translation.X", $"pose.SelectionX + {offset}");
         BindGeometry(hostVisual, "CenterPoint", $"Vector3((pose.SegmentWidth - 8 + {extraWidth}) / 2, {height / 2}, 0)");
-        _pills.Add((host, geometry, fill, stroke));
     }
 
     private void TransitionGeometry(bool animate)
     {
         EnsureGeometry();
+        if (_geometry is null) return;
         _geometry!.InsertScalar("Segments", _visibleSegments);
         AnimateGeometryScalar("Expansion", _appearanceStart.Expansion, _appearanceTarget.Expansion, 150, animate);
         AnimateGeometryScalar("Index", _appearanceStart.Index, _appearanceTarget.Index,
@@ -148,6 +204,7 @@ public sealed partial class ScanModeSelector
     private void RenderGeometrySurface(AppearanceFrame frame)
     {
         EnsureGeometry();
+        if (_geometry is null) return;
         for (var i = 0; i < 3; i++)
             _selectionFill!.ColorStops[i].Color = _pillFill.GradientStops[i].Color;
         foreach (var pill in _pills)

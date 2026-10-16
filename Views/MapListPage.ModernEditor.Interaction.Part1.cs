@@ -11,6 +11,39 @@ namespace IDVBuff.Views;
 public sealed partial class MapListPage : UserControl
 {
 
+    private void ModernCanvas_PointerCanceled(object sender, PointerRoutedEventArgs e)
+    {
+        if (_modernCanvas is not null && _modernCapturedPointerId == e.Pointer.PointerId)
+            _modernCanvas.ReleasePointerCapture(e.Pointer);
+        _modernCapturedPointerId = null;
+        CancelModernInteraction(restoreGeometry: true);
+        e.Handled = true;
+    }
+
+    private void ModernCanvas_PointerWheelChanged(object sender, PointerRoutedEventArgs e)
+    {
+        if (_modernViewport is null || _modernCanvas is null)
+            return;
+        var pointer = e.GetCurrentPoint(_modernCanvas);
+        if (IsModernKeyDown(VirtualKey.Control) && (_modernToolState.ActiveTool is MapEditorTool.Conceal or MapEditorTool.Gate))
+        {
+            ApplyModernConcealBrushWheel(pointer.Properties.MouseWheelDelta);
+            e.Handled = true;
+            return;
+        }
+        var viewportPoint = e.GetCurrentPoint(_modernViewport).Position;
+        CancelModernCanvasFit();
+        var oldZoom = _modernViewport.ZoomFactor;
+        var multiplier = pointer.Properties.MouseWheelDelta > 0 ? 1.12f : 1f / 1.12f;
+        var newZoom = Math.Clamp(oldZoom * multiplier, .1f, 8f);
+        _modernViewport.ChangeView(
+            Math.Max(0, pointer.Position.X * _modernDisplayScale * newZoom - viewportPoint.X),
+            Math.Max(0, pointer.Position.Y * _modernDisplayScale * newZoom - viewportPoint.Y),
+            newZoom,
+            false);
+        e.Handled = true;
+    }
+
     private async Task CommitModernContinuousLineAsync(NormalizedPoint start, NormalizedPoint end)
     {
         if (!start.IsValid || !end.IsValid || !MapAnnotationIsValidLine(start, end))
@@ -28,7 +61,7 @@ public sealed partial class MapListPage : UserControl
             End = end.Clone()
         };
         profile.Annotations.Add(annotation);
-        _modernSelection = new EditorSelection(EditorSelectionKind.Annotation, annotation.Id);
+        _modernSelection = new EditorSelection(MapEditorElementKind.Annotation, annotation.Id);
         _modernContinuousLineStart = end.Clone();
         RecordModernAnnotationCreation(profile, annotation, start);
         await RememberEditorColorAsync(_currentAnnotationColor);
@@ -56,6 +89,7 @@ public sealed partial class MapListPage : UserControl
 
     private void UndoLatestModernCreation()
     {
+        ResetModernAutomaticRoute();
         if (_modernCreationUndoStack.Count == 0)
         {
             SetModernStatus("没有可撤销的创建操作。", false);
@@ -129,7 +163,7 @@ public sealed partial class MapListPage : UserControl
             profile.FreeCropPoints = priorPoints.Select(point => point.Clone()).ToList();
             profile.Anchors = priorAnchors.Select(anchor => anchor.Clone()).ToList();
         });
-        _modernSelection = new EditorSelection(EditorSelectionKind.Crop);
+        _modernSelection = new EditorSelection(MapEditorElementKind.Crop);
         CompleteModernCreation("已应用自由裁剪，选区外内容不会参与识别。", returnToSelect: true);
     }
 

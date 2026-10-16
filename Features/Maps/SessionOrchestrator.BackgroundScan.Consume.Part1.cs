@@ -62,10 +62,10 @@ public sealed partial class SessionOrchestrator
             if (effectiveFloor != targetFloorKey)
                 validatedStructureScaleSeed = null;
             targetFloorKey = effectiveFloor;
-            if (!Settings.DisableAutoFloor && frame.DetectedFloorKey is { } floorKey)
-                PresentDetectedFloorBeforeAlignment(locked, floorKey, frame);
             var context = CaptureMapOpenOperationContext(toggle, operationMatch, locked,
                 cancellationToken, targetFloorKey, frame.WindowHandle, frame.ClientBounds);
+            if (!Settings.DisableAutoFloor && frame.DetectedFloorKey is { } floorKey)
+                PresentDetectedFloorBeforeAlignment(locked, floorKey, frame, context);
             // 与正常扫描一致的初始对齐入口：真实侧门种子走带完整恢复上下文
             // 的侧门路线，其余主层才走通用 selected-map 路线；非主层保持
             // no-door 精确楼层路线。
