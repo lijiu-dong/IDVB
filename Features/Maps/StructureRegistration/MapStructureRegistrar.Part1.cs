@@ -17,7 +17,7 @@ namespace IDVBuff.Features.Maps;public sealed partial class MapStructureRegistra
         var preprocessTimerFast = Stopwatch.StartNew();
         using var ownedReferenceFast = request.PreparedReference is null
             ? _preprocessor.Process(
-                request.ReferenceImage!,
+                request.ReferenceImage,
                 generationTuning: tuning.Generation) : null;
         var referenceFast = request.PreparedReference ?? ownedReferenceFast!;
         using var ownedLiveFast = request.PreparedLive is null

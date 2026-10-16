@@ -104,6 +104,7 @@ public sealed partial class GateTemplateDetector
         if (referenceImage.Empty())
             return null;
 
+        using var matchImage = CreateMatchImage(referenceImage);
         using var gate = Cv2.ImRead(ResolveGateAssetPath(), ImreadModes.Unchanged);
         if (gate.Empty())
             return null;
@@ -111,8 +112,6 @@ public sealed partial class GateTemplateDetector
         using var gateGray = CreateMatchImage(gate);
         var gateW = (double)gateGray.Width;
         var gateH = (double)gateGray.Height;
-        var referenceWidth = referenceImage.Width;
-        var referenceHeight = referenceImage.Height;
 
         // Narrow band of plausible icon scales on the reference image.
         // Reference images are rendered at a consistent resolution where
@@ -127,7 +126,7 @@ public sealed partial class GateTemplateDetector
         {
             var width = Math.Max(12, (int)Math.Round(gateW * scale));
             var height = Math.Max(12, (int)Math.Round(gateH * scale));
-            if (width >= referenceWidth || height >= referenceHeight)
+            if (width >= matchImage.Width || height >= matchImage.Height)
                 continue;
 
             var halfW = width / 2;
@@ -136,8 +135,8 @@ public sealed partial class GateTemplateDetector
 
             var roiX = Math.Max(0, (int)Math.Round(anchorCenter.X - searchRadius));
             var roiY = Math.Max(0, (int)Math.Round(anchorCenter.Y - searchRadius));
-            var roiW = Math.Min(referenceWidth - roiX, searchRadius * 2);
-            var roiH = Math.Min(referenceHeight - roiY, searchRadius * 2);
+            var roiW = Math.Min(matchImage.Width - roiX, searchRadius * 2);
+            var roiH = Math.Min(matchImage.Height - roiY, searchRadius * 2);
             if (roiW < width || roiH < height)
                 continue;
 
@@ -145,10 +144,7 @@ public sealed partial class GateTemplateDetector
             Cv2.Resize(gateGray, scaledGate, new Size(width, height),
                 0d, 0d,
                 scale < 1d ? InterpolationFlags.Area : InterpolationFlags.Linear);
-            // Grayscale conversion is per pixel. Only this anchor-local region
-            // is consumed; do not copy/convert a complete floor for each gate.
-            using var sourceRoi = new Mat(referenceImage, new Rect(roiX, roiY, roiW, roiH));
-            using var roi = CreateMatchImage(sourceRoi);
+            using var roi = new Mat(matchImage, new Rect(roiX, roiY, roiW, roiH));
             using var output = new Mat();
             Cv2.MatchTemplate(roi, scaledGate, output, TemplateMatchModes.CCoeffNormed);
             Cv2.MinMaxLoc(output, out _, out var score, out _, out _);

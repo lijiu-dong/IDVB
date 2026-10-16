@@ -44,7 +44,6 @@ public sealed partial class MapStatusPage
             return;
         }
 
-        StopForegroundRecording();
         _recording = null;
         _recordingHeldKeys.Clear();
         _recordingTriggerKey = 0;
@@ -196,7 +195,6 @@ public sealed partial class MapStatusPage
     {
         if (_recording is not { } target)
             return;
-        StopForegroundRecording();
         _recording = null;
         _recordingHeldKeys.Clear();
         _recordingTriggerKey = 0;

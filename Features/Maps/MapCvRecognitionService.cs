@@ -39,24 +39,20 @@ public sealed partial class MapCvRecognitionService : IDisposable
     private CancellationTokenSource _matchCts = new();
     private readonly SideEntranceScanPipeline _sideEntrancePipeline = new();
     // 侧门特征缓存：(mapId, floorKey) → 预加载的灰度模板 Mat
-    private readonly ScanIndexCache _sideEntranceFeatureCache = new();
+    private Dictionary<(Guid, string), Mat> _sideEntranceFeatureCache = [];
     private MapCatalogRevision _catalogRevision = MapCatalogRevision.Empty;
     private IReadOnlyList<MapRecord> _maps = [];
     private IReadOnlyList<MapGeometryFingerprint> _fingerprints = [];
     private bool _cacheInitialized;
     private bool _disposed;
     private readonly bool _matchScopedResources;
-    private readonly bool _deterministicScanStorage;
-    private readonly bool _deterministicSemanticStorage;
     private string? _residentMapClass;
 
     public MapCvRecognitionService(MapRepository repository, Action? invalidateOverlayImageCache = null,
-        string? dataDirectory = null, bool matchScopedResources = false, bool deterministicScanStorage = false, bool deterministicSemanticStorage = false)
+        string? dataDirectory = null, bool matchScopedResources = false)
     {
         _repository = repository;
         _matchScopedResources = matchScopedResources;
-        _deterministicScanStorage = deterministicScanStorage;
-        _deterministicSemanticStorage = deterministicSemanticStorage;
         _invalidateOverlayImageCache = invalidateOverlayImageCache;
         _gateDetector = new GateTemplateDetector(MapCvRecognitionHelpers.ResolveGatePath());
         _structureRegistrar = new MapStructureRegistrar(_structurePreprocessor);
@@ -87,11 +83,7 @@ public sealed partial class MapCvRecognitionService : IDisposable
     /// Clears observations learned from one match and releases match-scoped
     /// resident reference features.
     /// </summary>
-    public void ResetMatchState() => ResetMatchStateCore(preserveReferencePixels: false);
-
-    internal void ResetForRescan() => ResetMatchStateCore(preserveReferencePixels: true);
-
-    private void ResetMatchStateCore(bool preserveReferencePixels)
+    public void ResetMatchState()
     {
         ResetScaleCoverage();
         using var perfScope = RealtimePerformanceTracker.TrackScope("ResetMatchState", forceLog: true);
@@ -125,27 +117,126 @@ public sealed partial class MapCvRecognitionService : IDisposable
             _floorPrewarmTasks.Clear();
         }
 
-        // A rescan has already invalidated the old identity and transform.
-        // Its precision field is not read by identification/scale bootstrap;
-        // retaining it overlaps that scan's native workspaces. Detach the LRU
-        // owners now; active precision leases release their pixels on return.
-        ClearPrecisionResources();
-        if (preserveReferencePixels) _structureCache.PrepareForRescan();
-        else _structureCache.Clear();
+        _structureCache.Clear();
         MapStructurePreprocessor.ClearReferenceCache();
         _auxiliaryTemplateCache.Clear();
         _vpsgScaleGraphCache.Clear();
     }
 
-    public MapRecord? TryGetMap(Guid mapId)
+    public MapRecord? TryGetMap(Guid mapId) =>
+        _maps.FirstOrDefault(map => map.Id == mapId)?.Clone();
+
+    public async Task RefreshCacheAsync(Guid? changedMapId = null)
     {
-        var map = _maps.FirstOrDefault(map => map.Id == mapId);
-        // Active recognition keeps the complete resident record. An explicit
-        // management lookup outside that class owns a fresh, complete record;
-        // it must neither return partial geometry nor populate a global cache.
-        return map?.IsListProjection == true
-            ? _repository.GetMapSnapshotAsync(mapId).GetAwaiter().GetResult() : map?.Clone();
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        var revision = _repository.GetCatalogRevision();
+        if (_cacheInitialized && revision == _catalogRevision)
+            return;
+
+        await _cacheGate.WaitAsync();
+        try
+        {
+            revision = _repository.GetCatalogRevision();
+            if (_cacheInitialized && revision == _catalogRevision)
+                return;
+            // Migrate before loading Mats/fingerprints. Background diagnostics alone
+            // could repair files after the first scan had already cached stale lines.
+            await _repository.HealMissingPrebuiltStructureLinesAsync(onlyOutdated: true);
+            var catalog = await _repository.GetCatalogSnapshotAsync();
+            var maps = catalog.Maps;
+            await _repository.EnsureDerivedAssetsAsync(maps);
+
+            var cacheDispatch = MapOperationTraceAmbient.StartChild(
+                "map_catalog_fingerprint_dispatch_wait",
+                MapOperationWaitKind.Queue);
+            CacheBuildResult cache;
+            Dictionary<(Guid, string), Mat> sideEntranceCache;
+            try
+            {
+                (cache, sideEntranceCache) = await Task.Run(() =>
+                {
+                    cacheDispatch.Complete();
+                    using var cacheWorker = MapOperationTraceAmbient.StartChild(
+                        "map_catalog_fingerprint_build",
+                        MapOperationWaitKind.Compute);
+                    var snapshot = maps.Select(map => map.Clone()).ToArray();
+                    CacheBuildResult buildResult;
+                    if (!_cacheInitialized)
+                    {
+                        buildResult = new CacheBuildResult(
+                            snapshot,
+                            snapshot.Select(TryCreateFingerprint)
+                                .Where(fingerprint => fingerprint is not null)
+                                .Cast<MapGeometryFingerprint>()
+                                .ToArray(),
+                            snapshot.Select(map => map.Id).ToHashSet());
+                    }
+                    else
+                    {
+                        var previousMaps = _maps.ToDictionary(map => map.Id);
+                        var previousFingerprints = _fingerprints.ToDictionary(
+                            fingerprint => fingerprint.Map.Id);
+                        var changedIds = snapshot
+                            .Where(map => changedMapId == map.Id
+                                || !previousMaps.TryGetValue(map.Id, out var previous)
+                                || !MapCvRecognitionHelpers.HaveSameFingerprintInputs(previous, map))
+                            .Select(map => map.Id)
+                            .ToHashSet();
+
+                        var fingerprints = new List<MapGeometryFingerprint>();
+                        foreach (var map in snapshot)
+                        {
+                            if (!changedIds.Contains(map.Id)
+                                && previousFingerprints.TryGetValue(map.Id, out var existing))
+                            {
+                                fingerprints.Add(RebindFingerprint(existing, map));
+                                continue;
+                            }
+
+                            if (TryCreateFingerprint(map) is { } rebuilt)
+                                fingerprints.Add(rebuilt);
+                        }
+
+                        buildResult = new CacheBuildResult(snapshot, fingerprints, changedIds);
+                    }
+
+                    var builtSideEntrance = MapCvRecognitionHelpers.BuildSideEntranceFeatureCache(_repository, ResidentMaps(buildResult.Maps));
+                    if (builtSideEntrance.Count > 0)
+                        PrewarmDeepScan(builtSideEntrance.Values);
+                    return (buildResult, builtSideEntrance);
+                });
+            }
+            finally
+            {
+                cacheDispatch.Complete();
+            }
+
+            TotalMapCount = cache.Maps.Count;
+            _maps = cache.Maps;
+            ScanVariantGroups = catalog.VariantGroups.Select(g => g.MapIds.ToArray()).ToArray();
+            _fingerprints = cache.Fingerprints;
+            _catalogRevision = _repository.GetCatalogRevision();
+            _cacheInitialized = true;
+            _structureCache.InvalidateMaps(cache.ChangedMapIds);
+            InvalidateAndTriggerVpsg3Rebuild(ResidentMaps(cache.Maps), cache.ChangedMapIds);
+            // MapRepository may overwrite an image without changing its path.
+            _invalidateOverlayImageCache?.Invoke();
+
+            // 刷新侧门特征缓存
+            var oldFeatureCache = _sideEntranceFeatureCache;
+            _sideEntranceFeatureCache = sideEntranceCache;
+            foreach (var mat in oldFeatureCache.Values)
+                mat.Dispose();
+            AuditResidentResources("Catalog.ResourcesPrepared");
+        }
+        finally
+        {
+            _cacheGate.Release();
+        }
     }
+
+
+    // ── 公开识别入口 ──────────────────────────────────────────────────────────
 
     public MapRecognitionAttempt Recognize(
         CapturedGameFrame frame,

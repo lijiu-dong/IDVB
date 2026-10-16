@@ -202,58 +202,6 @@ internal sealed partial class RealCliHost : IAsyncDisposable
         {
             switch (command)
             {
-#if IDVB_DEVELOPMENT_BUILD
-                case "memory-background-capture-check":
-                    return CheckBackgroundCapture(input, stopwatch);
-                case "memory-data-cleanup":
-                    return await ExecuteDevelopmentCleanupAsync(input, tokens, stopwatch, cancellationToken);
-                case "memory-data-replay":
-                    return await ExecuteDevelopmentDataReplayAsync(input, tokens, stopwatch, cancellationToken);
-                case "memory-page-replay":
-                    var pageRounds = ParseOptionInt(tokens, "--rounds") ?? 3;
-                    if (pageRounds < 1 || pageRounds > 100) throw new ArgumentOutOfRangeException("页面回放轮数必须为 1 到 100。");
-                    var moduleLimit = ParseOptionInt(tokens, "--module-limit");
-                    if (moduleLimit is < 1 or > 100) throw new ArgumentOutOfRangeException("页面诊断范围必须为 1 到 100。");
-                    if (Microsoft.UI.Xaml.Application.Current is not App pageApplication
-                        || pageApplication.MainWindow.Content is not Microsoft.UI.Xaml.Controls.Frame { Content: IDVBuff.Views.MainPage pageMain })
-                        throw new InvalidOperationException("页面回放必须连接完整开发客户端。");
-                    var pages = await pageMain.ReplayDevelopmentPagesAsync(pageRounds, cancellationToken, moduleLimit, ParseOptionInt(tokens, "--seed"), ParseOption(tokens, "--modules"));
-                    return CliCommandResult.Ok(input, "完整客户端页面导航回放结束。", stopwatch.Elapsed.TotalMilliseconds, pages);
-                case "memory-bloom-replay":
-                    return await ExecuteDevelopmentBloomReplayAsync(input, stopwatch, cancellationToken);
-                case "memory-native-heap-probe":
-                    return await ExecuteDevelopmentHeapProbeAsync(input, tokens, stopwatch, cancellationToken);
-                case "memory-native-heap-summary":
-                    return await ExecuteDevelopmentHeapSummaryAsync(input, tokens, stopwatch, cancellationToken);
-                case "memory-click-replay":
-                    var clickRounds = ParseOptionInt(tokens, "--rounds") ?? 20;
-                    var clickBurst = ParseOptionInt(tokens, "--burst") ?? 50;
-                    if (clickRounds is < 1 or > 100 || clickBurst is < 1 or > 100)
-                        throw new ArgumentOutOfRangeException("连点回放轮数及单次连点数必须为 1 到 100。");
-                    if (Microsoft.UI.Xaml.Application.Current is not App clickApplication
-                        || clickApplication.MainWindow.Content is not Microsoft.UI.Xaml.Controls.Frame { Content: IDVBuff.Views.MainPage clickMain })
-                        throw new InvalidOperationException("连点回放必须连接完整开发客户端。");
-                    var clicks = await clickMain.ReplayDevelopmentClicksAsync(clickRounds, clickBurst, cancellationToken);
-                    return CliCommandResult.Ok(input, "完整客户端支持开发及反馈连点回放结束。", stopwatch.Elapsed.TotalMilliseconds, clicks);
-                case "memory-replay-close":
-                    if (ParseOptionInt(tokens, "--pid") != Environment.ProcessId || !Program.IsDevelopmentInstance
-                        || Microsoft.UI.Xaml.Application.Current is not App closingApplication)
-                        throw new InvalidOperationException("关闭回放客户端需要当前开发进程的准确 PID。");
-                    _ = CloseReplayAfterResponseAsync(closingApplication);
-                    return CliCommandResult.Ok(input, "已请求通过正常窗口关闭流程结束回放客户端。", stopwatch.Elapsed.TotalMilliseconds, new { pid = Environment.ProcessId });
-                case "memory-ui-replay":
-                    var replayClass = ParseOption(tokens, "--class") ?? throw new ArgumentException("需要 --class 地图类名称。");
-                    var floorCycles = ParseOptionInt(tokens, "--floors") ?? 24;
-                    var classSwitches = ParseOptionInt(tokens, "--switches") ?? 72;
-                    var editorCycles = ParseOptionInt(tokens, "--editors") ?? 16;
-                    if (new[] { floorCycles, classSwitches, editorCycles }.Any(value => value < 0 || value > 256))
-                        throw new ArgumentOutOfRangeException("客户端回放次数必须为 0 到 256。");
-                    if (Microsoft.UI.Xaml.Application.Current is not App application
-                        || application.MainWindow.Content is not Microsoft.UI.Xaml.Controls.Frame { Content: IDVBuff.Views.MainPage mainPage })
-                        throw new InvalidOperationException("该命令必须连接已完整启动的开发版 GUI 客户端。");
-                    var replay = await mainPage.ReplayDevelopmentMemoryAsync(replayClass, floorCycles, classSwitches, editorCycles, cancellationToken, ParseOption(tokens, "--restore-floor"));
-                    return CliCommandResult.Ok(input, "完整客户端内存回放结束。", stopwatch.Elapsed.TotalMilliseconds, replay);
-#endif
                 case "help":
                     return CliCommandResult.Ok(
                         input,
@@ -376,14 +324,57 @@ internal sealed partial class RealCliHost : IAsyncDisposable
             beginOverlayState);
     }
 
-#if IDVB_DEVELOPMENT_BUILD
-    private static async Task CloseReplayAfterResponseAsync(App application)
+    private async Task<CliCommandResult> ScanAsync(
+        string input,
+        IReadOnlyList<string> tokens,
+        Stopwatch stopwatch,
+        CancellationToken cancellationToken)
     {
-        // Let the existing pipe serialize its result before normal UI shutdown.
-        await Task.Delay(300);
-        application.CloseDevelopmentReplayWindow();
+        var candidateOption = ParseOption(tokens, "--candidate");
+        int? candidatePosition = null;
+        if (candidateOption is not null
+            && (!int.TryParse(candidateOption, out var parsedPosition)
+                || parsedPosition < 1))
+        {
+            return CliCommandResult.Failed(
+                input,
+                "--candidate 必须是从 1 开始的候选序号。",
+                stopwatch.Elapsed.TotalMilliseconds,
+                BuildSnapshot());
+        }
+        if (candidateOption is not null)
+            candidatePosition = int.Parse(candidateOption);
+
+        if (!await PrepareCaptureTargetAsync(cancellationToken))
+        {
+            var overlayState = await TryGetOverlayStateAsync(cancellationToken);
+            return CliCommandResult.Failed(
+                input,
+                _session.StatusMessage,
+                stopwatch.Elapsed.TotalMilliseconds,
+                BuildSnapshot(overlayState),
+                overlayGame: overlayState);
+        }
+        var previous = _session.LastRecognition;
+        await _session.RunQuickScanAsync(
+            new RealCliCandidateSelector(candidatePosition));
+        var succeeded = _session.LastRecognition is not null
+            && !ReferenceEquals(previous, _session.LastRecognition);
+        var currentOverlayState = await TryGetOverlayStateAsync(cancellationToken);
+        return succeeded
+            ? CliCommandResult.Ok(
+                input,
+                _session.StatusMessage,
+                stopwatch.Elapsed.TotalMilliseconds,
+                BuildSnapshot(currentOverlayState),
+                currentOverlayState)
+            : CliCommandResult.Failed(
+                input,
+                _session.StatusMessage,
+                stopwatch.Elapsed.TotalMilliseconds,
+                BuildSnapshot(currentOverlayState),
+                overlayGame: currentOverlayState);
     }
-#endif
 
     private async Task<CliCommandResult> AlignAsync(
         string input,

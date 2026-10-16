@@ -10,7 +10,6 @@ internal sealed class KeyboardInputEdges
     private readonly HashSet<uint> _pressed = [];
     private readonly Dictionary<uint, (bool Down, long At)> _pendingHookState = [];
     private readonly HashSet<uint> _hostReleased = [];
-    private readonly HashSet<uint> _hostMouseDown = [];
 
     public void InitializePressed(uint key) => _pressed.Add(key);
 
@@ -21,25 +20,11 @@ internal sealed class KeyboardInputEdges
         if (_pressed.Contains(key)) _hostReleased.Add(key);
     }
 
-    // Host output is not a physical edge. Suppress its asynchronous state
-    // while injected down, then allow that state to catch up after injected up.
-    // A host release of a physically held button must not rearm that button.
-    public void ObserveHostMouse(uint key, bool down, long now)
-    {
-        if (down) _hostMouseDown.Add(key);
-        else
-        {
-            _hostMouseDown.Remove(key);
-            if (_pressed.Contains(key)) _hostReleased.Add(key);
-            else _pendingHookState[key] = (false, now);
-        }
-    }
-
     public bool Observe(uint key, bool down, bool polling, long now)
     {
         if (polling)
         {
-            if (_hostReleased.Contains(key) || _hostMouseDown.Contains(key)) return false;
+            if (_hostReleased.Contains(key)) return false;
             if (_pendingHookState.TryGetValue(key, out var pending))
             {
                 if (pending.Down != down && now - pending.At < HookStateCatchUpMilliseconds)
@@ -60,6 +45,5 @@ internal sealed class KeyboardInputEdges
         _pressed.Clear();
         _pendingHookState.Clear();
         _hostReleased.Clear();
-        _hostMouseDown.Clear();
     }
 }

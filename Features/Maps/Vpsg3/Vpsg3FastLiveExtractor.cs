@@ -14,9 +14,8 @@ public static class Vpsg3FastLiveExtractor
     private const double HoleMinArea = 900d;
     private const double ApproxEpsilon = 0.55d;
 
-    private static readonly object ScratchGate = new();
-    private static Vpsg3LiveExtractorScratch? s_sharedScratch;
-    private static int s_scratchGeneration;
+    [ThreadStatic]
+    private static Vpsg3LiveExtractorScratch? t_defaultScratch;
 
     /// <summary>
     /// Extracts live structural edges and valid observation mask from a query game frame or cropped viewport.
@@ -42,92 +41,73 @@ public static class Vpsg3FastLiveExtractor
         var size = source.Size();
         var bounds = viewportBounds ?? new MapScreenRect(0, 0, width, height);
 
-        using var rented = scratch is null ? RentScratch() : null;
-        var s = scratch ?? rented!.Scratch;
+        var s = scratch ?? (t_defaultScratch ??= new Vpsg3LiveExtractorScratch());
         s.PrepareForSize(size);
 
-        Mat? observedEdges = null, proposalEdges = null, validMask = null, semanticLabels = null;
-        var published = false;
-        try
-        {
-            // 1. Channel normalization
-            var bgr = NormalizeToBgr(source, s);
+        // 1. Channel normalization
+        var bgr = NormalizeToBgr(source, s);
 
-            // 2. Color space conversion to HSV for structure semantics
-            Vpsg3LiveExtractorScratch.EnsureMatSized(s.Hsv, size, MatType.CV_8UC3);
-            Cv2.CvtColor(bgr, s.Hsv, ColorConversionCodes.BGR2HSV);
+        // 2. Color space conversion to HSV for structure semantics
+        Vpsg3LiveExtractorScratch.EnsureMatSized(s.Hsv, size, MatType.CV_8UC3);
+        Cv2.CvtColor(bgr, s.Hsv, ColorConversionCodes.BGR2HSV);
 
-            // 3. Fast dynamic exclusion (HUD and top glyph exclusion without connected components)
-            ComputeFastDynamicExclusion(s.Hsv, s);
+        // 3. Fast dynamic exclusion (HUD and top glyph exclusion without connected components)
+        ComputeFastDynamicExclusion(s.Hsv, s);
 
-            // 4. Classify room and corridor semantic areas with pure morphological filtering
-            ClassifyStructurePureMorphology(s);
+        // 4. Classify room and corridor semantic areas with pure morphological filtering
+        ClassifyStructurePureMorphology(s);
 
-            // 5. Semantic candidate edge extraction via contour approximation
-            ExtractSemanticCandidateEdges(s);
-            // Clearing HUD pixels before contour extraction creates artificial boundaries.
-            // Keep those boundaries out of both edge streams, including their drawn rim,
-            // before photometric support can promote them back to valid observations.
-            Cv2.Dilate(s.Exclusion, s.DilatedExclusion, s.K5);
-            s.CandidateEdges.SetTo(Scalar.Black, s.DilatedExclusion);
+        // 5. Semantic candidate edge extraction via contour approximation
+        ExtractSemanticCandidateEdges(s);
+        // Clearing HUD pixels before contour extraction creates artificial boundaries.
+        // Keep those boundaries out of both edge streams, including their drawn rim,
+        // before photometric support can promote them back to valid observations.
+        Cv2.Dilate(s.Exclusion, s.DilatedExclusion, s.K5);
+        s.CandidateEdges.SetTo(Scalar.Black, s.DilatedExclusion);
 
-            // 6. Strong edge support via Canny on grayscale + dilation
-            ComputeStrongSourceEdgeSupport(bgr, s);
+        // 6. Strong edge support via Canny on grayscale + dilation
+        ComputeStrongSourceEdgeSupport(bgr, s);
 
-            // 7. Observed edges: semantic candidates supported by strong photometric edges
-            observedEdges = new Mat(size, MatType.CV_8UC1);
-            Cv2.BitwiseAnd(s.CandidateEdges, s.Support, observedEdges);
-            proposalEdges = new Mat(size, MatType.CV_8UC1);
-            Cv2.BitwiseAnd(s.CandidateEdges, s.StrongSupport, proposalEdges);
+        // 7. Observed edges: semantic candidates supported by strong photometric edges
+        var observedEdges = new Mat(size, MatType.CV_8UC1);
+        Cv2.BitwiseAnd(s.CandidateEdges, s.Support, observedEdges);
+        var proposalEdges = new Mat(size, MatType.CV_8UC1);
+        Cv2.BitwiseAnd(s.CandidateEdges, s.StrongSupport, proposalEdges);
 
-            // 8. Valid mask generation (fog frontier + exclusion masking)
-            // Areas with semantic edges but missing strong photometric support represent fog frontiers
-            Cv2.BitwiseNot(s.Support, s.NotSupport);
-            Cv2.BitwiseAnd(s.CandidateEdges, s.NotSupport, s.UncertainFrontier);
+        // 8. Valid mask generation (fog frontier + exclusion masking)
+        // Areas with semantic edges but missing strong photometric support represent fog frontiers
+        Cv2.BitwiseNot(s.Support, s.NotSupport);
+        Cv2.BitwiseAnd(s.CandidateEdges, s.NotSupport, s.UncertainFrontier);
 
-            // In-place dilation on uncertain frontier
-            Cv2.Dilate(s.UncertainFrontier, s.UncertainFrontier, s.K11);
+        // In-place dilation on uncertain frontier
+        Cv2.Dilate(s.UncertainFrontier, s.UncertainFrontier, s.K11);
 
-            // Combined invalid mask
-            Cv2.BitwiseOr(s.UncertainFrontier, s.DilatedExclusion, s.Invalid);
+        // Combined invalid mask
+        Cv2.BitwiseOr(s.UncertainFrontier, s.DilatedExclusion, s.Invalid);
 
-            // Final valid mask (inverted invalid, with observed edges forced valid)
-            validMask = new Mat(size, MatType.CV_8UC1);
-            Cv2.BitwiseNot(s.Invalid, validMask);
-            validMask.SetTo(Scalar.White, observedEdges);
+        // Final valid mask (inverted invalid, with observed edges forced valid)
+        var validMask = new Mat(size, MatType.CV_8UC1);
+        Cv2.BitwiseNot(s.Invalid, validMask);
+        validMask.SetTo(Scalar.White, observedEdges);
 
-            // 9. Edge pixel metrics
-            var edgePixelCount = Cv2.CountNonZero(observedEdges);
-            var validPixelCount = Cv2.CountNonZero(validMask);
+        // 9. Edge pixel metrics
+        var edgePixelCount = Cv2.CountNonZero(observedEdges);
+        var validPixelCount = Cv2.CountNonZero(validMask);
 
-            semanticLabels = SemanticStructureContours.LabelLive(observedEdges, s.Room, s.Corridor,
-                s.SmoothedGray, s.BrightDetail, s.CannyWeak, s.K5);
-            sw.Stop();
+        sw.Stop();
 
-            var observation = new Vpsg3LiveObservation(
-                observedEdges: observedEdges,
-                validMask: validMask,
-                width: width,
-                height: height,
-                edgePixelCount: edgePixelCount,
-                validStructurePixelCount: validPixelCount,
-                viewportBounds: bounds,
-                maxSparsePoints: maxSparsePoints,
-                sparseEdgePoints: null,
-                extractionMilliseconds: sw.Elapsed.TotalMilliseconds,
-                proposalEdges: proposalEdges,
-                semanticLabels: semanticLabels);
-            published = true;
-            return observation;
-        }
-        finally
-        {
-            if (!published)
-            {
-                observedEdges?.Dispose(); proposalEdges?.Dispose();
-                validMask?.Dispose(); semanticLabels?.Dispose();
-            }
-        }
+        return new Vpsg3LiveObservation(
+            observedEdges: observedEdges,
+            validMask: validMask,
+            width: width,
+            height: height,
+            edgePixelCount: edgePixelCount,
+            validStructurePixelCount: validPixelCount,
+            viewportBounds: bounds,
+            maxSparsePoints: maxSparsePoints,
+            sparseEdgePoints: null,
+            extractionMilliseconds: sw.Elapsed.TotalMilliseconds,
+            proposalEdges: proposalEdges);
     }
 
     private static Mat NormalizeToBgr(Mat source, Vpsg3LiveExtractorScratch scratch)
@@ -167,8 +147,7 @@ public static class Vpsg3FastLiveExtractor
             if (Cv2.CountNonZero(scratch.GreenSeed) > 40)
             {
                 var fillRect = new Rect(0, (int)(0.72 * h), (int)(0.24 * w), (int)(0.28 * h));
-                using var excluded = new Mat(scratch.Exclusion, fillRect);
-                excluded.SetTo(Scalar.White);
+                scratch.Exclusion[fillRect].SetTo(Scalar.White);
             }
         }
 
@@ -185,8 +164,7 @@ public static class Vpsg3FastLiveExtractor
 
             if (Cv2.CountNonZero(scratch.WhiteSeed) > 100)
             {
-                using var excluded = new Mat(scratch.Exclusion, topRect);
-                excluded.SetTo(Scalar.White);
+                scratch.Exclusion[topRect].SetTo(Scalar.White);
             }
         }
     }
@@ -256,7 +234,6 @@ public static class Vpsg3FastLiveExtractor
 
     internal static void ComputeStrongSourceEdgeSupport(Mat bgr, Vpsg3LiveExtractorScratch s)
     {
-        s.PrepareSupportForSize(bgr.Size());
         Cv2.CvtColor(bgr, s.Gray, ColorConversionCodes.BGR2GRAY);
         Cv2.Canny(s.Gray, s.CannyStrong, 80d, 180d, apertureSize: 3, L2gradient: true);
         Cv2.Dilate(s.CannyStrong, s.Support, s.K5);
@@ -272,48 +249,5 @@ public static class Vpsg3FastLiveExtractor
         Cv2.BitwiseAnd(s.CannyWeak, s.BrightDetail, s.CannyWeak);
         Cv2.Dilate(s.CannyWeak, s.CannyWeak, s.K3);
         Cv2.BitwiseOr(s.Support, s.CannyWeak, s.Support);
-    }
-
-    internal static ScratchLease RentScratch()
-    {
-        lock (ScratchGate)
-        {
-            var scratch = s_sharedScratch ?? new Vpsg3LiveExtractorScratch();
-            s_sharedScratch = null;
-            return new ScratchLease(scratch, s_scratchGeneration);
-        }
-    }
-
-    internal static void ReleaseSharedScratch()
-    {
-        Vpsg3LiveExtractorScratch? retired;
-        lock (ScratchGate)
-        {
-            ++s_scratchGeneration;
-            retired = s_sharedScratch;
-            s_sharedScratch = null;
-        }
-        retired?.Dispose();
-    }
-
-    internal sealed class ScratchLease(Vpsg3LiveExtractorScratch scratch, int generation) : IDisposable
-    {
-        private Vpsg3LiveExtractorScratch? _scratch = scratch;
-        public Vpsg3LiveExtractorScratch Scratch => _scratch!;
-        public void Dispose()
-        {
-            var returned = Interlocked.Exchange(ref _scratch, null);
-            if (returned is null) return;
-            returned.ApproxContourBatch.Clear();
-            lock (ScratchGate)
-            {
-                if (generation == s_scratchGeneration && s_sharedScratch is null)
-                {
-                    s_sharedScratch = returned;
-                    return;
-                }
-            }
-            returned.Dispose();
-        }
     }
 }

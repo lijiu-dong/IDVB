@@ -37,45 +37,6 @@ public sealed partial class MainPage
         StartScanAccentTransition(homePage.CurrentScanModeAccent, animate: false);
     }
 
-    private async Task PrepareHomeForNavigationAsync(HomePage home)
-    {
-        if (_bloomTextureCache.IsDisposed) _bloomTextureCache = new();
-        home.UseBloomTextureCache(_bloomTextureCache);
-        await home.PrepareAsync();
-    }
-
-    internal void RetireAmbientGraphics()
-    {
-        ++_navigationRevision;
-        StopScanAccentAnimation();
-        if (ModuleContentHost.Content is HomePage home) home.RetireAmbientResources();
-        DisconnectScanVisuals();
-        _bloomTextureCache.Dispose();
-    }
-
-    internal void RetireWindowContents()
-    {
-        RetireAmbientGraphics();
-        // Hidden windows can end before WinUI dispatches Unloaded. Retire the
-        // cached dialog here as well, while shutdown still owns the page tree.
-        _feedbackDialog?.Hide();
-        ReleaseFeedbackDialog();
-        var view = ModuleContentHost.Content as FrameworkElement;
-        if (view is not null) RetireModuleImages(view);
-        ModuleContentHost.Content = null;
-        _displayedModuleId = null;
-        // End the real mount before releasing its ledger ownership. Weak
-        // collection and native allocator frees remain separate observations.
-        if (view is not null) IDVBuff.Core.Diagnostics.MemoryJournal.ReleaseResource(view);
-    }
-
-    private static void RetireModuleImages(FrameworkElement view)
-    {
-        MemoryImageBinding.ReleaseOwned(view);
-        if (view is MapListPage maps) maps.RetireImageConsumers();
-        if (view is SponsorshipPage sponsor) sponsor.Retire();
-    }
-
     private void DisconnectScanVisuals()
     {
         if (_scanVisualHomePage is not null)

@@ -58,8 +58,11 @@ internal static partial class MapCvAlignmentService
             fingerprint.Map.UpdatedAt,
             fingerprint.FloorKey,
             structureTuning.Generation,
-            structurePreprocessingProfile)
-            ?? service.StructureCache.RentOrCreate(
+            structurePreprocessingProfile);
+        MapStructureFeatures? ownedPreparedReference = null;
+        if (residentReferenceLease is null)
+        {
+            ownedPreparedReference = service.StructureCache.GetOrCreate(
                 fingerprint.Map.Id,
                 fingerprint.Map.UpdatedAt,
                 reference,
@@ -67,7 +70,10 @@ internal static partial class MapCvAlignmentService
                 fingerprint.FloorKey,
                 structureTuning.Generation,
                 structurePreprocessingProfile);
-        var preparedReference = residentReferenceLease.Features;
+        }
+        using var ownedPreparedReferenceScope = ownedPreparedReference;
+        var preparedReference = residentReferenceLease?.Features
+            ?? ownedPreparedReference!;
         stopwatch.Stop();
         diagnostics.CacheMilliseconds += stopwatch.Elapsed.TotalMilliseconds;
         diagnostics.ReferenceCacheMilliseconds +=

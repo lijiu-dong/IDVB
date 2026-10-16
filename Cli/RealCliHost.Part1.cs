@@ -12,37 +12,6 @@ namespace IDVBuff.Cli;
 /// </summary>
 internal sealed partial class RealCliHost : IAsyncDisposable
 {
-#if IDVB_DEVELOPMENT_BUILD
-    private static async Task<CliCommandResult> ExecuteDevelopmentDataReplayAsync(string input, IReadOnlyList<string> tokens,
-        Stopwatch stopwatch, CancellationToken cancellation)
-    {
-        var mapClass = ParseOption(tokens, "--class") ?? throw new ArgumentException("需要 --class 地图类名称。");
-        var inspectionPause = ParseOptionInt(tokens, "--inspection-pause-seconds") ?? 0;
-        var copyOnly = bool.Parse(ParseOption(tokens, "--copy-only") ?? "false");
-        var exerciseEditor = bool.Parse(ParseOption(tokens, "--exercise-editor") ?? "false");
-        if (exerciseEditor && (!AppDataPaths.IsMemoryTest || copyOnly))
-            throw new ArgumentException("Editor action replay requires isolated storage and the complete guarded data workflow.");
-        if (inspectionPause is < 0 or > 60) throw new ArgumentOutOfRangeException("检查暂停必须为 0 到 60 秒。");
-        if (Microsoft.UI.Xaml.Application.Current is not App application
-            || application.MainWindow.Content is not Microsoft.UI.Xaml.Controls.Frame { Content: IDVBuff.Views.MainPage main })
-            throw new InvalidOperationException("数据回放必须连接完整开发客户端。");
-        var result = await main.ReplayDevelopmentDataAsync(mapClass, cancellation, inspectionPause, copyOnly, exerciseEditor);
-        return CliCommandResult.Ok(input, copyOnly ? "已通过正常界面复制并登记精确副本，等待回执校验清理。"
-            : "复制、最大压缩导出、导入及限定副本删除回放结束。", stopwatch.Elapsed.TotalMilliseconds, result);
-    }
-
-    private static async Task<CliCommandResult> ExecuteDevelopmentCleanupAsync(string input, IReadOnlyList<string> tokens,
-        Stopwatch stopwatch, CancellationToken cancellation)
-    {
-        var directory = ParseOption(tokens, "--receipt") ?? throw new ArgumentException("需要 --receipt 创建回执目录。");
-        if (Microsoft.UI.Xaml.Application.Current is not App application
-            || application.MainWindow.Content is not Microsoft.UI.Xaml.Controls.Frame { Content: IDVBuff.Views.MainPage main })
-            throw new InvalidOperationException("副本清理必须连接完整开发客户端。");
-        var result = await main.CleanupDevelopmentCopyAsync(directory, cancellation);
-        return CliCommandResult.Ok(input, "已按创建回执清理精确副本并核对原始资源。", stopwatch.Elapsed.TotalMilliseconds, result);
-    }
-#endif
-
 
     private async Task<CliCommandResult> GameCommandAsync(
         string input,
@@ -176,10 +145,6 @@ internal sealed partial class RealCliHost : IAsyncDisposable
             _options.OverlayGamePath,
             _options.OverlayGamePipeName);
         var state = await _overlayGame.StartAsync(cancellationToken);
-#if IDVB_DEVELOPMENT_BUILD
-        if (IDVBuff.Lifecycle.BackgroundTestRuntime.Enabled)
-            IDVBuff.Lifecycle.BackgroundTestRuntime.Bind(new nint(state.WindowHandle), state.ProcessId, state.BackgroundTesting, state.ControlVersion);
-#endif
         if (_options.UseXButton1ForGameMap)
             _session.UseCliGameMapXButton1Binding();
         _session.SynchronizeExternalGameMapState(state.MapOpen);
@@ -202,10 +167,7 @@ internal sealed partial class RealCliHost : IAsyncDisposable
                     "overlay_game 窗口无法置为前台，无法执行真实捕获。");
                 return false;
             }
-            // Activation is acknowledged above. The shared scan/alignment pipeline
-            // captures and validates actual viewport readiness; a fixed sleep adds
-            // latency without establishing that any frame is ready.
-            cancellationToken.ThrowIfCancellationRequested();
+            await Task.Delay(100, cancellationToken);
             return true;
         }
         catch (Exception exception)
@@ -257,9 +219,6 @@ internal sealed partial class RealCliHost : IAsyncDisposable
                 .ToArray(),
             ["gameMapOpen"] = _session.IsGameMapOpen,
             ["overlayVisible"] = _session.IsOverlayVisible,
-#if IDVB_DEVELOPMENT_BUILD
-            ["postScanTracking"] = _session.CaptureDevelopmentTrackingSnapshot(),
-#endif
             ["readyMapCount"] = _session.ReadyMapCount,
             ["totalMapCount"] = _session.TotalMapCount,
             ["scanPhaseTimings"] = _session.LastScanPhaseTimings,
@@ -373,7 +332,7 @@ internal sealed partial class RealCliHost : IAsyncDisposable
                     + $"unaccounted={candidateTrace.UnaccountedMs:0.##}ms "
                     + $"outcome={candidateTrace.Outcome}");
         Console.WriteLine();
-        Console.WriteLine("begin --class S1 | scan [--automatic | --candidate N] | align | end | status | logs | timings");
+        Console.WriteLine("begin --class S1 | scan [--candidate N] | align | end | status | logs | timings");
         Console.WriteLine("game start/status/map open|close/map-only on|off/floor N/image N/next/previous/clear");
         Console.WriteLine("quit");
     }
@@ -382,7 +341,7 @@ internal sealed partial class RealCliHost : IAsyncDisposable
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             ["begin"] = "begin --class <class>",
-            ["scan"] = "scan [--automatic | --candidate <1-N>]；--automatic 仅接受自动身份验证；默认候选选择只用于回放，不代表自动识别",
+            ["scan"] = "scan [--candidate <1-N>]；RealCLI 默认优先选择结构已验证候选",
             ["align"] = "只对已锁定地图执行 IDVB 的仅对齐入口",
             ["end"] = "结束当前对局并释放锁定地图",
             ["status"] = "输出完整运行状态快照",

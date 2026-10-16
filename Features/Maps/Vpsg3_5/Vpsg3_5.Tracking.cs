@@ -148,8 +148,7 @@ public static class Vpsg3_5TrackingSolver
         ArgumentNullException.ThrowIfNull(preparedFloor);
 
         var cfg = config ?? Vpsg3_5TrackingConfig.Default;
-        using var scratchLease = scratch is null ? Vpsg3SolverScratch.Rent() : null;
-        var sc = scratch ?? scratchLease!.Scratch;
+        var sc = scratch ?? Vpsg3SolverScratch.Current;
         var swTotal = Stopwatch.StartNew();
 
         if (preparedFloor.IsDisposed || !double.IsFinite(lockedScale) || lockedScale <= 0.01d)
@@ -193,7 +192,7 @@ public static class Vpsg3_5TrackingSolver
             priorTx,
             priorTy,
             bounds,
-            cfg, (sparsePoints as Vpsg3SemanticPoints)?.Classes);
+            cfg);
         swLocal.Stop();
         var localSearchMs = swLocal.Elapsed.TotalMilliseconds;
 
@@ -325,7 +324,7 @@ public static class Vpsg3_5TrackingSolver
         var finalX = rfX;
         var finalY = rfY;
 
-        if (cfg.EnablePrecisionRefinement && preparedFloor.HasPrecisionDistance)
+        if (cfg.EnablePrecisionRefinement && !preparedFloor.PrecisionDistance.IsEmpty)
         {
             var swPrec = Stopwatch.StartNew();
             var budget = Vpsg3PrecisionBudget.Start();
@@ -360,19 +359,9 @@ public static class Vpsg3_5TrackingSolver
                 failTiming);
         }
 
-        SemanticStructureEvidence? semanticEvidence = null;
-        if (preparedFloor.SemanticIndex is { } semanticIndex)
-        {
-            var semanticStarted = Stopwatch.GetTimestamp();
-            semanticEvidence = semanticIndex.VerifyObservation(observation,
-                lockedScale, finalX, finalY, observation.ViewportBounds);
-            verMs += Stopwatch.GetElapsedTime(semanticStarted).TotalMilliseconds;
-        }
         swTotal.Stop();
         var totalMs = swTotal.Elapsed.TotalMilliseconds;
         var timing = new Vpsg3_5TrackingTiming(localSearchMs, fallbackSearchMs, localRefineMs, verMs, precisionMs, totalMs);
-        if (semanticEvidence is { Accepted: false })
-            return Vpsg3_5TrackingResult.Reject(semanticEvidence.Reason, lockedScale, priorTx, priorTy, timing);
 
         return Vpsg3_5TrackingResult.Accept(
             scale: lockedScale,
@@ -393,8 +382,7 @@ public static class Vpsg3_5TrackingSolver
         double priorTx,
         double priorTy,
         MapScreenRect bounds,
-        Vpsg3_5TrackingConfig cfg,
-        byte[]? classes)
+        Vpsg3_5TrackingConfig cfg)
     {
         var invScale = 1.0d / lockedScale;
         var centerDx = (int)Math.Round((bounds.X - priorTx) * invScale);
@@ -430,10 +418,7 @@ public static class Vpsg3_5TrackingSolver
                     if (rx < refW && ry < refH)
                     {
                         var wordIdx = (int)ry * wordsPerRow + (int)(rx >> 6);
-                        if (preparedFloor.SemanticIndex is { } semantic && classes is not null
-                            && classes[i] is SemanticStructureContours.Warm or SemanticStructureContours.Cool
-                            ? semantic.IsHit((int)rx, (int)ry, classes[i], 1)
-                            : (wordsK3[wordIdx] & (1UL << (int)(rx & 63))) != 0)
+                        if ((wordsK3[wordIdx] & (1UL << (int)(rx & 63))) != 0)
                         {
                             hits++;
                         }
@@ -468,10 +453,7 @@ public static class Vpsg3_5TrackingSolver
                     if (rx < refW && ry < refH)
                     {
                         var wordIdx = (int)ry * wordsPerRow + (int)(rx >> 6);
-                        if (preparedFloor.SemanticIndex is { } semantic && classes is not null
-                            && classes[i] is SemanticStructureContours.Warm or SemanticStructureContours.Cool
-                            ? semantic.IsHit((int)rx, (int)ry, classes[i], 1)
-                            : (wordsK3[wordIdx] & (1UL << (int)(rx & 63))) != 0)
+                        if ((wordsK3[wordIdx] & (1UL << (int)(rx & 63))) != 0)
                         {
                             testHits++;
                         }

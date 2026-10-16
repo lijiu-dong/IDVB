@@ -84,13 +84,6 @@ public sealed partial class SessionOrchestrator
         await SaveSettingsAsync();
         await SaveOverlayConfigToPresetAsync();
     }
-    public async Task SetRouteOpacityAsync(double opacity)
-    {
-        _settings!.RouteOpacity = double.IsFinite(opacity) ? Math.Clamp(opacity, 0d, 1d) : 1d;
-        _overlay.SetRouteOpacity(_settings.RouteOpacity);
-        await SaveSettingsAsync();
-        await SaveOverlayConfigToPresetAsync();
-    }
     public async Task SetShowRoutesAsync(bool v)
     {
         _settings!.ShowRoutes = v;
@@ -366,7 +359,6 @@ public sealed partial class SessionOrchestrator
         _overlay.SetAllowExtend(s.AllowMapExtendBeyondBounds);
         _overlay.SetMapOpacity(s.MapOpacity);
         _overlay.SetRouteLineThickness(s.RouteLineThickness);
-        _overlay.SetRouteOpacity(s.RouteOpacity);
         _overlay.SetHideMiniMap(s.HideMiniMap);
 
         ApplyRouteVisibilityToOverlay(s.ShowRoutes);
@@ -428,6 +420,28 @@ public sealed partial class SessionOrchestrator
         await SaveSettingsAsync();
     }
 
+    // Tuning
+    public async Task SetRecognitionTuningAsync(MapRecognitionTuning t)
+    { t.ForceBestRecognitionResult = false; t.ForceCandidateSelection = false; t.PlayerDecidesScale = false; _settings!.RecognitionTuning = t; await SaveSettingsAsync(); }
+    public async Task SetStructureRegistrationTuningAsync(MapStructureRegistrationTuning t)
+    { _settings!.StructureRegistrationTuning = t; await SaveSettingsAsync(); }
+    public async Task SetSessionTuningAsync(MapSessionTuning t)
+    { _settings!.SessionTuning = t; await SaveSettingsAsync(); }
+    public async Task SetFloorRecognitionTuningAsync(MapFloorRecognitionTuning t)
+    { _settings!.FloorRecognitionTuning = t; await SaveSettingsAsync(); }
+    public async Task SetPlayerTrackingTuningAsync(MapPlayerTrackingTuning t)
+    { _settings!.PlayerTrackingTuning = t; await SaveSettingsAsync(); }
+
+    public async Task RestoreRecognitionTuningDefaultsAsync()
+    { _settings!.RecognitionTuning = new MapRecognitionTuning(); await SaveSettingsAsync(); }
+    public async Task RestoreStructureRegistrationTuningDefaultsAsync()
+    { _settings!.StructureRegistrationTuning = new MapStructureRegistrationTuning(); await SaveSettingsAsync(); }
+    public async Task RestoreSessionTuningDefaultsAsync()
+    { _settings!.SessionTuning = new MapSessionTuning(); await SaveSettingsAsync(); }
+    public async Task RestoreFloorRecognitionTuningDefaultsAsync()
+    { _settings!.FloorRecognitionTuning = new MapFloorRecognitionTuning(); await SaveSettingsAsync(); }
+    public async Task RestorePlayerTrackingTuningDefaultsAsync()
+    { _settings!.PlayerTrackingTuning = new MapPlayerTrackingTuning(); await SaveSettingsAsync(); }
 
     public async Task SetOverlayAlignmentModeAsync(MapOverlayAlignmentMode m)
     { _settings!.OverlayAlignmentMode = MapOverlayAlignmentMode.Uniform; await SaveSettingsAsync(); }

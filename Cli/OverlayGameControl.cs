@@ -18,14 +18,6 @@ internal sealed class OverlayGameState
     public long ToggleCount { get; init; }
     public long WindowHandle { get; init; }
     public int ProcessId { get; init; }
-    public bool NativeMode { get; init; }
-    public int Difficulty { get; init; }
-    public int NativeIndex { get; init; }
-    public string? MapId { get; init; }
-    public int WorldFloor { get; init; }
-    public int ControlVersion { get; init; }
-    public bool Foreground { get; init; }
-    public bool BackgroundTesting { get; init; }
 
     public static OverlayGameState FromJson(JsonElement state)
     {
@@ -40,15 +32,7 @@ internal sealed class OverlayGameState
             ImagePath = GetString(state, "imagePath"),
             ToggleCount = GetLong(state, "toggleCount"),
             WindowHandle = GetLong(state, "hwnd"),
-            ProcessId = GetInt(state, "pid"),
-            NativeMode = GetBool(state, "nativeMode"),
-            Difficulty = GetInt(state, "difficulty"),
-            NativeIndex = GetInt(state, "nativeIndex"),
-            MapId = GetString(state, "mapId"),
-            WorldFloor = GetInt(state, "worldFloor"),
-            ControlVersion = GetInt(state, "controlVersion"),
-            Foreground = GetBool(state, "foreground"),
-            BackgroundTesting = GetBool(state, "backgroundTesting")
+            ProcessId = GetInt(state, "pid")
         };
     }
 
@@ -219,27 +203,12 @@ internal sealed class OverlayGameController : IAsyncDisposable
     public async Task<bool> ActivateWindowAsync(CancellationToken cancellationToken = default)
     {
         var state = await GetStateAsync(cancellationToken);
-#if IDVB_DEVELOPMENT_BUILD
-        if (IDVBuff.Lifecycle.BackgroundTestRuntime.Enabled)
-        {
-            IDVBuff.Lifecycle.BackgroundTestRuntime.Bind(new nint(state.WindowHandle), state.ProcessId, state.BackgroundTesting, state.ControlVersion);
-            return true;
-        }
-#endif
         if (state.WindowHandle == 0)
             return false;
 
         var window = new IntPtr(state.WindowHandle);
         if (!IsWindow(window))
             return false;
-
-        if (state.ControlVersion >= 2)
-        {
-            // Ask OG's own UI thread to activate its window. Keep the real
-            // foreground check here and in capture; a protocol ack is not proof.
-            var activated = await SendStateCommandAsync("activate_window", null, cancellationToken);
-            return activated.Foreground && GetForegroundWindow() == window;
-        }
 
         for (var attempt = 0; attempt < 5; attempt++)
         {
@@ -393,9 +362,6 @@ internal sealed class OverlayGameController : IAsyncDisposable
 
         candidates.Add(Path.Combine(AppContext.BaseDirectory, "dwrg.exe"));
         candidates.Add(Path.Combine(AppContext.BaseDirectory, "Tools", "overlay_game", "dwrg.exe"));
-        if (File.Exists(Path.Combine(AppContext.BaseDirectory, ".idvb-build.json")))
-            candidates.Add(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..",
-                "Tools", "overlay_game", "build", "Release", "dwrg.exe")));
         candidates.Add(Path.Combine(Environment.CurrentDirectory, "Tools", "overlay_game", "dwrg.exe"));
         candidates.Add(Path.Combine(Environment.CurrentDirectory, "Tools", "overlay_game", "build", "Release", "dwrg.exe"));
         candidates.Add(Path.Combine(Environment.CurrentDirectory, "Tools", "overlay_game", "native", "build", "Release", "dwrg.exe"));

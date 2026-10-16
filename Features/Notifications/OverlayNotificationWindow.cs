@@ -34,7 +34,6 @@ public sealed class OverlayNotificationWindow : IDisposable
     private const uint SwpNoActivate = 0x0010;
     private const uint SwpShowWindow = 0x0040;
     private const int SmCxScreen = 0;
-    private const int SmCyScreen = 1;
     private static readonly IntPtr HwndTopMost = new(-1);
 
     private static readonly object WindowClassGate = new();
@@ -89,9 +88,6 @@ public sealed class OverlayNotificationWindow : IDisposable
 
     private void RenderThreadLoop()
     {
-        // Win32 coordinates and the layered bitmap must stay in physical pixels,
-        // including when the game is on a monitor with a different Windows scale.
-        var previousDpiContext = SetThreadDpiAwarenessContext(new IntPtr(-4));
         try
         {
             EnsureWindow();
@@ -153,22 +149,14 @@ public sealed class OverlayNotificationWindow : IDisposable
         finally
         {
             DestroyWindowCore();
-            if (previousDpiContext != IntPtr.Zero)
-                SetThreadDpiAwarenessContext(previousDpiContext);
         }
     }
 
     /// <summary>
     /// 获取当前窗口所适用的通知缩放度量。
-    /// 仅依据目标窗口物理分辨率；Windows DPI 不参与字号、尺寸或定位。
+    /// 综合屏幕/游戏窗口物理分辨率与系统 DPI 缩放，保证大分辨率或高 DPI 下正常放大。
     /// </summary>
     public NotificationMetrics GetCurrentMetrics()
-    {
-        var bounds = GetTargetBounds();
-        return NotificationMetrics.FromPhysicalResolution(bounds.Width, bounds.Height);
-    }
-
-    private MapScreenRect GetTargetBounds()
     {
         MapScreenRect bounds;
         lock (_gate)
@@ -176,24 +164,53 @@ public sealed class OverlayNotificationWindow : IDisposable
             bounds = _gameBounds;
         }
 
-        if (bounds.IsValid) return bounds;
-        var foreground = GetForegroundWindow();
-        if (foreground != IntPtr.Zero && foreground != _window
-            && GetWindowRect(foreground, out var rect)
-            && rect.Right - rect.Left > 300 && rect.Bottom - rect.Top > 200)
-            return new MapScreenRect(rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top);
-        return new MapScreenRect(0, 0, GetSystemMetrics(SmCxScreen), GetSystemMetrics(SmCyScreen));
+        uint dpi = 0;
+        if (_window != IntPtr.Zero)
+        {
+            try { dpi = GetDpiForWindow(_window); } catch { }
+        }
+        if (dpi == 0)
+        {
+            try { dpi = GetDpiForSystem(); } catch { }
+        }
+        if (dpi == 0)
+        {
+            dpi = 96;
+        }
+
+        var dpiScale = dpi / 96f;
+
+        // 分辨率适配基准：以 1080p（宽 1920）为基准
+        var resScale = 1.0f;
+        if (bounds.IsValid && bounds.Width > 1920)
+        {
+            resScale = (float)(bounds.Width / 1920.0);
+        }
+        else
+        {
+            var screenWidth = GetSystemMetrics(SmCxScreen);
+            if (screenWidth > 1920)
+            {
+                resScale = screenWidth / 1920f;
+            }
+        }
+
+        var effectiveScale = Math.Clamp(Math.Max(dpiScale, resScale), 1.0f, 3.5f);
+        return new NotificationMetrics(effectiveScale);
     }
 
     private void Paint(List<OverlayNotificationCardState> cards, long now, NotificationMetrics metrics)
     {
         if (_disposed || _window == IntPtr.Zero) return;
 
-        var bounds = GetTargetBounds();
+        MapScreenRect bounds;
+        lock (_gate)
+        {
+            bounds = _gameBounds;
+        }
 
         var canvasWidth = (int)Math.Ceiling(metrics.CardWidth + 40f * metrics.Scale);
-        var contentBottom = cards.Max(card => Math.Max(card.TargetY, card.GetInterpolatedY(now)) + card.MeasuredHeight);
-        var canvasHeight = Math.Max(1, (int)Math.Ceiling(contentBottom + 20f * metrics.Scale));
+        var canvasHeight = (int)Math.Ceiling(720f * metrics.Scale);
 
         using var bitmap = new Bitmap(canvasWidth, canvasHeight, PixelFormat.Format32bppPArgb);
         using (var g = Graphics.FromImage(bitmap))
@@ -201,9 +218,29 @@ public sealed class OverlayNotificationWindow : IDisposable
             OverlayNotificationRenderer.RenderQueue(g, cards, now, metrics);
         }
 
-        // Preserve negative virtual-desktop coordinates for monitors left/above the primary.
-        var targetX = (int)Math.Round(bounds.X + (bounds.Width - canvasWidth) / 2d);
-        var targetY = (int)Math.Round(bounds.Y + 12d * metrics.Scale);
+        // 计算屏幕中上部定位（优先匹配游戏窗口中上部，无游戏窗口则优先对齐当前前台活动窗口中上部或主屏水平居中顶栏）
+        int targetX, targetY;
+        if (bounds.IsValid && bounds.Width > 200)
+        {
+            targetX = (int)Math.Round(bounds.X + (bounds.Width - canvasWidth) / 2d);
+            targetY = (int)Math.Round(bounds.Y + 12d * metrics.Scale);
+        }
+        else
+        {
+            var fg = GetForegroundWindow();
+            if (fg != IntPtr.Zero && fg != _window && GetWindowRect(fg, out var fgRect) && (fgRect.Right - fgRect.Left) > 300)
+            {
+                var fgWidth = fgRect.Right - fgRect.Left;
+                targetX = Math.Max(0, (int)Math.Round(fgRect.Left + (fgWidth - canvasWidth) / 2d));
+                targetY = Math.Max(0, (int)Math.Round(fgRect.Top + 12d * metrics.Scale));
+            }
+            else
+            {
+                var screenWidth = GetSystemMetrics(SmCxScreen);
+                targetX = Math.Max(0, (screenWidth - canvasWidth) / 2);
+                targetY = (int)Math.Round(12d * metrics.Scale);
+            }
+        }
 
         Present(bitmap, targetX, targetY);
     }
@@ -394,7 +431,8 @@ public sealed class OverlayNotificationWindow : IDisposable
     [DllImport("user32.dll")] private static extern IntPtr GetDC(IntPtr window);
     [DllImport("user32.dll")] private static extern int ReleaseDC(IntPtr window, IntPtr dc);
     [DllImport("user32.dll")] private static extern int GetSystemMetrics(int index);
-    [DllImport("user32.dll")] private static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
+    [DllImport("user32.dll")] private static extern uint GetDpiForWindow(IntPtr window);
+    [DllImport("user32.dll")] private static extern uint GetDpiForSystem();
     [DllImport("gdi32.dll")] private static extern IntPtr CreateCompatibleDC(IntPtr dc);
     [DllImport("gdi32.dll")] private static extern bool DeleteDC(IntPtr dc);
     [DllImport("gdi32.dll")] private static extern IntPtr SelectObject(IntPtr dc, IntPtr obj);

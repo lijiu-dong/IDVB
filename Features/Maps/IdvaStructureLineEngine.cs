@@ -131,7 +131,7 @@ public sealed partial class IdvaStructureLineEngine
         return new PrebuiltStructureLineResult(
             edges.Width,
             edges.Height,
-            CountEdgePixels(edges));
+            Cv2.CountNonZero(edges));
     }
 
     public Mat Execute(
@@ -303,21 +303,6 @@ public sealed partial class IdvaStructureLineEngine
                 {
                     state.CombineEdges(lineWidth);
                 }
-                else if (drawMode == "SOURCE_SEMANTIC_MASK")
-                {
-                    using var cool = InRange(state.Bgr, ReadTriplet(parameters, "outline_bgr_lo"), ReadTriplet(parameters, "outline_bgr_hi"));
-                    using var warm = InRange(state.Bgr, [0, 140, 255], [0, 140, 255]);
-                    cool.SetTo(SemanticStructureContours.Warm, warm);
-                    state.ReplaceEdges(SemanticStructureContours.Encode(cool));
-                }
-                else if (drawMode == "SOURCE_COLOR_MASK")
-                {
-                    // Copy the rendered outline pixels; contour tracing would
-                    // create two new borders around an already drawn line.
-                    state.ReplaceEdges(InRange(state.Bgr,
-                        ReadTriplet(parameters, "outline_bgr_lo"),
-                        ReadTriplet(parameters, "outline_bgr_hi")));
-                }
                 else if (drawMode is "SOURCE_EDGE_GATED" or "CANNY_BOUNDARY_GATED")
                 {
                     DrawSourceEdgeGated(state, parameters, stage, lineWidth);
@@ -328,12 +313,6 @@ public sealed partial class IdvaStructureLineEngine
                 }
                 break;
         }
-    }
-
-    private static int CountEdgePixels(Mat edges)
-    {
-        using var geometry = SemanticStructureContours.Geometry(edges);
-        return Cv2.CountNonZero(geometry);
     }
 
     private static void ValidateRuntime(JsonElement root)
@@ -362,8 +341,7 @@ public sealed partial class IdvaStructureLineEngine
         RequireString(input, "type", "raster-image");
         RequireString(input, "color_order", "BGR");
         var output = RequireObject(root, "output");
-        if (RequireNonEmptyString(output, "type") is not ("binary-edge-map" or "semantic-edge-map"))
-            throw new InvalidDataException("不支持的线图输出类型。");
+        RequireString(output, "type", "binary-edge-map");
         if (ReadBoundedInt(output, "background", 0, 255) != 0
             || ReadBoundedInt(output, "edge", 0, 255) != 255)
             throw new InvalidDataException("线图输出必须使用 0 作为背景、255 作为结构边。");

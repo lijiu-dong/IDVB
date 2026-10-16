@@ -11,8 +11,7 @@ public sealed partial class MapCvRecognitionService
         string StructureRejection,
         string LegacyRejection,
         double StructureMilliseconds,
-        double LegacyMilliseconds,
-        double StructurePixelScale);
+        double LegacyMilliseconds);
 
     private VpsgBootstrapResult EstimateVpsgScales(
         MapRecord map,
@@ -21,9 +20,7 @@ public sealed partial class MapCvRecognitionService
         MapStructureFeatures live,
         VpsgScaleMode mode,
         double? structurePriorScale,
-        double legacyPriorScale,
-        MapStructureFeatures? nativeStructure = null,
-        double physicalPixelScale = 1d)
+        double legacyPriorScale)
     {
         MapVpsgStructureScaleEstimate? structure = null;
         MapVpsgScaleEstimate? legacy = null;
@@ -37,8 +34,8 @@ public sealed partial class MapCvRecognitionService
             var timer = Stopwatch.StartNew();
             if (!new MapVpsgStructureScaleEstimator().TryEstimate(
                     reference,
-                    nativeStructure ?? live,
-                    nativeStructure is null ? structurePriorScale : structurePriorScale * physicalPixelScale,
+                    live,
+                    structurePriorScale,
                     out structure,
                     out structureRejection))
             {
@@ -77,8 +74,7 @@ public sealed partial class MapCvRecognitionService
             structureRejection,
             legacyRejection,
             structureMilliseconds,
-            legacyMilliseconds,
-            nativeStructure is null ? physicalPixelScale : 1d);
+            legacyMilliseconds);
     }
 
     private static LockedFloorFeatureFit? CreateVpsgFit(
@@ -103,7 +99,7 @@ public sealed partial class MapCvRecognitionService
         if (bootstrap.Structure is { } structure)
         {
             return new LockedFloorFeatureFit(
-                structure.Scale * bootstrap.StructurePixelScale,
+                structure.Scale * physicalPixelsPerComputationPixel,
                 0d,
                 0d,
                 0,
@@ -138,7 +134,7 @@ public sealed partial class MapCvRecognitionService
             && bootstrap.Structure is { } structure
             ? new[] { fit.Scale }
                 .Concat(structure.ScaleCandidates
-                    .Select(scale => scale * bootstrap.StructurePixelScale))
+                    .Select(scale => scale * frame.PhysicalPixelsPerComputationPixel))
             : [fit.Scale];
         var distinctCandidates = candidates
             .Where(scale => double.IsFinite(scale) && scale > 0.05d)
@@ -155,28 +151,7 @@ public sealed partial class MapCvRecognitionService
                 candidateFit.Scale,
                 frame.ViewportBounds.X + candidateFit.OffsetX,
                 frame.ViewportBounds.Y + candidateFit.OffsetY);
-            // Bootstrap is a hypothesis, not a trusted scale. Validate the same
-            // native observation through VPSG3's spatial/uniqueness/color gates
-            // before falling back to the legacy registrar's translation search.
-            MapRecognitionAttempt? nativeAttempt = null;
-            if (usedVpsg && bootstrap.Structure is not null)
-            {
-                // A rasterized scale basin has sub-pixel uncertainty. Validate
-                // its center and neighbouring refinement samples; do not treat
-                // an interpolated minimum as an already calibrated scale lock.
-                foreach (var delta in new[] { 0d, -0.005d, 0.005d })
-                {
-                    var scale = candidateFit.Scale * Math.Exp(delta);
-                    if (TryAlignWithVpsg3(frame, map, floorKey, identityPriorConfidence,
-                            out nativeAttempt, out _, knownScaleSeed: scale))
-                    {
-                        candidateFit = candidateFit with { Scale = scale };
-                        break;
-                    }
-                    nativeAttempt = null;
-                }
-            }
-            var attempt = nativeAttempt ?? AlignWithCachedScale(
+            var attempt = AlignWithCachedScale(
                 frame,
                 selectedMapId,
                 floorKey,
@@ -305,10 +280,8 @@ public sealed partial class MapCvRecognitionService
             usedVpsg && diagnostics.StructureAccepted;
         diagnostics.ScaleBootstrapScale = fit.Scale;
         diagnostics.ScaleBootstrapConfidence = fit.Confidence;
-        var nativeValidated = diagnostics.ScaleBootstrapMode == "Vpsg3"
-            && diagnostics.StructureAccepted;
-        diagnostics.ScaleBootstrapMode = nativeValidated ? "Vpsg3" : bootstrap.Mode.ToString();
-        diagnostics.ScaleBootstrapMethod = nativeValidated ? "vpsg3" : bootstrap.Structure is not null
+        diagnostics.ScaleBootstrapMode = bootstrap.Mode.ToString();
+        diagnostics.ScaleBootstrapMethod = bootstrap.Structure is not null
             && bootstrap.Mode != VpsgScaleMode.LegacyAkaze
             ? "structure"
             : bootstrap.Legacy is not null ? "legacy-akaze" : "none";

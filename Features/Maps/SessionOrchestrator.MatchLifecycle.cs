@@ -1,5 +1,4 @@
 using IDVBuff.Diagnostics;
-using IDVBuff.Features.Notifications;
 
 namespace IDVBuff.Features.Maps;
 
@@ -106,28 +105,6 @@ public sealed partial class SessionOrchestrator
         _gameMapToggleState.Reset();
     }
 
-    private void QueueSelectedMapResourcePreparation(Guid mapId)
-    {
-        var map = (_pendingAlignmentIdentity ?? _lastRecognition)?.Map;
-        if (_matchSession.Snapshot.IsStarted && map?.Id == mapId)
-            _ = PrepareSelectedMapResourcesAsync(map);
-    }
-
-    private async Task PrepareSelectedMapResourcesAsync(MapRecord map)
-    {
-        try { await _recognition.PrepareSelectedMapFloorsAsync(map); }
-        catch (Exception exception)
-        {
-            _logCollector.Append(MapLogCategory.StructureRegistration, MapLogLevel.Error,
-                "选中地图楼层资源准备失败", details: new() { ["mapId"] = map.Id, ["error"] = exception.ToString() });
-        }
-    }
-    internal void StopForMemoryFailure()
-    {
-        _lifetimeCts.Cancel();
-        CancelMatchOperations();
-    }
-
     private CancellationTokenSource BeginMapOpenCancellationScope()
     {
         return _mapOpenCancellationOwner.Begin(
@@ -184,19 +161,12 @@ public sealed partial class SessionOrchestrator
 
         _overlayStatus.Clear();
         _overlay.Clear();
-        // Identity and presentation are already cleared. Reusing unchanged,
-        // bounded raster owners avoids decoding and reallocating the same map
-        // on every rescan; changed files and match end still retire the owners.
-        MapOverlayBitmapRenderer.PrepareImageCacheForRescan();
+        MapOverlayBitmapRenderer.InvalidateImageCache();
         _mapOpenSession.Close("quick scan restarted");
         _candidateStability.Reset();
         _alignmentCommitGuard.Invalidate();
-        _recognition.ResetForRescan();
-        // Capture storage belongs to the window/geometry, not the identified
-        // map. WGC already rejects frames older than each request's timestamp;
-        // its geometry gate replaces resized/moved windows. Preserve that
-        // owner during a rescan instead of rebuilding a healthy D3D device.
-        // Match end/start still resets every capture owner below.
+        _recognition.ResetMatchState();
+        _captureSvc.Reset();
 
         _currentFloorKey = null;
         _mapLease.Clear();
@@ -264,11 +234,6 @@ public sealed partial class SessionOrchestrator
         _primaryFloorAlignmentSession = null;
         ClearAdaptiveSessionKeys();
         _lastDiagnostics = null;
-        // Diagnostic results also own candidate maps and scan indices. Clearing
-        // the recognition service alone leaves these graphs reachable from the
-        // session after end/start/dispose. Operations have been drained here.
-        Interlocked.Exchange(ref _lastSideEntranceScan, null)?.Dispose();
-        _lastScanPipelineContext = null;
         _lastScanPhaseTimings = null;
         _lastAlignmentPhaseTimings = null;
         _lastScanOperationTrace = null;
@@ -290,9 +255,6 @@ public sealed partial class SessionOrchestrator
         if (resetAutomaticCacheSamples)
             ResetAutomaticMapCacheSamples();
 
-        Vpsg3SolverScratch.ReleaseSharedScratch();
-        IDVBuff.Core.Collections.CompactByteField.ReleaseSharedScratch();
-
         // This reset runs both when a match starts and when it ends. Keep the
         // lifecycle probe observational: a blocking compacting Gen2 collection
         // plus EmptyWorkingSet here made "Start match" page out the whole
@@ -307,45 +269,17 @@ public sealed partial class SessionOrchestrator
     public Task BeginMatchAsync() => Task.CompletedTask;
     public async Task RunScanAsync() => await Task.CompletedTask;
 
-    public Task BeginMatchAsync(string mapClass) => BeginMatchAsync(mapClass, Task.CompletedTask);
-
-    private async Task BeginMatchAsync(string mapClass, Task pendingSettingsSave)
+    public async Task BeginMatchAsync(string mapClass)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        if (!_headless && _captureSvc.TryGetForegroundClientBounds(out var bounds, out _, out _)
-            && bounds is MapScreenRect gameBounds)
-            OverlayNotificationCenter.UpdateGameBounds(gameBounds);
-        using var loading = new MatchLoadingNotification(_headless ? null
-            : OverlayNotificationCenter.Notice("正在加载…\n准备开始对局 · 0%", 0, Timeout.InfiniteTimeSpan));
-        using var progress = MapOperationProgress.Begin(loading);
-        try
-        {
-            await pendingSettingsSave;
-            MapOperationProgress.Report(.02, "同步地图库");
-            await MapOperationProgress.RunAsync(.02, .15, EnsureMapCacheSynchronizedAsync);
-            MapOperationProgress.Report(.15, "等待对局初始化");
-            await _matchLifecycleGate.WaitAsync();
-            try
-            {
-                await MapOperationProgress.RunAsync(.15, .99, () => BeginMatchCoreAsync(mapClass));
-                if (!_disposed && _matchSession.Snapshot.IsStarted)
-                    loading.Complete();
-            }
-            finally { _matchLifecycleGate.Release(); }
-        }
-        catch (Exception exception)
-        {
-            loading.Dispose();
-            if (!_headless)
-                OverlayNotificationCenter.Error($"进入对局失败：{exception.Message}");
-            throw;
-        }
+        await EnsureMapCacheSynchronizedAsync();
+        await _matchLifecycleGate.WaitAsync();
+        try { await BeginMatchCoreAsync(mapClass); }
+        finally { _matchLifecycleGate.Release(); }
     }
 
     private async Task BeginMatchCoreAsync(string mapClass)
     {
-            IDVBuff.Core.Diagnostics.MemoryBudget.Process.ThrowIfExceeded();
-            using var memoryOperation = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("Match.Begin", mapClass);
             if (_disposed)
                 return;
             if (_matchSession.Snapshot.IsStarted)
@@ -353,8 +287,7 @@ public sealed partial class SessionOrchestrator
             ResetMatchTransientState(resetAutomaticCacheSamples: true);
             _statusMessage = $"正在准备对局地图 · {mapClass}";
             StateChanged?.Invoke(this, EventArgs.Empty);
-            MapOperationProgress.Report(.05, "重置对局状态");
-            await MapOperationProgress.RunAsync(.05, .92, () => _recognition.PrepareMatchResourcesAsync(mapClass));
+            await _recognition.PrepareMatchResourcesAsync(mapClass);
             if (_disposed)
                 return;
             _matchPluginsActivated = false;
@@ -362,7 +295,6 @@ public sealed partial class SessionOrchestrator
             var match = _matchSession.Begin(mapClass);
             if (_settings?.DiagnosticModeEnabled is true)
                 MapDiagnosticModeCapture.BeginMatch();
-            MapOperationProgress.Report(.94, "激活对局插件");
             await SetMatchPluginsActivatedCoreAsync(true);
             _statusMessage = $"对局已开始 · {mapClass}";
             _logCollector.Append(
@@ -381,4 +313,3 @@ public sealed partial class SessionOrchestrator
         BeginMatchAsync(mapClass);
     public Task EndMatchAsync() => EndMatchAsync(saveAutomaticMapCache: false);
 }
-

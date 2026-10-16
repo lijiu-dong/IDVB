@@ -202,7 +202,6 @@ public sealed partial class ScanModeSelector
         _segmentWidth = _track.ActualWidth / (3 + frame.Expansion);
         _selectedPosition = Math.Clamp(frame.Index, 0, 2 + frame.Expansion) * _segmentWidth + 4;
         EnsureGeometry();
-        if (_geometry is null) return;
         UpdateGeometryPointer();
         if (_geometryTrackWidth != _track.ActualWidth)
         {

@@ -83,20 +83,19 @@ internal static partial class MapOverlayBitmapRenderer
         var ta = showTextAnnotationsOnMiniMap;
         var ba = showBoxAnnotationsOnMiniMap;
         var la = showLineAnnotationsOnMiniMap;
-        var key = $"{Path.GetFullPath(miniMap.ImagePath)}|dpi={dpiScale:F2}|op={miniMapOpacity:F2}|gm={gm}|aa={aa}|ta={ta}|ba={ba}|la={la}|fl={showFloorOnMiniMap}|flbl={miniMap.FloorLabel}|anc={miniMap.Anchors.Count}|lw={miniMap.RouteLineThickness}|ro={miniMap.RouteOpacity:R}|ann={System.Text.Json.JsonSerializer.Serialize(miniMap.Annotations)}";
+        var key = $"{Path.GetFullPath(miniMap.ImagePath)}|dpi={dpiScale:F2}|op={miniMapOpacity:F2}|gm={gm}|aa={aa}|ta={ta}|ba={ba}|la={la}|fl={showFloorOnMiniMap}|flbl={miniMap.FloorLabel}|anc={miniMap.Anchors.Count}|lw={miniMap.RouteLineThickness}|ann={System.Text.Json.JsonSerializer.Serialize(miniMap.Annotations)}";
 
         lock (ImageCacheLock)
         {
-            EnsureImageCacheSourceVersionCore(miniMap.ImagePath);
             if (MiniMapLayerCache.TryGetValue(key, out var cached))
             {
                 if (cached.Width == width && cached.Height == height)
                     return cached.Bitmap;
-                DisposeCachedBitmap(cached.Bitmap);
+                cached.Bitmap.Dispose();
                 MiniMapLayerCache.Remove(key);
             }
 
-            var layerBitmap = CreateCachedBitmap(width, height, "Overlay.BakedMiniMapLayer");
+            var layerBitmap = new Bitmap(width, height, PixelFormat.Format32bppPArgb);
             layerBitmap.SetResolution(dpiScale * DefaultDpi, dpiScale * DefaultDpi);
 
             using (var g = Graphics.FromImage(layerBitmap))
@@ -129,18 +128,15 @@ internal static partial class MapOverlayBitmapRenderer
                     Height = height
                 };
 
-                DrawRouteContent(g, effectiveMiniMap, dpiScale, routeGraphics =>
+                if (gm || aa)
                 {
-                    if (gm || aa)
-                    {
-                        DrawMiniMapAnchors(routeGraphics, effectiveMiniMap, dpiScale, gm, aa);
-                    }
+                    DrawMiniMapAnchors(g, effectiveMiniMap, dpiScale, gm, aa);
+                }
 
-                    if (ta || ba || la)
-                    {
-                        DrawAnnotations(routeGraphics, effectiveMiniMap, dpiScale, ta, ba, la);
-                    }
-                });
+                if (ta || ba || la)
+                {
+                    DrawAnnotations(g, effectiveMiniMap, dpiScale, ta, ba, la);
+                }
 
                 if (showFloorOnMiniMap)
                 {

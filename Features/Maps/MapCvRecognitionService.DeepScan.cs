@@ -24,7 +24,7 @@ public sealed partial class MapCvRecognitionService
             FailureReason = "DeepScan 结构验证超过预算，未提交结果。" };
     }
 
-    private void PrewarmDeepScan(IEnumerable<ScanStructureIndex> lines, Action<double, string>? progress = null)
+    private void PrewarmDeepScan(IEnumerable<Mat> lines)
     {
         try { _deepScanGateDetector ??= new GateTemplateDetector(MapCvRecognitionHelpers.ResolveGatePath()); }
         catch (Exception ex)
@@ -32,11 +32,9 @@ public sealed partial class MapCvRecognitionService
             MapLogCollector.Instance.Append(MapLogCategory.ScanLifecycle, MapLogLevel.Warning,
                 "DeepScan 图标排除器预热失败。", details: new() { ["exception"] = ex.ToString() });
         }
-        var snapshot = lines.ToArray();
-        var completed = 0;
-        foreach (var line in snapshot)
+        foreach (var line in lines)
         {
-            try { if (line.LocalGeometry is null) throw new InvalidDataException("DeepScan 局部索引不可用。"); }
+            try { DeepScanStructureIndex.Prewarm(line); }
             catch (Exception ex)
             {
                 // Failure must never revoke a successfully built ordinary scan cache.
@@ -44,14 +42,13 @@ public sealed partial class MapCvRecognitionService
                     "DeepScan 局部索引预热失败，其他扫描模式仍可使用。",
                     details: new() { ["exception"] = ex.ToString() });
             }
-            progress?.Invoke((double)++completed / snapshot.Length, "正在预热扫描索引");
         }
     }
 
     private SideEntranceScanResult RunDeepScan(CapturedGameFrame frame, string? mapClass,
         ScanExecutionContext context, Action<double>? progress)
     {
-        using var inputs = BuildSideEntranceScanInputs(mapClass);
+        var inputs = BuildSideEntranceScanInputs(mapClass);
         var eligible = _maps.Count(map => string.IsNullOrWhiteSpace(mapClass)
             || string.Equals(map.Class, mapClass, StringComparison.OrdinalIgnoreCase));
         context.RecordRetrievalCoverage(eligible, inputs.Count);
@@ -80,8 +77,7 @@ public sealed partial class MapCvRecognitionService
                 FailureReason = inputs.Count != eligible
                     ? $"地图目录数据尚未就绪（就绪 {inputs.Count}/{eligible}）；请检查扫描楼层标记与结构特征。"
                     : candidates.Count == 0
-                    ? "DeepScan 未找到足够的局部拐角结构，请多露出一小片地图后重试。" : string.Empty,
-                ReaderLifetime = inputs.TakeLifetime()
+                    ? "DeepScan 未找到足够的局部拐角结构，请多露出一小片地图后重试。" : string.Empty
             };
         }
         catch (Exception ex)

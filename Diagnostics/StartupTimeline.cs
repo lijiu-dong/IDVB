@@ -119,7 +119,8 @@ internal static class StartupTimeline
             try
             {
                 // Avoid triggering legacy-data migration before it can be timed.
-                var directory = Path.Combine(AppDataPaths.RootBeforeLegacyMigration, "Logs");
+                var directory = Path.Combine(Environment.GetFolderPath(
+                    Environment.SpecialFolder.LocalApplicationData), AppDataPaths.ProductDirectoryName, "Logs");
                 Directory.CreateDirectory(directory);
                 var path = Path.Combine(directory,
                     $"startup-{mainUtc:yyyyMMdd-HHmmss-fff}-{Environment.ProcessId}.log");

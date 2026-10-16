@@ -64,56 +64,8 @@ public sealed class SideEntranceScanCandidate
     public string RejectionDetail { get; set; } = string.Empty;
 }
 
-/// <summary>Candidate pixels remain valid until this scan scope is disposed.</summary>
-public sealed class SideEntranceScanCandidates(IReadOnlyList<SideEntranceScanCandidate> items)
-    : IReadOnlyList<SideEntranceScanCandidate>, IDisposable
+public sealed class SideEntranceScanResult
 {
-    private ScanIndexReaderLifetime? _lifetime;
-    internal static SideEntranceScanCandidates Create(IReadOnlyList<SideEntranceScanCandidate> items, ScanIndexInputBatch inputs)
-    {
-        var result = new SideEntranceScanCandidates(items);
-        result._lifetime = inputs.TakeLifetime();
-        return result;
-    }
-    public int Count => items.Count;
-    public SideEntranceScanCandidate this[int index] => items[index];
-    public IEnumerator<SideEntranceScanCandidate> GetEnumerator() => items.GetEnumerator();
-    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
-    public void Dispose() => Interlocked.Exchange(ref _lifetime, null)?.Dispose();
-}
-
-public sealed class SideEntranceScanResult : IDisposable
-{
-    private ScanIndexReaderLifetime? _readerLifetime;
-    private bool _requiresReaderLifetime;
-    internal ScanIndexReaderLifetime? ReaderLifetime
-    {
-        init { _readerLifetime = value; _requiresReaderLifetime = value is not null; }
-    }
-    // Background consumption and last-result diagnostics outlive execution.
-    // Retain their own result wrapper while sharing immutable rented indices.
-    internal SideEntranceScanResult Retain()
-    {
-        var lifetime = Volatile.Read(ref _readerLifetime);
-        if (lifetime is null)
-        {
-            ObjectDisposedException.ThrowIf(_requiresReaderLifetime, this);
-            return this; // Managed-only results keep their existing semantics.
-        }
-        var retained = lifetime.Retain();
-        try
-        {
-            return new SideEntranceScanResult
-            {
-                GateDetection = GateDetection, Candidates = Candidates, FailureReason = FailureReason,
-                EligibleMapCount = EligibleMapCount, ReadyMapCount = ReadyMapCount,
-                RejectedCandidateCount = RejectedCandidateCount, ReaderLifetime = retained
-            };
-        }
-        catch { retained.Dispose(); throw; }
-    }
-    public void Dispose() => Interlocked.Exchange(ref _readerLifetime, null)?.Dispose();
-
     public GateDetectionResult GateDetection { get; init; } = new();
     public IReadOnlyList<SideEntranceScanCandidate> Candidates { get; init; } = [];
     public string FailureReason { get; init; } = string.Empty;

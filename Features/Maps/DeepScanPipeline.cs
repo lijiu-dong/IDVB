@@ -12,18 +12,6 @@ internal static class DeepScanPipeline
         IReadOnlyList<(MapRecord map, string floorKey, Mat template)> inputs,
         MapScreenRect viewport, ScanExecutionContext context, Action<double>? progress = null,
         IReadOnlyList<GateDetection>? gates = null)
-        => Run(image, inputs.Select(c =>
-        {
-            var index = ScanStructureIndex.Get(c.template);
-            DeepScanStructureIndex.TryGet(c.template, out var geometry);
-            index.LocalGeometry = geometry;
-            return (c.map, c.floorKey, index);
-        }).ToArray(), viewport, context, progress, gates);
-
-    internal static IReadOnlyList<SideEntranceScanCandidate> Run(Mat image,
-        IReadOnlyList<(MapRecord map, string floorKey, ScanStructureIndex template)> inputs,
-        MapScreenRect viewport, ScanExecutionContext context, Action<double>? progress = null,
-        IReadOnlyList<GateDetection>? gates = null)
     {
         if (context.Policy.Mode != ScanPerformanceMode.DeepScan)
             throw new InvalidOperationException("Local geometry retrieval is exclusive to DeepScan.");
@@ -40,18 +28,13 @@ internal static class DeepScanPipeline
         if (frame.DensePoints.Length < 80 || corners.Length < 2)
         { context.RetrievalCompleted = false; return []; }
         var coarsePoints = ScanFrameEvidence.SampleUniform(frame.DensePoints, image.Width, image.Height, 64);
-        byte[]? Labels(Point[] points) => frame.Observation.SemanticLabels is { } labels
-            ? points.Select(p => labels.At<byte>(p.Y, p.X)).ToArray() : null;
-        var coarseLabels = Labels(coarsePoints);
-        var searchLabels = Labels(frame.SearchPoints);
         const int proposalPool = 32;
         var found = new List<SideEntranceScanCandidate>(inputs.Count);
         foreach (var (map, floor, line) in inputs)
         {
             if (!context.CanCompute || context.RemainingMilliseconds <= 500)
             { context.RetrievalCompleted = false; break; }
-            var index = line.LocalGeometry;
-            if (index is null || !index.HasGeometry)
+            if (!DeepScanStructureIndex.TryGet(line, out var index) || index is null || !index.HasGeometry)
             { context.RetrievalCompleted = false; found.Add(Missing(map, floor, "deepscan-index-unavailable")); continue; }
             var distances = index.Distances.WithScanAnchor(map, floor);
             var peaks = new List<Pose>();
@@ -108,7 +91,7 @@ internal static class DeepScanPipeline
             {
                 context.TestedHypotheses++;
                 if (!visited.Add(((int)Math.Round(Math.Log(scale) / .003), (int)Math.Round(x / 2), (int)Math.Round(y / 2)))) return;
-                var score = Score(distances, coarsePoints, coarseLabels, scale, x, y,
+                var score = Score(distances, coarsePoints, scale, x, y,
                     peaks.Count == proposalPool ? peaks[^1].Score : double.NegativeInfinity);
                 if (double.IsNaN(score)) insufficientKnownEvidence = true;
                 if (!double.IsFinite(score)) return;
@@ -119,7 +102,7 @@ internal static class DeepScanPipeline
             if (!complete) context.RetrievalCompleted = false;
             peaks = peaks.Select(p =>
                 {
-                    var score = Score(distances, frame.SearchPoints, searchLabels, p.Scale, p.X, p.Y);
+                    var score = Score(distances, frame.SearchPoints, p.Scale, p.X, p.Y);
                     if (double.IsNaN(score)) insufficientKnownEvidence = true;
                     return p with { Score = score };
                 })
@@ -141,8 +124,7 @@ internal static class DeepScanPipeline
                     var orderedPoints = frame.SearchPoints.OrderByDescending(p =>
                         distances.DeepScanDistance((p.X - seed.X) / seed.Scale,
                             (p.Y - seed.Y) / seed.Scale, seed.Scale)).ToArray();
-                    var orderedLabels = Labels(orderedPoints);
-                    best = best with { Score = Score(distances, orderedPoints, orderedLabels, best.Scale, best.X, best.Y) };
+                    best = best with { Score = Score(distances, orderedPoints, best.Scale, best.X, best.Y) };
                     for (var ds = -2; ds <= 2; ds++)
                     for (var dx = -1; dx <= 1; dx++)
                     for (var dy = -1; dy <= 1; dy++)
@@ -152,12 +134,12 @@ internal static class DeepScanPipeline
                         if (scale < context.Policy.MinimumScale || scale > context.Policy.MaximumScale) continue;
                         var x = pivotX - (pivotX - seed.X) * scale / seed.Scale + dx;
                         var y = pivotY - (pivotY - seed.Y) * scale / seed.Scale + dy;
-                        var score = Score(distances, orderedPoints, orderedLabels, scale, x, y, best.Score);
+                        var score = Score(distances, orderedPoints, scale, x, y, best.Score);
                         context.TestedHypotheses++;
                         if (score > best.Score) best = new(scale, x, y, score);
                     }
                 }
-                var fullScore = Score(distances, frame.SearchPoints, searchLabels, best.Scale, best.X, best.Y);
+                var fullScore = Score(distances, frame.SearchPoints, best.Scale, best.X, best.Y);
                 if (fullScore > peaks[i].Score) peaks[i] = best with { Score = fullScore };
             }
             if (!complete) context.RetrievalCompleted = false;
@@ -189,24 +171,20 @@ internal static class DeepScanPipeline
     private static SideEntranceScanCandidate Missing(MapRecord map, string floor, string reason) => new()
     { Map = map, FloorKey = floor, IdentityEvidence = ScanIdentityEvidence.Unverified(reason) };
 
-    private static double Score(ScanStructureIndex index, Point[] points, byte[]? labels, double scale, double x, double y,
+    private static double Score(ScanStructureIndex index, Point[] points, double scale, double x, double y,
         double minimumScore = double.NegativeInfinity)
     {
         var sum = 0d;
         var known = 0;
         var inverseScale = 1d / scale;
-        var semanticRadius = Math.Max(2d, 2d * inverseScale);
         var maximumDistance = (1 - minimumScore) * points.Length * 10;
-        for (var i = 0; i < points.Length; i++)
+        foreach (var p in points)
         {
-            var p = points[i];
             var rx = (p.X - x) * inverseScale;
             var ry = (p.Y - y) * inverseScale;
             if (index.IsUnknownWithinSupport(rx, ry, scale)) continue;
             known++;
-            var mismatch = index.SemanticIndex is { } semantics && labels is not null
-                && labels[i] != 0 && !semantics.IsHit((int)Math.Round(rx), (int)Math.Round(ry), labels[i], semanticRadius);
-            sum += mismatch ? 10 : Math.Min(10, index.DeepScanDistance(rx, ry, scale));
+            sum += Math.Min(10, index.DeepScanDistance(rx, ry, scale));
             // Exact lower bound: remaining distances cannot be negative. Pruning
             // cannot discard a pose that would outrank the current retained basin.
             if (sum > maximumDistance) return double.NegativeInfinity;

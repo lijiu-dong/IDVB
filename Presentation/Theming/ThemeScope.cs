@@ -14,7 +14,6 @@ internal sealed class ThemeScope : IDisposable
     private readonly Microsoft.UI.Xaml.Media.SolidColorBrush _windowBrush = new();
     public FrameworkElement Root { get; }
     public ThemeProfile Profile { get; }
-    internal Window? HostWindow => _window;
     public ThemeResources Resources { get; }
     public bool IsDisposed { get; private set; }
     public Microsoft.UI.Xaml.Media.Brush WindowBrush => _windowBrush;

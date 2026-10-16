@@ -29,34 +29,7 @@ public sealed partial class MapStructureRegistrar
         _preprocessor = preprocessor;
     }
 
-    public MapStructureRegistrationResult Register(MapStructureRegistrationRequest request)
-    {
-        ArgumentNullException.ThrowIfNull(request);
-        if (request.LiveRoi is null)
-            return MapStructureRegistrationResult.Reject(MapStructureRejectionReason.InvalidInput,
-                usedRestrictedSearch: request.RestrictSearchToLockedTransform);
-        var result = RegisterGeometry(request);
-        if (!result.Accepted || result.Transform is not { } transform) return result;
-        var index = request.PreparedReference?.SemanticIndex;
-        using var ownedIndex = index is null && request.Tuning.UsePrebuiltStructureLine
-            && request.ReferenceImage is { } reference && reference.Channels() == 3
-                ? CreateReferenceSemanticIndex(reference) : null;
-        index ??= ownedIndex;
-        if (index is null) return result;
-        var live = request.PreparedOriginalLive ?? request.PreparedLive;
-        var evidence = index.Verify(live?.SemanticLabels, live?.RawVisibleMask,
-            transform.ScaleX, transform.OffsetX, transform.OffsetY, request.ViewportBounds);
-        return evidence.Accepted ? result : MapStructureRegistrationResult.Reject(
-            MapStructureRejectionReason.AmbiguousCandidates, evidence.Reason, result.Candidates);
-    }
-
-    private static SemanticStructureIndex CreateReferenceSemanticIndex(Mat reference)
-    {
-        using var labels = SemanticStructureContours.Decode(reference);
-        return new(labels);
-    }
-
-    private MapStructureRegistrationResult RegisterGeometry(
+    public MapStructureRegistrationResult Register(
         MapStructureRegistrationRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);

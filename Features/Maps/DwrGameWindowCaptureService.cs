@@ -1,4 +1,8 @@
+using OpenCvSharp;
+using OpenCvSharp.Extensions;
 using System.Diagnostics;
+using System.Drawing;
+using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 
 namespace IDVBuff.Features.Maps;
@@ -8,16 +12,28 @@ public sealed partial class DwrGameWindowCaptureService
 {
     private const string ProcessName = "dwrg";
 
-    // GDI writes directly into a frame's BGRA pixels. Reuse only after its
-    // consumer disposes it; an overlapping capture gets independent storage.
+    // 抓屏 surface 复用：`new Bitmap` + `Graphics.FromImage` 在每次抓屏里实测
+    // 约占 4.3ms（1600x900），就绪轮询/稳定帧循环每次尝试都要抓一帧，一次仅
+    // 对齐就要四到七帧，纯分配开销相当可观。surface 只在视口尺寸变化时重建；
+    // 尺寸相同时 CopyFromScreen 直接写同一块 Bitmap（GDI 内部是 BitBlt）。
+    // ToMat 仍每次新建 Mat 拷贝像素——CapturedGameFrame 的生命周期独立于
+    // surface，绝不能共享内存。
     private readonly object _captureSurfaceGate = new();
-    private readonly GdiCaptureSurfaceCache _captureSurfaces = new();
+    private readonly object _latestViewportGate = new();
+    private Bitmap? _captureSurface;
+    private Graphics? _captureGraphics;
+    private LatestViewportSnapshot? _latestViewport;
 
-    // A DIB is retained only while capture is active. Once no capture has used
-    // a size for this long (e.g. the game left the foreground), it returns to
-    // the OS instead of staying resident until the match is reset.
-    private const int CaptureSurfaceIdleMilliseconds = 10_000;
-    private Timer? _captureSurfaceTrimTimer;
+    private sealed class LatestViewportSnapshot : IDisposable
+    {
+        public required Mat Image { get; init; }
+        public required MapScreenRect ClientBounds { get; init; }
+        public required MapScreenRect ViewportBounds { get; init; }
+        public required IntPtr WindowHandle { get; init; }
+        public required long Timestamp { get; init; }
+
+        public void Dispose() => Image.Dispose();
+    }
 
     public bool TryGetForegroundClientBounds(
         out MapScreenRect clientBounds,
@@ -72,42 +88,39 @@ public sealed partial class DwrGameWindowCaptureService
 
         try
         {
+            // surface 复用于就绪轮询等连续抓帧：同一视口尺寸下只抓不分配。
             lock (_captureSurfaceGate)
             {
                 var surface = GetOrCreateCaptureSurface(
                     (int)Math.Round(viewportBounds.Width),
                     (int)Math.Round(viewportBounds.Height));
-#if IDVB_DEVELOPMENT_BUILD
-                var background = IDVBuff.Lifecycle.BackgroundTestRuntime.Enabled;
-                if (background)
-                    surface.CaptureWindow(window, (int)Math.Round(viewportBounds.X - clientBounds.X),
-                        (int)Math.Round(viewportBounds.Y - clientBounds.Y));
-                else
-#endif
-                    surface.Capture((int)Math.Round(viewportBounds.X), (int)Math.Round(viewportBounds.Y));
-#if IDVB_DEVELOPMENT_BUILD
-                if (background ? !IDVBuff.Lifecycle.BackgroundTestRuntime.TryGetWindow(out var current) || current != window
-                    : GetForegroundWindow() != window)
-#else
+                _captureGraphics!.CopyFromScreen(
+                    (int)Math.Round(viewportBounds.X),
+                    (int)Math.Round(viewportBounds.Y),
+                    0,
+                    0,
+                    surface.Size,
+                    CopyPixelOperation.SourceCopy);
                 if (GetForegroundWindow() != window)
-#endif
                 {
                     failureReason = "捕获期间前台窗口发生变化，已丢弃这一帧，请保持游戏地图打开后重试。";
                     return false;
                 }
-                var pixels = surface.RentPixels();
-                try
+                // ToMat 每次新建 Mat 并拷贝像素，CapturedGameFrame 持有它，与
+                // surface 复用无关；surface 下一帧会被覆盖，Mat 不受影响。
+                frame = new CapturedGameFrame(
+                    BitmapConverter.ToMat(surface),
+                    clientBounds,
+                    viewportBounds,
+                    window);
+                ReplaceLatestViewportSnapshot(new LatestViewportSnapshot
                 {
-                    frame = new CapturedGameFrame(pixels.Image, clientBounds,
-                        viewportBounds, window, pixels)
-                    {
-#if IDVB_DEVELOPMENT_BUILD
-                        CaptureBackend = background ? "og-printclient" : "gdi",
-                        CaptureSystemRelativeTicks = background ? SystemRelativeClock.GetTicks() : 0,
-#endif
-                    };
-                }
-                catch { pixels.Dispose(); throw; }
+                    Image = frame.Image.Clone(),
+                    ClientBounds = clientBounds,
+                    ViewportBounds = viewportBounds,
+                    WindowHandle = window,
+                    Timestamp = Stopwatch.GetTimestamp()
+                });
                 return true;
             }
         }
@@ -120,42 +133,106 @@ public sealed partial class DwrGameWindowCaptureService
         }
     }
 
+    public bool TryAcquireLatestViewportFrame(
+        NormalizedRectangle viewport,
+        TimeSpan maximumAge,
+        out CapturedGameFrame? frame)
+    {
+        frame = null;
+        if (!viewport.IsValid || maximumAge < TimeSpan.Zero)
+            return false;
+        if (!TryGetForegroundGameWindow(out var window, out _)
+            || !TryGetClientBounds(window, out var clientBounds))
+        {
+            return false;
+        }
+
+        var viewportBounds = GetViewportBounds(clientBounds, viewport);
+        if (!viewportBounds.IsValid)
+            return false;
+
+        var maximumAgeTicks = Math.Max(
+            0L,
+            (long)Math.Ceiling(maximumAge.TotalSeconds * Stopwatch.Frequency));
+        var ageTicks = Stopwatch.GetTimestamp();
+        lock (_latestViewportGate)
+        {
+            var snapshot = _latestViewport;
+            if (snapshot is null
+                || ageTicks - snapshot.Timestamp > maximumAgeTicks
+                || snapshot.WindowHandle != window
+                || snapshot.ClientBounds != clientBounds
+                || snapshot.ViewportBounds != viewportBounds)
+            {
+                return false;
+            }
+
+            try
+            {
+                frame = new CapturedGameFrame(
+                    snapshot.Image.Clone(),
+                    snapshot.ClientBounds,
+                    snapshot.ViewportBounds,
+                    snapshot.WindowHandle);
+                return true;
+            }
+            catch
+            {
+                frame?.Dispose();
+                frame = null;
+                return false;
+            }
+        }
+    }
+
+    private void ReplaceLatestViewportSnapshot(LatestViewportSnapshot? snapshot)
+    {
+        LatestViewportSnapshot? previous;
+        lock (_latestViewportGate)
+        {
+            previous = _latestViewport;
+            _latestViewport = snapshot;
+        }
+        previous?.Dispose();
+    }
+
     /// <summary>
-    /// Retires cached capture storage. In-flight frames retain their own lease
-    /// until disposed, including during a concurrent match reset.
+    /// Releases cached surface bitmap, graphics, and the latest viewport snapshot.
+    /// Called when a match ends or transient state resets to free unmanaged memory.
     /// </summary>
     public void Reset()
     {
         ResetFrameStream();
         lock (_captureSurfaceGate)
         {
-            _captureSurfaces.Reset();
-            _captureSurfaceTrimTimer?.Dispose();
-            _captureSurfaceTrimTimer = null;
+            _captureGraphics?.Dispose();
+            _captureGraphics = null;
+            _captureSurface?.Dispose();
+            _captureSurface = null;
         }
-    }
-
-    private void TrimIdleCaptureSurfaces()
-    {
-        lock (_captureSurfaceGate)
-        {
-            _captureSurfaces.TrimIdle(Environment.TickCount64, CaptureSurfaceIdleMilliseconds);
-            if (_captureSurfaces.Count != 0) return;
-            _captureSurfaceTrimTimer?.Dispose();
-            _captureSurfaceTrimTimer = null;
-        }
+        ReplaceLatestViewportSnapshot(null);
     }
 
     /// <summary>
-    /// Reuses an unleased surface of the same size only; overlapping consumers
-    /// get independent storage, and a retired surface stays valid for its frame.
+    /// 获取可复用的抓屏 surface。视口尺寸未变时直接返回缓存的 Bitmap（及配套
+    /// Graphics）；尺寸变化（窗口缩放/校准区域调整）时释放旧 surface 重建。
     /// 调用方必须持有 <see cref="_captureSurfaceGate"/>。
     /// </summary>
-    private GdiCaptureSurface GetOrCreateCaptureSurface(int width, int height)
+    private Bitmap GetOrCreateCaptureSurface(int width, int height)
     {
-        _captureSurfaceTrimTimer ??= new Timer(_ => TrimIdleCaptureSurfaces(), null,
-            CaptureSurfaceIdleMilliseconds / 2, CaptureSurfaceIdleMilliseconds / 2);
-        return _captureSurfaces.Get(width, height);
+        if (_captureSurface is { } cached
+            && cached.Width == width
+            && cached.Height == height)
+        {
+            return cached;
+        }
+
+        _captureGraphics?.Dispose();
+        _captureGraphics = null;
+        _captureSurface?.Dispose();
+        _captureSurface = new Bitmap(width, height, PixelFormat.Format32bppArgb);
+        _captureGraphics = Graphics.FromImage(_captureSurface);
+        return _captureSurface;
     }
 
     // Process.GetProcessById 会走一次系统进程表查询，实测是每次抓帧里除位块
@@ -172,14 +249,6 @@ public sealed partial class DwrGameWindowCaptureService
 
     private static bool TryGetForegroundGameWindow(out IntPtr window, out string failureReason)
     {
-#if IDVB_DEVELOPMENT_BUILD
-        if (IDVBuff.Lifecycle.BackgroundTestRuntime.Enabled)
-        {
-            var valid = IDVBuff.Lifecycle.BackgroundTestRuntime.TryGetWindow(out window);
-            failureReason = valid ? "" : "独立测试桌面的 OG 窗口不可用；不会回退到桌面捕获。";
-            return valid;
-        }
-#endif
         window = GetForegroundWindow();
         failureReason = string.Empty;
         if (window == IntPtr.Zero)

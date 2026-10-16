@@ -52,31 +52,16 @@ public sealed partial class MapRepository
     }
 
     /// <summary>Loads the complete management snapshot in one catalog read.</summary>
-    public Task<MapCatalogSnapshot> GetCatalogSnapshotAsync() =>
-        Task.Run(() => GetCatalogSnapshotCoreAsync(null));
-
-    public Task<MapCatalogSnapshot> GetClassCatalogSnapshotAsync(string className) =>
-        Task.Run(() => GetCatalogSnapshotCoreAsync(className));
-
-    internal Task<MapRecord?> GetMapSnapshotAsync(Guid id) => Task.Run(async () =>
-        (await GetCatalogSnapshotCoreAsync(null, id)).Maps.SingleOrDefault());
-
-    private async Task<MapCatalogSnapshot> GetCatalogSnapshotCoreAsync(string? className, Guid? mapId = null)
+    public async Task<MapCatalogSnapshot> GetCatalogSnapshotAsync()
     {
-        using var memory = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("Catalog.Snapshot", className);
         await Gate.WaitAsync();
         try
         {
-            var revision = GetCatalogRevision();
-            var catalog = mapId is not null ? await ReadMapCatalogAsync(mapId.Value) : className is null
-                ? await ReadCatalogAsync()
-                : await ReadClassCatalogAsync(className);
-            var snapshot = new MapCatalogSnapshot(
+            var catalog = await ReadCatalogAsync();
+            return new MapCatalogSnapshot(
                 catalog.Classes.ToArray(),
-                catalog.Maps.Where(record => (mapId is null || record.Id == mapId)
-                        && (className is null || string.Equals(record.Class, className, StringComparison.OrdinalIgnoreCase)))
-                    .OrderBy(record => record.SequenceNumber)
-                    .Select(record => DetachFreshCatalogRecord(catalog, record))
+                catalog.Maps.OrderBy(record => record.SequenceNumber)
+                    .Select(record => CloneWithClassProperties(catalog, record))
                     .ToArray())
             {
                 ClassProperties = catalog.ClassProperties.ToDictionary(
@@ -87,9 +72,6 @@ public sealed partial class MapRepository
                     .Select(group => group.Clone())
                     .ToArray()
             };
-            RememberEditableSnapshot(snapshot, revision);
-            IDVBuff.Core.Diagnostics.MemoryJournal.ObserveManagedObject(snapshot.Maps, "Catalog.DetachedMaps");
-            return snapshot;
         }
         finally
         {
@@ -98,23 +80,23 @@ public sealed partial class MapRepository
     }
 
     /// <summary>轻量获取 Class 名称列表，命中修订版本缓存时不做反序列化与深克隆。</summary>
-    public Task<IReadOnlyList<string>> GetMapClassesAsync() => Task.Run(GetMapClassesCoreAsync);
-
-    private async Task<IReadOnlyList<string>> GetMapClassesCoreAsync()
+    public async Task<IReadOnlyList<string>> GetMapClassesAsync()
     {
         var revision = GetCatalogRevision();
-        if (ClassNamesCache.TryGetValue(CatalogPath, out var cached) && revision == cached.Revision)
-            return cached.Classes.ToArray();
+        if (_cachedClasses.Count > 0 && revision == _cachedClassesRevision)
+            return _cachedClasses;
 
         await Gate.WaitAsync();
         try
         {
             revision = GetCatalogRevision();
-            if (ClassNamesCache.TryGetValue(CatalogPath, out cached) && revision == cached.Revision)
-                return cached.Classes.ToArray();
+            if (_cachedClasses.Count > 0 && revision == _cachedClassesRevision)
+                return _cachedClasses;
 
             var catalog = await ReadCatalogAsync();
-            return catalog.Classes.ToArray();
+            _cachedClasses = catalog.Classes.ToArray();
+            _cachedClassesRevision = revision;
+            return _cachedClasses;
         }
         finally
         {
@@ -188,13 +170,13 @@ public sealed partial class MapRepository
     }
 
     /// <summary>Removes a class and all maps assigned to it as one catalog operation.</summary>
-    public async Task<MapClassDeletionResult> DeleteClassAsync(string className, IReadOnlySet<Guid>? expectedMapIds = null)
-        => await DeleteClassCoreAsync(className, preserveOneClass: true, expectedMapIds);
+    public async Task<MapClassDeletionResult> DeleteClassAsync(string className)
+        => await DeleteClassCoreAsync(className, preserveOneClass: true);
 
     internal Task<MapClassDeletionResult> RollBackImportedClassAsync(string className)
         => DeleteClassCoreAsync(className, preserveOneClass: false);
 
-    private async Task<MapClassDeletionResult> DeleteClassCoreAsync(string className, bool preserveOneClass, IReadOnlySet<Guid>? expectedMapIds = null)
+    private async Task<MapClassDeletionResult> DeleteClassCoreAsync(string className, bool preserveOneClass)
     {
         await Gate.WaitAsync();
         var stagedDirectories = new List<(string Original, string Staged)>();
@@ -210,14 +192,8 @@ public sealed partial class MapRepository
 
             var mapsToDelete = catalog.Maps.Where(map => string.Equals(
                 map.Class, canonicalName, StringComparison.OrdinalIgnoreCase)).ToArray();
-            // Check inside the catalog gate, before moving any resources. The
-            // confirmed class must still contain precisely the confirmed maps.
-            if (expectedMapIds is not null && !mapsToDelete.Select(map => map.Id).ToHashSet().SetEquals(expectedMapIds))
-                throw new InvalidOperationException("地图类内容已变化，请重新确认删除。");
-            var stagedMaps = 0;
             foreach (var map in mapsToDelete)
             {
-                MapOperationProgress.Report(.8 * stagedMaps++ / Math.Max(1, mapsToDelete.Length), "正在删除地图类……");
                 var original = GetMapDirectory(map.Id);
                 if (!Directory.Exists(original))
                     continue;
@@ -284,11 +260,6 @@ public sealed partial class MapRepository
     }
 
     public string GetFloorOverlayPath(MapRecord record, string floorKey)
-        => record.IsCoCreationTemplate && record.AppearancePalette is not null
-            ? GetAppearancePath(record, floorKey, thumbnail: false)
-            : GetOriginalFloorOverlayPath(record, floorKey);
-
-    private string GetOriginalFloorOverlayPath(MapRecord record, string floorKey)
     {
         var floor = record.Floors.FirstOrDefault(candidate => candidate.Key == floorKey)
             ?? throw new InvalidOperationException($"地图不包含楼层 '{floorKey}'。");
@@ -298,11 +269,6 @@ public sealed partial class MapRepository
     }
 
     public string GetFloorThumbnailPath(MapRecord record, string floorKey)
-        => record.IsCoCreationTemplate && record.AppearancePalette is not null
-            ? GetAppearancePath(record, floorKey, thumbnail: true)
-            : GetOriginalFloorThumbnailPath(record, floorKey);
-
-    private string GetOriginalFloorThumbnailPath(MapRecord record, string floorKey)
     {
         var floor = record.Floors.FirstOrDefault(candidate => candidate.Key == floorKey)
             ?? throw new InvalidOperationException($"地图不包含楼层 '{floorKey}'。");

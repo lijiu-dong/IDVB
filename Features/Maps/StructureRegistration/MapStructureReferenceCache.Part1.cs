@@ -21,8 +21,8 @@ public sealed partial class MapStructureReferenceCache : IDisposable
 
     /// <summary>
     /// Discards all cached reference features and releases unmanaged memory.
-    /// Retires cache ownership immediately. Active readers keep their native
-    /// pixels until the last lease returns, including across repeated resets.
+    /// Entries in both resident cache and deferred-eviction map are disposed,
+    /// and all lease accounting is reset.
     /// </summary>
     public void Clear()
     {
@@ -32,14 +32,15 @@ public sealed partial class MapStructureReferenceCache : IDisposable
             _generation++;
             foreach (var (_, (features, _)) in _memoryCache)
             {
-                if (_leaseCounts.GetValueOrDefault(features) > 0)
-                    _evictedWhileLeased.Add(features);
-                else
-                    features.Dispose();
+                features.Dispose();
+            }
+            foreach (var features in _evictedWhileLeased.Values)
+            {
+                features.Dispose();
             }
             _memoryCache.Clear();
-            // Already-retired borrowers belong to their feature generation,
-            // not the reusable cache key. Clear must not erase their counts.
+            _evictedWhileLeased.Clear();
+            _leaseCounts.Clear();
             _lruList.Clear();
         }
     }
@@ -58,44 +59,14 @@ public sealed partial class MapStructureReferenceCache : IDisposable
                 var cached = _memoryCache[key];
                 _memoryCache.Remove(key);
                 _lruList.Remove(cached.Node);
-                if (_leaseCounts.GetValueOrDefault(cached.Features) > 0)
-                    _evictedWhileLeased.Add(cached.Features);
+                if (_leaseCounts.GetValueOrDefault(key) > 0)
+                    _evictedWhileLeased[key] = cached.Features;
                 else
                     dispose.Add(cached.Features);
             }
         }
         foreach (var features in dispose)
             features.Dispose();
-    }
-
-    // Prebuilt references are immutable pixels, independent of identity,
-    // alignment and scale state. Their separate one-entry budget and complete
-    // cache key remain in force; a rescan should not rebuild the same raster.
-    // Legacy descriptor references are not retained by this rescan policy.
-    internal void PrepareForRescan()
-    {
-        var dispose = new List<MapStructureFeatures>();
-        lock (_memoryGate)
-        {
-            // Reject producers started before this reset without retiring a
-            // healthy resident prebuilt owner or invalidating its readers.
-            _generation++;
-            foreach (var key in _memoryCache.Keys.Where(key =>
-                key.Profile != MapStructurePreprocessingProfile.PrebuiltStructureLine).ToArray())
-            {
-                var cached = _memoryCache[key];
-                _memoryCache.Remove(key);
-                _lruList.Remove(cached.Node);
-                if (_leaseCounts.GetValueOrDefault(cached.Features) > 0) _evictedWhileLeased.Add(cached.Features);
-                else dispose.Add(cached.Features);
-            }
-            foreach (var cached in _memoryCache.Values)
-            {
-                if (_leaseCounts.GetValueOrDefault(cached.Features) == 0)
-                    cached.Features.CompactReferenceDistanceRaster();
-            }
-        }
-        foreach (var features in dispose) features.Dispose();
     }
 
     private sealed class KeyPointDocument

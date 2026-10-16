@@ -62,8 +62,7 @@ public sealed partial class SessionOrchestrator
             return new CandidateSelectionResolution(null, false);
         // An unresolved automatic scan has already failed the shared identity decision.
         // Headless presentation must not turn its first geometrically plausible choice into a lock.
-        if (_activeCandidateSelector is { AutomaticOnly: true }
-            || (_headless && _activeCandidateSelector is null && requiresExplicitSelection))
+        if (_headless && _activeCandidateSelector is null && requiresExplicitSelection)
         {
             _lastCandidateChoices = orderedCandidates;
             _statusMessage = "地图身份未确定；已保留候选，等待明确选择。";
@@ -303,7 +302,7 @@ public sealed partial class SessionOrchestrator
             IReadOnlyList<MapRecognitionChoice> orderedCandidates,
             string mapClass)
     {
-        var maps = (await _mapRepository.GetClassCatalogSnapshotAsync(mapClass)).Maps;
+        var maps = await _mapRepository.GetMapsAsync();
         return MapCandidatePresentationRules.AppendCatalogMaps(
             orderedCandidates,
             maps,
@@ -450,7 +449,7 @@ public sealed partial class SessionOrchestrator
         RefreshMiniMapForCurrentFloor();
         StateChanged?.Invoke(this, EventArgs.Empty);
 
-        QueueSelectedMapResourcePreparation(identityLock.Map.Id); QueueVariantIdentityNotification(identityLock.Map.Id, userConfirmed);
+        QueueVariantIdentityNotification(identityLock.Map.Id, userConfirmed);
 
         _logCollector.Append(
             MapLogCategory.Session,
@@ -475,4 +474,3 @@ public sealed partial class SessionOrchestrator
  * 数据流：输入通常来自截图、识别结果、会话状态、配置或持久化缓存；输出应继续交给识别、对齐、渲染、日志或发布流程使用。调用方应遵守类型契约，并注意空值、超时、置信度和取消状态。
  * 维护约束：这里只补充说明，不改变业务逻辑。涉及楼层尺度时必须保持楼层之间完全独立；涉及 UI、窗口句柄或系统资源时应遵守生命周期与释放约定；调整算法时应同步检查相关规则、诊断和测试。
  */
-

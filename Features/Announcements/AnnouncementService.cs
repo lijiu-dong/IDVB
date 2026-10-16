@@ -10,10 +10,6 @@ namespace IDVBuff.Features.Announcements;
 /// </summary>
 public sealed class AnnouncementService
 {
-    // Keep the fixed contract cache alive across refreshes. Short-lived options
-    // otherwise let reflection accessors be collected and emitted again on the
-    // next save. This holds metadata, never announcement instances.
-    private static readonly JsonSerializerOptions StorageJson = new() { WriteIndented = true };
     private static readonly Lazy<AnnouncementService> LazyInstance = new(() => new AnnouncementService());
     public static AnnouncementService Instance => LazyInstance.Value;
 
@@ -234,7 +230,7 @@ public sealed class AnnouncementService
             string json;
             lock (_stateLock)
             {
-                json = JsonSerializer.Serialize(_state, StorageJson);
+                json = JsonSerializer.Serialize(_state, new JsonSerializerOptions { WriteIndented = true });
             }
             await File.WriteAllTextAsync(_stateFilePath, json).ConfigureAwait(false);
         }
@@ -248,7 +244,7 @@ public sealed class AnnouncementService
     {
         try
         {
-            var json = JsonSerializer.Serialize(data, StorageJson);
+            var json = JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true });
             await File.WriteAllTextAsync(_cacheFilePath, json).ConfigureAwait(false);
         }
         catch (Exception ex)

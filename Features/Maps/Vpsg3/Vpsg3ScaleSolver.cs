@@ -27,8 +27,7 @@ public static class Vpsg3ScaleSolver
         ArgumentNullException.ThrowIfNull(preparedFloor);
 
         var cfg = config ?? Vpsg3TuningConfig.Default;
-        using var scratchLease = scratch is null ? Vpsg3SolverScratch.Rent() : null;
-        var sc = scratch ?? scratchLease!.Scratch;
+        var sc = scratch ?? Vpsg3SolverScratch.Current;
 
         var refPrior = preparedFloor.ScalePrior;
         if (!refPrior.FastPathEligible || refPrior.ReferencePitch <= Epsilon)

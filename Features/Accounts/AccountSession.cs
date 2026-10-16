@@ -204,7 +204,7 @@ internal static class AccountSession
         using var form = new MultipartFormDataContent();
         AddFormPart(form, new ByteArrayContent(
             await File.ReadAllBytesAsync(feedPath, cancellationToken)), "feed", "feed.json");
-        AddFormPart(form, new MapPublicationUploadContent(package), "package", Path.GetFileName(packagePath));
+        AddFormPart(form, new StreamContent(package), "package", Path.GetFileName(packagePath));
         AddFormPart(form, new StringContent(Base64Url(link.ContentKey)), "contentKey");
         AddFormPart(form, new StringContent(publication.PackageName), "name");
         var cover = new StreamContent(File.OpenRead(publication.CoverPath));

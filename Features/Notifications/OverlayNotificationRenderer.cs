@@ -115,6 +115,7 @@ public static class OverlayNotificationRenderer
         if (card.Notification.Progress.HasValue)
         {
             var progress = (float)Math.Clamp(card.Notification.Progress.Value, 0.0, 1.0);
+            if (progress > 0.001f)
             {
                 var barHeight = m.ProgressBarThickness;
                 var barWidth = width * progress;
@@ -122,13 +123,11 @@ public static class OverlayNotificationRenderer
 
                 var blueCol = ModulateAlpha(OverlayNotificationTheme.ProgressBarColor, alpha);
                 using var blueBrush = new SolidBrush(blueCol);
-                using var trackBrush = new SolidBrush(ModulateAlpha(Color.FromArgb(100, 0, 145, 234), alpha));
 
                 // 将进度条剪裁在卡片下边缘圆角内，紧贴底部轮廓
                 var gState = g.Save();
                 using var clipRegion = new Region(roundPath);
                 g.SetClip(clipRegion, CombineMode.Replace);
-                g.FillRectangle(trackBrush, x, y + height - barHeight, width, barHeight);
                 g.FillRectangle(blueBrush, progressRect);
                 g.Restore(gState);
             }

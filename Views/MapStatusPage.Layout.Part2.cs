@@ -153,7 +153,7 @@ public sealed partial class MapStatusPage : UserControl
         if (previousTarget is { } previous && previous != target)
             RefreshBindingButtonAppearance(previous);
         RefreshBindingButtonAppearance(target);
-        _status.Text = (target switch
+        _status.Text = target switch
         {
             MapRuntimeBindingTarget.GameMapToggle => "请按下游戏中用于打开/关闭地图的键盘或鼠标按键。",
             MapRuntimeBindingTarget.HideAlignmentResult =>
@@ -166,8 +166,7 @@ public sealed partial class MapStatusPage : UserControl
             MapRuntimeBindingTarget.RestMapDisplay => "请按下用于保留地图身份并重置当前楼层对齐证据的键盘或鼠标按键。",
             MapRuntimeBindingTarget.MatchStateToggle => "请按下用于直接进入或结束对局的键盘或鼠标按键。",
             _ => "请按下用于手动识别的键盘或鼠标按键。"
-        }) + "若用 G HUB 等鼠标驱动在游戏里映射了按键，请切到游戏里再按。";
-        StartForegroundRecording();
+        };
         _root?.Focus(FocusState.Programmatic);
     }
 

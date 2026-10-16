@@ -29,7 +29,6 @@ public sealed class MapClassDiagnosticCoordinator
     public void Trigger(MapRepository repository)
     {
         CancellationTokenSource cancellation;
-        CancellationToken token;
         long generation;
         lock (_gate)
         {
@@ -37,9 +36,8 @@ public sealed class MapClassDiagnosticCoordinator
             _pending?.Dispose();
             _pending = cancellation = new CancellationTokenSource();
             generation = ++_generation;
-            token = cancellation.Token;
         }
-        _ = Task.Run(() => RunAsync(repository, generation, token));
+        _ = Task.Run(() => RunAsync(repository, generation, cancellation.Token));
     }
 
     private async Task RunAsync(MapRepository repository, long generation,
@@ -47,13 +45,9 @@ public sealed class MapClassDiagnosticCoordinator
     {
         try
         {
-            using var memory = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("Catalog.IntegrityDiagnosis");
-            cancellationToken.ThrowIfCancellationRequested();
-            var snapshot = await repository.GetRecognitionCatalogSnapshotAsync(null, cancellationToken).ConfigureAwait(false);
-            snapshot = await repository.HealPrebuiltStructureSnapshotAsync(snapshot, cancellationToken, onlyOutdated: false,
-                recognitionProjection: true)
+            await repository.HealMissingPrebuiltStructureLinesAsync(cancellationToken)
                 .ConfigureAwait(false);
-            var diagnostics = await repository.DiagnoseMapClassesSnapshotAsync(snapshot, cancellationToken)
+            var diagnostics = await repository.DiagnoseMapClassesAsync(cancellationToken)
                 .ConfigureAwait(false);
             var next = diagnostics.ToDictionary(
                 item => item.MapClass, StringComparer.OrdinalIgnoreCase);
@@ -81,12 +75,7 @@ public sealed partial class MapRepository
         CancellationToken cancellationToken = default)
     {
         var catalog = await GetCatalogSnapshotAsync();
-        return await DiagnoseMapClassesSnapshotAsync(catalog, cancellationToken);
-    }
-
-    internal Task<IReadOnlyList<MapClassDiagnostic>> DiagnoseMapClassesSnapshotAsync(
-        MapCatalogSnapshot catalog, CancellationToken cancellationToken) =>
-        Task.Run<IReadOnlyList<MapClassDiagnostic>>(() => catalog.Classes
+        return await Task.Run<IReadOnlyList<MapClassDiagnostic>>(() => catalog.Classes
             .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
             .Select(mapClass => DiagnoseMapClass(
                 mapClass,
@@ -94,6 +83,8 @@ public sealed partial class MapRepository
                     map.Class, mapClass, StringComparison.OrdinalIgnoreCase)).ToArray(),
                 cancellationToken))
             .ToArray(), cancellationToken);
+    }
+
     private MapClassDiagnostic DiagnoseMapClass(
         string mapClass,
         IReadOnlyList<MapRecord> maps,
@@ -122,7 +113,7 @@ public sealed partial class MapRepository
                     floor.ImageFileLength, floor.ImageSha256);
                 CheckImageAsset(problems, prefix, "识别图", () => GetFloorRecognitionPath(map, floor.Key),
                     floor.RecognitionFileLength, floor.RecognitionSha256);
-                CheckImageAsset(problems, prefix, "叠加图", () => GetOriginalFloorOverlayPath(map, floor.Key),
+                CheckImageAsset(problems, prefix, "叠加图", () => GetFloorOverlayPath(map, floor.Key),
                     floor.OverlayFileLength, floor.OverlaySha256);
 
                 if (!HasPrebuiltStructureLine(map, floor.Key))

@@ -163,8 +163,6 @@ public sealed class MapSubscriptionRecord
     public string? LastAppliedPlaintextSha256 { get; set; }
     public string? LastAppliedVersion { get; set; }
     public Dictionary<string, string> ClassBindings { get; set; } = new(StringComparer.OrdinalIgnoreCase);
-    /// <summary>Own-publication source map IDs mapped to individually saved local drafts.</summary>
-    public Dictionary<Guid, Guid> CoCreationMapBindings { get; set; } = [];
     public List<Guid> InstalledMapIds { get; set; } = [];
     public string? LastError { get; set; }
 }
@@ -191,7 +189,6 @@ public sealed class MapSubscriptionStore
         {
             record.ClassBindings = new Dictionary<string, string>(
                 record.ClassBindings ?? [], StringComparer.OrdinalIgnoreCase);
-            record.CoCreationMapBindings ??= [];
             record.InstalledMapIds ??= [];
         }
         return records;

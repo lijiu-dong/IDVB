@@ -7,11 +7,9 @@ namespace IDVBuff.Views;
 public sealed partial class MapListPage
 {
     private bool _updatingTagFilters;
-    private Button? _mapFilterButton;
     private Button CreateFilterButton()
     {
         var button = CreateSecondaryButton("筛选");
-        _mapFilterButton = button;
         button.MinWidth = 0;
         button.MinHeight = 45;
         button.Padding = new Thickness(14, 0, 14, 0);
@@ -20,19 +18,6 @@ public sealed partial class MapListPage
     }
 
     private Flyout CreateFilterFlyout()
-    {
-        var flyout = new Flyout();
-        string? displayedClass = null;
-        flyout.Opening += (_, _) =>
-        {
-            if (displayedClass == _selectedClass && flyout.Content is not null) return;
-            flyout.Content = CreateFilterContent();
-            displayedClass = _selectedClass;
-        };
-        return flyout;
-    }
-
-    private FrameworkElement CreateFilterContent()
     {
         var content = new StackPanel { Spacing = 0, MinWidth = 420 };
         var availableGroups = _filterGroups
@@ -122,11 +107,14 @@ public sealed partial class MapListPage
             Child = clear
         });
 
-        return new ScrollViewer
+        return new Flyout
         {
-            MaxHeight = 520,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            Content = content
+            Content = new ScrollViewer
+            {
+                MaxHeight = 520,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                Content = content
+            }
         };
     }
 
@@ -169,35 +157,42 @@ public sealed partial class MapListPage
         if (_mapCardsSurface is null)
             return;
         var maps = GetVisibleMaps();
-        ReleaseMapCardPreviews();
         _selectedMapIds.RemoveWhere(id => maps.All(map => map.Id != id));
         _cardBorders.Clear();
-        if (_mapCardsRepeater is not null) _mapCardsRepeater.ItemsSource = MapCardRows(maps);
-        if (_mapCardsEmpty is not null)
-        {
-            _mapCardsEmpty.Text = _selectedTagFilters.Count == 0 ? "尚未导入地图" : "没有符合筛选条件的地图";
-            _mapCardsEmpty.Visibility = maps.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        }
+        _mapCardsSurface.Child = CreateMapCardsContent(maps);
         UpdateSelectedCardVisuals();
     }
 
     private UIElement CreateMapCardsContent(IReadOnlyList<MapRecord> maps)
     {
-        var content = new Grid();
-        _mapCardsRepeater = CreateVirtualMapCards(maps);
-        content.Children.Add(_mapCardsRepeater);
-        _mapCardsEmpty = new TextBlock
+        if (maps.Count == 0)
+        {
+            var empty = new Grid();
+            empty.Children.Add(new TextBlock
             {
                 Text = _selectedTagFilters.Count == 0 ? "尚未导入地图" : "没有符合筛选条件的地图",
                 FontSize = 16,
                 Foreground = FluentTheme.Brush(this, "TextFillColorSecondaryBrush"),
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center,
-                TextAlignment = TextAlignment.Center,
-                Visibility = maps.Count == 0 ? Visibility.Visible : Visibility.Collapsed
-        };
-        content.Children.Add(_mapCardsEmpty);
-        return content;
+                TextAlignment = TextAlignment.Center
+            });
+            return empty;
+        }
+
+        var grid = new Grid { Margin = new Thickness(7, 12, 7, 12) };
+        for (var column = 0; column < 3; column++)
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        for (var index = 0; index < maps.Count; index++)
+        {
+            if (index % 3 == 0)
+                grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            var card = CreateMapCard(maps[index]);
+            Grid.SetRow(card, index / 3);
+            Grid.SetColumn(card, index % 3);
+            grid.Children.Add(card);
+        }
+        return grid;
     }
 
 }

@@ -19,8 +19,7 @@ internal static class ModuleNavigationRules
     // their normal factory can be used without the runtime service graph.
     internal static bool IsSafeModeRestrictedModule(string moduleId) =>
         !IsStandaloneModule(moduleId)
-        && !string.Equals(moduleId, "map-list", StringComparison.OrdinalIgnoreCase)
-        && !string.Equals(moduleId, "co-creation-maps", StringComparison.OrdinalIgnoreCase);
+        && !string.Equals(moduleId, "map-list", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsStandaloneModule(string moduleId) =>
         moduleId.ToLowerInvariant() is

@@ -24,49 +24,11 @@ public sealed partial class MapRepository
         CancellationToken cancellationToken = default, bool onlyOutdated = false)
     {
         var snapshot = await GetCatalogSnapshotAsync();
-        await HealPrebuiltStructureSnapshotAsync(snapshot, cancellationToken, onlyOutdated);
-    }
-
-    // A refresh owns this detached snapshot. Preserve it through validation;
-    // reread only when a repair actually changes the catalog on disk.
-    internal async Task<MapCatalogSnapshot> HealPrebuiltStructureSnapshotAsync(
-        MapCatalogSnapshot snapshot, CancellationToken cancellationToken, bool onlyOutdated,
-        bool recognitionProjection = false, string? residentClass = null)
-    {
-        using var memory = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("Catalog.HealPrebuilt", $"maps={snapshot.Maps.Count}");
-        var revision = GetCatalogRevision();
-        Task<MapCatalogSnapshot> ReloadAsync() => recognitionProjection
-            ? GetRecognitionCatalogSnapshotAsync(residentClass, cancellationToken) : GetCatalogSnapshotAsync();
-        var fixedMaps = new List<MapRecord>();
-        var checkedMaps = 0;
-        foreach (var map in snapshot.Maps)
-        {
-            MapOperationProgress.Report(.1 * checkedMaps++ / Math.Max(1, snapshot.Maps.Count),
-                $"正在检查地图轮廓：{map.DisplayName}……");
-            cancellationToken.ThrowIfCancellationRequested();
-            if (map.IsCoCreationTemplate || await _fixedTemplates.GetFixedStructureAsync(map.SourceVisualSha256) is not null)
-                fixedMaps.Add(map);
-        }
-        if (fixedMaps.Count > 0)
-        {
-            await MapOperationProgress.RunAsync(.1, .45, () => EnsureDerivedAssetsFromSnapshotAsync(fixedMaps, snapshot.ClassProperties));
-            if (GetCatalogRevision() != revision)
-            {
-                snapshot = await ReloadAsync();
-                revision = GetCatalogRevision();
-            }
-        }
-        var checkedClasses = 0;
         foreach (var mapClass in snapshot.Classes)
         {
-            using var classRange = MapOperationProgress.Range(
-                .45 + .55 * checkedClasses++ / Math.Max(1, snapshot.Classes.Count),
-                .45 + .55 * checkedClasses / Math.Max(1, snapshot.Classes.Count));
-            MapOperationProgress.Report(0, $"正在检查轮廓版本：{mapClass}……");
             cancellationToken.ThrowIfCancellationRequested();
             var maps = snapshot.Maps.Where(map => string.Equals(
-                map.Class, mapClass, StringComparison.OrdinalIgnoreCase)
-                && !map.IsCoCreationTemplate).ToArray();
+                map.Class, mapClass, StringComparison.OrdinalIgnoreCase)).ToArray();
             if (onlyOutdated && !maps.SelectMany(MapFloorRules.GetOrderedFloors)
                 .Any(floor => floor.PrebuiltStructureLine is { IsComplete: true, IsCurrent: false }))
                 continue;
@@ -91,26 +53,16 @@ public sealed partial class MapRepository
             if (algorithmPath is null)
                 continue;
 
-            await GeneratePrebuiltStructureLinesCoreAsync(
-                mapClass, algorithmPath, null, cancellationToken, preserveFixedTemplates: true);
+            await GeneratePrebuiltStructureLinesAsync(
+                mapClass, algorithmPath, cancellationToken: cancellationToken);
         }
-        MapOperationProgress.Report(1, "地图轮廓检查完成");
-        return GetCatalogRevision() == revision ? snapshot : await ReloadAsync();
     }
 
-    public Task<PrebuiltStructureBatchResult> GeneratePrebuiltStructureLinesAsync(
+    public async Task<PrebuiltStructureBatchResult> GeneratePrebuiltStructureLinesAsync(
         string className,
         string algorithmPath,
         IProgress<PrebuiltStructureBatchProgress>? progress = null,
         CancellationToken cancellationToken = default)
-        => GeneratePrebuiltStructureLinesCoreAsync(className, algorithmPath, progress, cancellationToken, preserveFixedTemplates: false);
-
-    private async Task<PrebuiltStructureBatchResult> GeneratePrebuiltStructureLinesCoreAsync(
-        string className,
-        string algorithmPath,
-        IProgress<PrebuiltStructureBatchProgress>? progress,
-        CancellationToken cancellationToken,
-        bool preserveFixedTemplates)
     {
         var engine = new IdvaStructureLineEngine();
         var algorithm = await engine.LoadAsync(algorithmPath, cancellationToken);
@@ -121,23 +73,17 @@ public sealed partial class MapRepository
             .ToArray();
         if (selectedMaps.Length == 0)
             throw new InvalidOperationException("当前地图类没有可处理的地图。");
-        if (!preserveFixedTemplates && selectedMaps.Any(map => map.IsCoCreationTemplate))
-            throw new InvalidOperationException("共创模板自带固定二值轮廓，不能更换或重新生成。");
-        await MapOperationProgress.RunAsync(0, .2, () => EnsureDerivedAssetsAsync(selectedMaps));
+        await EnsureDerivedAssetsAsync(selectedMaps);
         var refreshed = await GetCatalogSnapshotAsync();
         selectedMaps = refreshed.Maps
-            .Where(map => string.Equals(map.Class, className, StringComparison.OrdinalIgnoreCase)
-                && (!preserveFixedTemplates || !map.IsCoCreationTemplate))
+            .Where(map => string.Equals(map.Class, className, StringComparison.OrdinalIgnoreCase))
             .OrderBy(map => map.SequenceNumber)
             .ToArray();
-        if (!preserveFixedTemplates && selectedMaps.Any(map => map.IsCoCreationTemplate))
-            throw new InvalidOperationException("共创模板自带固定二值轮廓，不能更换或重新生成。");
         var totalFloors = selectedMaps.Sum(map => MapFloorRules.GetOrderedFloors(map).Count);
         var totalWork = Math.Max(1, totalFloors * algorithm.Pipeline.Count);
         var staging = Path.Combine(_rootDirectory, $".prebuilt-{Guid.NewGuid():N}");
         Directory.CreateDirectory(staging);
         var generated = new List<GeneratedPrebuiltLine>();
-        var report = MapOperationProgress.Capture();
         try
         {
             var floorOrdinal = 0;
@@ -156,22 +102,16 @@ public sealed partial class MapRepository
                         algorithm,
                         sourcePath,
                         stagedOutput,
-                        stage =>
-                        {
-                            report(.2 + .75 * (currentFloor * algorithm.Pipeline.Count
-                                + stage.StageIndex + stage.StageFraction) / totalWork,
-                                $"{map.DisplayName} · {floor.DisplayName} · 正在{DisplayStructureStage(stage.StageName)}……");
-                            progress?.Report(new PrebuiltStructureBatchProgress(
-                                map.DisplayName,
-                                floor.DisplayName,
-                                stage.StageName,
-                                currentFloor * algorithm.Pipeline.Count
-                                    + stage.StageIndex
-                                    + stage.StageFraction,
-                                totalWork,
-                                currentFloor,
-                                totalFloors));
-                        },
+                        stage => progress?.Report(new PrebuiltStructureBatchProgress(
+                            map.DisplayName,
+                            floor.DisplayName,
+                            stage.StageName,
+                            currentFloor * algorithm.Pipeline.Count
+                                + stage.StageIndex
+                                + stage.StageFraction,
+                            totalWork,
+                            currentFloor,
+                            totalFloors)),
                         cancellationToken), cancellationToken);
                     var outputSha = await ComputeFileSha256Async(stagedOutput, cancellationToken);
                     generated.Add(new GeneratedPrebuiltLine(
@@ -194,14 +134,11 @@ public sealed partial class MapRepository
                         totalFloors));
                 }
             }
-            MapOperationProgress.Report(.95, "正在保存地图轮廓……");
             await CommitPrebuiltStructureLinesAsync(
                 className,
                 algorithm,
                 generated,
-                cancellationToken,
-                preserveFixedTemplates);
-            MapOperationProgress.Report(1, "地图轮廓生成完成");
+                cancellationToken);
             return new PrebuiltStructureBatchResult(
                 algorithm.AlgorithmId,
                 algorithm.DisplayName,
@@ -261,26 +198,28 @@ public sealed partial class MapRepository
 
     public bool HasCompletePrebuiltStructureLines(MapRecord map) =>
         MapFloorRules.GetOrderedFloors(map).All(floor =>
-            HasPrebuiltStructureLine(map, floor.Key)
+            floor.PrebuiltStructureLine?.IsComplete is true
+            && string.Equals(
+                floor.PrebuiltStructureLine.SourceSha256,
+                floor.RecognitionSha256,
+                StringComparison.OrdinalIgnoreCase)
+            && File.Exists(GetPrebuiltStructureLinePath(map, floor.Key))
+            && new FileInfo(GetPrebuiltStructureLinePath(map, floor.Key)).Length == floor.PrebuiltStructureLine.FileLength
             && File.Exists(GetPrebuiltStructureAlgorithmPath(map, floor.Key)));
 
     private async Task CommitPrebuiltStructureLinesAsync(
         string className,
         IdvaStructureAlgorithm algorithm,
         IReadOnlyList<GeneratedPrebuiltLine> generated,
-        CancellationToken cancellationToken,
-        bool preserveFixedTemplates)
+        CancellationToken cancellationToken)
     {
         await Gate.WaitAsync(cancellationToken);
         try
         {
             var catalog = await ReadCatalogAsync();
             var latestMaps = catalog.Maps
-                .Where(map => string.Equals(map.Class, className, StringComparison.OrdinalIgnoreCase)
-                    && (!preserveFixedTemplates || !map.IsCoCreationTemplate))
+                .Where(map => string.Equals(map.Class, className, StringComparison.OrdinalIgnoreCase))
                 .ToArray();
-            if (latestMaps.Any(map => map.IsCoCreationTemplate))
-                throw new InvalidOperationException("共创模板自带固定二值轮廓，不能更换或重新生成。");
             if (latestMaps.Sum(map => MapFloorRules.GetOrderedFloors(map).Count) != generated.Count)
                 throw new InvalidOperationException("批处理期间地图类内容发生变化，请重新生成。");
             foreach (var item in generated)
@@ -456,19 +395,4 @@ public sealed partial class MapRepository
         int Width,
         int Height,
         long FileLength);
-    private static string DisplayStructureStage(string stage) => stage switch
-    {
-        "color_classification" => "颜色分类",
-        "class_conflict_resolution" => "类别消歧",
-        "morph_open" => "形态学开运算",
-        "remove_small_components" => "过滤小连通域",
-        "morph_close" => "形态学闭运算",
-        "fill_holes" => "填充孔洞",
-        "directional_bridge" => "定向桥接",
-        "fill_small_holes" => "修复小孔洞",
-        "contours" or "room_contours" or "corridor_contours" => "提取轮廓",
-        "draw_edges" => "绘制结构线",
-        "已完成" => "已完成",
-        _ => stage
-    };
 }

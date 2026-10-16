@@ -28,8 +28,6 @@ public sealed class ModuleCatalog
             throw new InvalidOperationException($"The module ID '{module.Id}' is already registered.");
 
         _modules.Add(new AppModule(module));
-        IDVBuff.Core.Diagnostics.MemoryJournal.Current?.Record("ui-module-registered",
-            new { module.Id, module.DisplayName, assembly = module.GetType().Assembly.GetName().Name });
     }
 
     public AppModule GetRequired(string id) =>

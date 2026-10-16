@@ -9,7 +9,6 @@ namespace IDVBuff.Features.Maps;
 public sealed class IdvmImportPlan : IAsyncDisposable
 {
     private bool _disposed;
-    private IReadOnlyList<MapImportClassDraft> _classes;
 
     internal IdvmImportPlan(
         Guid packageId,
@@ -18,25 +17,14 @@ public sealed class IdvmImportPlan : IAsyncDisposable
     {
         PackageId = packageId;
         StagingDirectory = stagingDirectory;
-        _classes = classes;
-        ClassCount = classes.Count;
-        MapCount = classes.Sum(item => item.Maps.Count);
-        IDVBuff.Core.Diagnostics.MemoryJournal.TrackResource(this, "Idvm.ImportPlan", null);
-        IDVBuff.Core.Diagnostics.MemoryJournal.ObserveManagedObject(classes, "Idvm.ImportPlan.Classes");
+        Classes = classes;
     }
 
     public Guid PackageId { get; }
-    public int ClassCount { get; }
-    public int MapCount { get; }
+    public int ClassCount => Classes.Count;
+    public int MapCount => Classes.Sum(item => item.Maps.Count);
     internal string StagingDirectory { get; }
-    internal IReadOnlyList<MapImportClassDraft> Classes
-    {
-        get
-        {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-            return _classes;
-        }
-    }
+    internal IReadOnlyList<MapImportClassDraft> Classes { get; }
     internal bool IsDisposed => _disposed;
 
     public ValueTask DisposeAsync()
@@ -44,10 +32,6 @@ public sealed class IdvmImportPlan : IAsyncDisposable
         if (_disposed)
             return ValueTask.CompletedTask;
         _disposed = true;
-        // The caller may retain the closed plan for its identity/counts. It no
-        // longer owns editable drafts or their recognition/navigation payloads.
-        _classes = [];
-        IDVBuff.Core.Diagnostics.MemoryJournal.ReleaseResource(this);
         try
         {
             if (Directory.Exists(StagingDirectory))
@@ -64,9 +48,6 @@ public sealed class IdvmImportPlan : IAsyncDisposable
 /// <summary>Reads and writes the portable, untrusted IDVM interchange format.</summary>
 public sealed partial class IdvmPackageService
 {
-#if IDVB_DEVELOPMENT_BUILD
-    internal static Func<CancellationToken, Task>? DevelopmentImportInspectionPause;
-#endif
     private const int HeaderSize = 80;
     private const int MaxEntries = 4096;
     private const long MaxSingleFileBytes = 256L * 1024 * 1024;
@@ -77,7 +58,7 @@ public sealed partial class IdvmPackageService
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         PropertyNameCaseInsensitive = false,
-        WriteIndented = false,
+        WriteIndented = true,
         MaxDepth = 64,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
@@ -95,38 +76,15 @@ public sealed partial class IdvmPackageService
         IdvmExportScope scope,
         string? className,
         string destination,
-        CancellationToken cancellationToken = default,
-        IdvmCompressionMode compressionMode = IdvmCompressionMode.Maximum)
+        CancellationToken cancellationToken = default)
     {
-        using var memory = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("Idvm.Export", className ?? "all-classes");
         if (string.IsNullOrWhiteSpace(destination))
             throw new ArgumentException("导出目标不能为空。", nameof(destination));
-        if (!Enum.IsDefined(compressionMode))
-            throw new ArgumentOutOfRangeException(nameof(compressionMode));
 
-        cancellationToken.ThrowIfCancellationRequested();
-        // A current-class export must not retain unrelated maps throughout
-        // image validation and compression. The repository still performs its
-        // normal catalog normalization/migration before detaching the subset.
-        var snapshot = scope == IdvmExportScope.CurrentClass && !string.IsNullOrWhiteSpace(className)
-            ? await _repository.GetClassCatalogSnapshotAsync(className)
-            : await _repository.GetCatalogSnapshotAsync();
+        var snapshot = await _repository.GetCatalogSnapshotAsync();
         var selectedMaps = SelectMaps(snapshot.Maps, scope, className);
-        IDVBuff.Core.Diagnostics.MemoryJournal.Current?.Record("export-selection",
-            new { scope = scope.ToString(), className, snapshotMapCount = snapshot.Maps.Count, selectedMapCount = selectedMaps.Length });
         if (selectedMaps.Length == 0)
             throw new InvalidOperationException("所选范围没有可导出的地图。");
-        // Reject incomplete local drawing data before decoding images/loading
-        // navigation/compressing. Never invent lost route geometry or export a
-        // package that the same reader cannot open.
-        foreach (var map in selectedMaps)
-            foreach (var floor in MapFloorRules.GetOrderedFloors(map))
-                foreach (var annotation in map.Recognition.GetFloor(floor.Key)!.Annotations)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    if (!annotation.IsValid)
-                        throw new InvalidDataException($"地图“{map.Class} / {map.DisplayName}”的楼层“{floor.DisplayName}”含有无效标注（{annotation.Id}），请先在地图编辑器中检查；原始标注未被修改。");
-                }
 
         var selectedClasses = snapshot.Classes
             .Where(name => selectedMaps.Any(map => string.Equals(
@@ -149,22 +107,17 @@ public sealed partial class IdvmPackageService
                 name => name,
                 _ => Guid.NewGuid(),
                 StringComparer.OrdinalIgnoreCase);
-            var hasNavigation = selectedMaps.Any(map => map.HasNavigation);
-            var compressed = compressionMode == IdvmCompressionMode.Maximum;
-            var formatVersion = compressed ? "1.6" : hasNavigation ? "1.5" : "1.4";
             var manifest = new ManifestDto
             {
                 Format = "idvm",
-                FormatVersion = formatVersion,
+                FormatVersion = "1.4",
                 PackageType = "class-set",
                 PackageId = packageId,
                 CreatedAt = createdAt,
-                MinimumReader = formatVersion,
-                Compression = compressed ? SolidCompression : null,
-                SupportedPlatforms = compressed || hasNavigation ? ["windows"] : IdvmPlatformCompatibility.All.ToList(),
+                MinimumReader = "1.4",
+                SupportedPlatforms = IdvmPlatformCompatibility.All.ToList(),
                 Capabilities = new CapabilitiesDto
                 {
-                    NavigationTopology = hasNavigation,
                     FloorMarkerKeys = true,
                     MapTags = true,
                     PrebuiltStructureLines = selectedMaps.Any(map =>
@@ -205,7 +158,6 @@ public sealed partial class IdvmPackageService
                 foreach (var map in maps)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    MapOperationProgress.Report(.55 * manifest.Maps.Count / selectedMaps.Length, "正在整理地图资源……");
                     manifest.Maps.Add(await WriteMapPayloadAsync(
                         staging,
                         classId,
@@ -232,11 +184,9 @@ public sealed partial class IdvmPackageService
                 });
             }
 
-            var payloadFiles = Directory.EnumerateFiles(staging, "*", SearchOption.AllDirectories)
-                .OrderBy(path => path, StringComparer.Ordinal).ToArray();
-            foreach (var file in payloadFiles)
+            foreach (var file in Directory.EnumerateFiles(staging, "*", SearchOption.AllDirectories)
+                .OrderBy(path => path, StringComparer.Ordinal))
             {
-                MapOperationProgress.Report(.55 + .1 * manifest.Files.Count / payloadFiles.Length, "正在校验地图资源……");
                 var relative = ToLogicalPath(staging, file);
                 manifest.Files.Add(new ManifestFileDto
                 {
@@ -246,22 +196,13 @@ public sealed partial class IdvmPackageService
                 });
             }
 
-            ValidateExportLimits(manifest);
-            if (compressed)
-                await MapOperationProgress.RunAsync(.65, .9, () => WriteSolidPayloadAsync(staging, manifest, cancellationToken));
             var manifestBytes = SerializeUtf8(manifest);
-            if (manifestBytes.Length > MaxJsonBytes)
-                throw new InvalidDataException("IDVM manifest 超过 8 MiB。");
-            ValidateExportLimits(manifest, manifestBytes.Length);
             var manifestPath = Path.Combine(staging, "manifest.json");
             await File.WriteAllBytesAsync(manifestPath, manifestBytes, cancellationToken);
-            var header = CreateHeader(packageId, createdAt, SHA256.HashData(manifestBytes),
-                compressed ? (ushort)6 : hasNavigation ? (ushort)5 : (ushort)4);
+            var header = CreateHeader(packageId, createdAt, SHA256.HashData(manifestBytes));
             await File.WriteAllBytesAsync(Path.Combine(staging, "header"), header, cancellationToken);
 
-            await MapOperationProgress.RunAsync(compressed ? .9 : .65, .98, () => CreateArchiveAsync(staging, temporaryDestination, cancellationToken, compressed));
-            MapOperationProgress.Report(.98, "正在保存数据包……");
-            cancellationToken.ThrowIfCancellationRequested();
+            await CreateArchiveAsync(staging, temporaryDestination, cancellationToken);
             File.Move(temporaryDestination, destination, overwrite: true);
         }
         finally
@@ -286,10 +227,9 @@ public sealed partial class IdvmPackageService
         var staging = CreateTemporaryDirectory("inspect");
         try
         {
-            await MapOperationProgress.RunAsync(0, .25, () => ExtractPackageAsync(packagePath, staging, cancellationToken));
-            MapOperationProgress.Report(.25, "正在验证数据包……");
-            var manifest = await MapOperationProgress.RunAsync(.25, .65, () => ValidatePackageAsync(staging, cancellationToken));
-            var classes = await MapOperationProgress.RunAsync(.65, 1, () => BuildImportDraftsAsync(staging, manifest, cancellationToken));
+            await ExtractPackageAsync(packagePath, staging, cancellationToken);
+            var manifest = await ValidatePackageAsync(staging, cancellationToken);
+            var classes = await BuildImportDraftsAsync(staging, manifest, cancellationToken);
             return new IdvmImportPlan(manifest.PackageId, staging, classes);
         }
         catch
@@ -309,11 +249,7 @@ public sealed partial class IdvmPackageService
             throw new InvalidOperationException("IDVM 导入计划已失效，请重新选择数据包。");
         try
         {
-#if IDVB_DEVELOPMENT_BUILD
-            if (DevelopmentImportInspectionPause is { } pause) await pause(cancellationToken);
-#endif
-            var result = await MapOperationProgress.RunAsync(0, .97, () => _repository.ImportBatchAsync(plan.Classes, cancellationToken));
-            MapOperationProgress.Report(.97, "正在合并地图标签……");
+            var result = await _repository.ImportBatchAsync(plan.Classes, cancellationToken);
             await MergeImportedTagsAsync(plan.Classes);
             return new IdvmImportResult(
                 plan.PackageId,
@@ -327,6 +263,225 @@ public sealed partial class IdvmPackageService
         }
     }
 
+    // ── 内部类型 ──────────────────────────────────────────────────────
+
+    private readonly record struct ParsedHeader(
+        ushort MajorVersion,
+        ushort MinorVersion,
+        Guid PackageId,
+        long CreatedAtUnixMilliseconds,
+        byte[] ManifestSha256);
+
+    private sealed class ManifestDto
+    {
+        public string Format { get; set; } = string.Empty;
+        public string FormatVersion { get; set; } = string.Empty;
+        public string PackageType { get; set; } = string.Empty;
+        public Guid PackageId { get; set; }
+        public DateTimeOffset CreatedAt { get; set; }
+        public string MinimumReader { get; set; } = string.Empty;
+        public List<string>? SupportedPlatforms { get; set; }
+        public List<ManifestClassDto> Classes { get; set; } = [];
+        public List<ManifestMapDto> Maps { get; set; } = [];
+        public List<ManifestVariantGroupDto> VariantGroups { get; set; } = [];
+        public List<ManifestFileDto> Files { get; set; } = [];
+        public CapabilitiesDto Capabilities { get; set; } = new();
+    }
+
+    private sealed class ManifestClassDto
+    {
+        public Guid ClassId { get; set; }
+        public string Name { get; set; } = string.Empty;
+        public List<Guid> MapIds { get; set; } = [];
+        public ManifestClassPropertiesDto Properties { get; set; } = new();
+    }
+
+    private sealed class ManifestClassPropertiesDto
+    {
+        public bool RemoveBackground { get; set; }
+        public string? ScanFloorKey { get; set; }
+        public bool? ContainsVectorRoutes { get; set; }
+    }
+
+    private sealed class ManifestVariantGroupDto
+    {
+        public Guid GroupId { get; set; }
+        public Guid ClassId { get; set; }
+        public int PaletteSlot { get; set; }
+        public List<Guid> MapIds { get; set; } = [];
+    }
+
+    private sealed class ManifestMapDto
+    {
+        public Guid MapId { get; set; }
+        public int MapVersion { get; set; }
+        public string Name { get; set; } = string.Empty;
+        public Guid ClassId { get; set; }
+        public DateTimeOffset CreatedAt { get; set; }
+        public DateTimeOffset UpdatedAt { get; set; }
+        public string Root { get; set; } = string.Empty;
+        public List<ManifestFloorDto> Floors { get; set; } = [];
+    }
+
+    private sealed class ManifestFloorDto
+    {
+        public string Key { get; set; } = string.Empty;
+        public string DisplayName { get; set; } = string.Empty;
+        public int SortOrder { get; set; }
+        public string Image { get; set; } = string.Empty;
+        public List<string> MarkerKeys { get; set; } = [];
+    }
+
+    private sealed class ManifestFileDto
+    {
+        public string Path { get; set; } = string.Empty;
+        public long Size { get; set; }
+        public string Sha256 { get; set; } = string.Empty;
+    }
+
+    private sealed class CapabilitiesDto
+    {
+        public bool MultiClass { get; set; } = true;
+        public bool MultiFloor { get; set; } = true;
+        public bool RecognitionAnchors { get; set; } = true;
+        public bool DerivedCache { get; set; }
+        public bool BackgroundLayers { get; set; } = true;
+        public bool ClassBackgroundRemoval { get; set; } = true;
+        public bool VariantGroups { get; set; } = true;
+        public bool FloorMarkerKeys { get; set; }
+        public bool MapTags { get; set; }
+        public bool PrebuiltStructureLines { get; set; }
+        public bool? ContainsVectorRoutes { get; set; }
+    }
+
+    private sealed class MetadataDto
+    {
+        public int SchemaVersion { get; set; } = 1;
+        public MetadataMapDto Map { get; set; } = new();
+        public List<MetadataFloorDto> Floors { get; set; } = [];
+        public RecognitionSettingsDto Recognition { get; set; } = new();
+        public List<MetadataTagDto> Tags { get; set; } = [];
+    }
+
+    private sealed class MetadataTagDto
+    {
+        public Guid GroupId { get; set; }
+        public string GroupName { get; set; } = string.Empty;
+        public string Value { get; set; } = string.Empty;
+    }
+
+    private sealed class MetadataMapDto
+    {
+        public Guid Id { get; set; }
+        public Guid ClassId { get; set; }
+        public string Title { get; set; } = string.Empty;
+        public string Source { get; set; } = string.Empty;
+        public Guid? SourceProjectId { get; set; }
+        public long? SourceProjectRevision { get; set; }
+        public string? SourceVisualSha256 { get; set; }
+        public string? SourceStructureSha256 { get; set; }
+        public string CoordinateSystem { get; set; } = string.Empty;
+    }
+
+    private sealed class MetadataFloorDto
+    {
+        public string Key { get; set; } = string.Empty;
+        public string DisplayName { get; set; } = string.Empty;
+        public int SortOrder { get; set; }
+        public string Image { get; set; } = string.Empty;
+        public List<string> MarkerKeys { get; set; } = [];
+        public string? RecognitionImage { get; set; }
+        public int ImageWidth { get; set; }
+        public int ImageHeight { get; set; }
+        public int OrientationDegrees { get; set; }
+        public RectangleDto? RecognitionRegion { get; set; }
+        public List<PointDto> FreeCropPoints { get; set; } = [];
+        public RectangleDto ValidMapBounds { get; set; } = new() { Width = 1d, Height = 1d };
+        /// <summary>侧门特征图元数据（可选，旧版 IDVM 包不含此字段）。</summary>
+        public SideEntranceFeatureDto? SideEntranceFeature { get; set; }
+        public PrebuiltStructureLineDto? PrebuiltStructureLine { get; set; }
+    }
+
+    /// <summary>侧门特征图的可移植元数据，写入 metadata.json。</summary>
+    private sealed class SideEntranceFeatureDto
+    {
+        /// <summary>特征图在 IDVM 包内的逻辑路径（{root}/data/floor-n-side-entrance-feature.png）。</summary>
+        public string File { get; set; } = string.Empty;
+        /// <summary>实际中心点 X（识别图像素，边界挤压后）。</summary>
+        public double CenterX { get; set; }
+        /// <summary>实际中心点 Y（识别图像素，边界挤压后）。</summary>
+        public double CenterY { get; set; }
+        /// <summary>实际裁剪半径（像素）。</summary>
+        public int Radius { get; set; }
+    }
+
+    private sealed class RecognitionSettingsDto
+    {
+        public int SchemaVersion { get; set; } = 1;
+        public WholeImageDto WholeImage { get; set; } = new();
+    }
+
+    private sealed class WholeImageDto
+    {
+        public bool Enabled { get; set; }
+        public double Weight { get; set; } = 0.15d;
+        public double AnnotatedReferencePenalty { get; set; } = 0.55d;
+        public bool ReferenceMayContainAnnotations { get; set; } = true;
+    }
+
+    private sealed class GatesDto
+    {
+        public int SchemaVersion { get; set; } = 1;
+        public List<GateDto> Gates { get; set; } = [];
+    }
+
+    private sealed class GateDto
+    {
+        public string Id { get; set; } = string.Empty;
+        public string FloorKey { get; set; } = string.Empty;
+        public string Role { get; set; } = string.Empty;
+        public RectangleDto Bounds { get; set; } = new();
+        public double DirectionDegrees { get; set; }
+        public bool Enabled { get; set; } = true;
+        public double Confidence { get; set; } = 1d;
+    }
+
+    private sealed class AnchorsDto
+    {
+    public int SchemaVersion { get; set; } = 4;
+        public Dictionary<string, AnchorFloorDto> Floors { get; set; } = new(StringComparer.Ordinal);
+    }
+
+    private sealed class AnchorFloorDto
+    {
+        public List<AnchorDto> Anchors { get; set; } = [];
+        public List<RectangleDto> WholeImageIgnoreRegions { get; set; } = [];
+        public List<AnnotationDto> Annotations { get; set; } = [];
+        // Nullable so schema 4 can distinguish a required field that is
+        // missing from the legacy schema 1–3 shape.
+        public List<BackgroundLayerDto>? BackgroundLayers { get; set; }
+    }
+
+    private sealed class BackgroundLayerDto
+    {
+        public Guid Id { get; set; }
+        public string Semantic { get; set; } = string.Empty;
+        public string Shape { get; set; } = string.Empty;
+        public int BrushSizePixels { get; set; }
+        public List<PointDto> Points { get; set; } = [];
+    }
+
+    private sealed class AnchorDto
+    {
+        public Guid Id { get; set; }
+        public string Key { get; set; } = string.Empty;
+        public string DisplayName { get; set; } = string.Empty;
+        public string Role { get; set; } = string.Empty;
+        public double Weight { get; set; }
+        public RectangleDto? Bounds { get; set; }
+        public bool BuiltIn { get; set; }
+        public string? GateId { get; set; }
+    }
 }
 /*
  * 文件职责：IdvmPackageService。

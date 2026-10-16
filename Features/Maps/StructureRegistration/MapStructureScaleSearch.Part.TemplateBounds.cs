@@ -6,9 +6,10 @@ internal static partial class MapStructureScaleSearch
 {
     internal static Rect FindTemplateBounds(Mat edges)
     {
-        var allBounds = Cv2.BoundingRect(edges);
-        if (allBounds.Width == 0 || allBounds.Height == 0)
+        var allPoints = FindNonZeroPoints(edges);
+        if (allPoints.Length == 0)
             return new Rect();
+        var allBounds = Cv2.BoundingRect(allPoints);
         using var labels = new Mat();
         using var stats = new Mat();
         using var centroids = new Mat();

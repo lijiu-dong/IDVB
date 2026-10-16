@@ -23,14 +23,12 @@ public sealed partial class MapRepository
         WriteImportJournal(journalPath, journal);
         var imported = new List<MapRecord>();
         var importedVariantGroups = new List<MapVariantGroup>();
-        using var importCatalog = new ImportCatalogReuse();
 
         try
         {
             foreach (var sourceClass in sourceClasses)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                importCatalog.BeginClass(sourceClass.Maps.Count);
                 var localClass = await CreateUniqueClassAsync(sourceClass.SourceName, uniqueName =>
                 {
                     journal.CreatedClasses.Add(uniqueName);
@@ -54,17 +52,11 @@ public sealed partial class MapRepository
                     sourceDraft.Class = localClass;
                     journal.ImportedMapIds.Add(sourceDraft.Id.Value);
                     WriteImportJournal(journalPath, journal);
-                    var totalMaps = sourceClasses.Sum(item => item.Maps.Count);
-                    var saved = await MapOperationProgress.RunAsync((double)imported.Count / totalMaps,
-                        (double)(imported.Count + 1) / totalMaps,
-                        () => Task.Run(() => SaveCoreAsync(sourceDraft, importCatalog: importCatalog)));
+                    var saved = await SaveAsync(sourceDraft);
                     imported.Add(saved);
                     if (sourceDraft.SourcePackageMapId is { } sourceMapId)
                         sourceToLocalMapIds.Add(sourceMapId, saved.Id);
                 }
-                // Do not overlap the retained document with another full read
-                // for variant groups or the following class.
-                importCatalog.Clear();
                 var createdGroups = await CreateImportedVariantGroupsAsync(
                     localClass,
                     sourceClass.VariantGroups ?? [],
@@ -84,72 +76,11 @@ public sealed partial class MapRepository
         }
         catch
         {
-            // Rollback must always read the current disk state, including
-            // external edits, and must never consume a partially mutated graph.
-            importCatalog.Clear();
             var rolledBack = await RollBackImportAsync(journal);
             if (rolledBack && File.Exists(journalPath))
                 File.Delete(journalPath);
             throw;
         }
-    }
-
-    // One import operation owns at most one complete catalog between saves.
-    // It never escapes to a snapshot or a process-wide cache. Take removes
-    // ownership before mutation, so a failed save cannot reuse that document.
-    private sealed class ImportCatalogReuse : IDisposable
-    {
-        private MapCatalogDocument? _catalog;
-        private byte[]? _hash;
-        private IDisposable? _ownership;
-        private int _mapsRemaining;
-        public bool NeedsAnotherSave => _mapsRemaining > 1;
-
-        public void BeginClass(int maps)
-        {
-            Clear();
-            _mapsRemaining = maps;
-        }
-
-        public async Task<MapCatalogDocument?> TakeAsync(string path)
-        {
-            var catalog = _catalog;
-            var expected = _hash;
-            Clear();
-            if (catalog is null || expected is null || !File.Exists(path)) return null;
-            using var operation = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("Catalog.ImportReuse.Verify", path);
-            await using var stream = File.OpenRead(path);
-            var actual = await System.Security.Cryptography.SHA256.HashDataAsync(stream);
-            var unchanged = expected.AsSpan().SequenceEqual(actual);
-            IDVBuff.Core.Diagnostics.MemoryJournal.Current?.Record("import-catalog-reuse",
-                new { unchanged, maps = catalog.Maps.Count,
-                    meaning = "exact committed bytes verified; all catalog validation still runs; private batch ownership only" });
-            return unchanged ? catalog : null;
-        }
-
-        public void CompleteSave(MapCatalogDocument catalog, byte[]? hash)
-        {
-            Clear();
-            _mapsRemaining--;
-            // A single-map class and the final save need no retained document
-            // or extra hash pass: there is no following reader to reuse it.
-            if (hash is null) return;
-            _catalog = catalog;
-            _hash = hash;
-            _ownership = IDVBuff.Core.Diagnostics.MemoryJournal.Own("Import.BatchCatalog");
-            IDVBuff.Core.Diagnostics.MemoryJournal.ObserveManagedObject(catalog, "Import.BatchCatalog");
-        }
-
-        public void Clear()
-        {
-            _catalog = null;
-            _hash = null;
-            var ownership = _ownership;
-            _ownership = null;
-            ownership?.Dispose();
-        }
-
-        public void Dispose() => Clear();
     }
 
     private async Task SetImportedClassPropertiesAsync(
@@ -287,20 +218,9 @@ public sealed partial class MapRepository
 
                 if (File.Exists(CatalogPath))
                 {
-                    using var operation = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation(
-                        "Repository.RecoverImport", journalPath);
-                    // Recovery runs in the synchronous constructor. The streaming
-                    // async serializer bounds its I/O buffer; the synchronous stream
-                    // reader and SerializeToUtf8Bytes materialize the entire catalog.
-                    MapCatalogDocument catalog;
-                    using (var input = new FileStream(CatalogPath, FileMode.Open,
-                        FileAccess.Read, FileShare.Read, 16 * 1024,
-                        FileOptions.Asynchronous | FileOptions.SequentialScan))
-                        catalog = JsonSerializer.DeserializeAsync<MapCatalogDocument>(
-                            input, SerializerOptions).AsTask().GetAwaiter().GetResult()
-                            ?? new MapCatalogDocument();
-                    using var ownership = IDVBuff.Core.Diagnostics.MemoryJournal.Own("Repository.RecoverImport.Catalog");
-                    IDVBuff.Core.Diagnostics.MemoryJournal.ObserveManagedObject(catalog, "Repository.RecoverImport.Catalog");
+                    var catalog = JsonSerializer.Deserialize<MapCatalogDocument>(
+                        File.ReadAllBytes(CatalogPath),
+                        SerializerOptions) ?? new MapCatalogDocument();
                     var importedIds = journal.ImportedMapIds.ToHashSet();
                     catalog.Maps.RemoveAll(map => importedIds.Contains(map.Id));
                     catalog.VariantGroups ??= [];
@@ -311,11 +231,9 @@ public sealed partial class MapRepository
                         name,
                         StringComparer.OrdinalIgnoreCase));
                     var temporaryPath = $"{CatalogPath}.recovery-{Guid.NewGuid():N}";
-                    using (var output = new FileStream(temporaryPath, FileMode.CreateNew,
-                        FileAccess.Write, FileShare.None, 16 * 1024,
-                        FileOptions.Asynchronous | FileOptions.SequentialScan))
-                        JsonSerializer.SerializeAsync(output, catalog, SerializerOptions)
-                            .GetAwaiter().GetResult();
+                    File.WriteAllBytes(
+                        temporaryPath,
+                        JsonSerializer.SerializeToUtf8Bytes(catalog, SerializerOptions));
                     File.Move(temporaryPath, CatalogPath, overwrite: true);
                 }
 

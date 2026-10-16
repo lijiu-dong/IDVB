@@ -25,14 +25,12 @@ public sealed partial class MapCvRecognitionService
         string? mapClass = null)
     {
         var selectedMap = TryGetMap(selectedMapId);
-        var scan = ScanExecutionContext.Current;
-        using var identitySnapshot = structureTuning?.Mode == MapStructureRegistrationMode.ScanVerification
-            && selectedMap is not null && scan is { Frame: { } observation }
+        using var identityConstraint = structureTuning?.Mode == MapStructureRegistrationMode.ScanVerification
+            && selectedMap is not null
+            && ScanExecutionContext.Current is { Frame: { } observation } scan
             && ReferenceEquals(observation.Source, frame.Image)
-                ? _sideEntranceFeatureCache.Rent(key => key == (selectedMapId, session.FloorKey)) : null;
-        using var identityConstraint = identitySnapshot is not null
-            && identitySnapshot.Entries.TryGetValue((selectedMapId, session.FloorKey), out var line)
-                ? scan!.ConstrainAlignment(line.WithScanAnchor(selectedMap!, session.FloorKey),
+            && _sideEntranceFeatureCache.TryGetValue((selectedMapId, session.FloorKey), out var line)
+                ? scan.ConstrainAlignment(ScanStructureIndex.Get(line).WithScanAnchor(selectedMap, session.FloorKey),
                     frame.ViewportBounds) : null;
         if (selectedMap is not null
             && MapFloorRules.GetFloorProfile(selectedMap, session.FloorKey)

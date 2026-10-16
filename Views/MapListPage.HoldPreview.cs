@@ -20,7 +20,7 @@ public sealed partial class MapListPage
     private CancellationTokenSource? _holdPreviewDelayCancellation;
     private int _holdPreviewRevision;
 
-    private void AttachHoldPreview(Border card)
+    private void AttachHoldPreview(Border card, MapRecord map)
     {
         var pointerDown = false;
         var pointerInside = true;
@@ -39,8 +39,8 @@ public sealed partial class MapListPage
             try
             {
                 await Task.Delay(HoldPreviewDelayMilliseconds, cancellation.Token);
-                if (pointerDown && pointerInside && !cancellation.IsCancellationRequested && card.Tag is MapRecord current)
-                    ShowHoldPreview(current);
+                if (pointerDown && pointerInside && !cancellation.IsCancellationRequested)
+                    ShowHoldPreview(map);
             }
             catch (OperationCanceledException)
             {
@@ -86,11 +86,11 @@ public sealed partial class MapListPage
         var revision = ++_holdPreviewRevision;
         var image = new Image
         {
+            Source = new BitmapImage(new Uri(path)),
             Stretch = Stretch.Uniform,
             MaxWidth = Math.Min(1100, XamlRoot.Size.Width * 0.78),
             MaxHeight = XamlRoot.Size.Height * 0.82
         };
-        MemoryImageBinding.Attach(image, new Uri(path), 0, "UI.MapList.HoldPreview");
         var imageHost = new Border
         {
             Child = image,
@@ -155,7 +155,6 @@ public sealed partial class MapListPage
         await Task.Delay(150);
         if (revision != _holdPreviewRevision || !ReferenceEquals(popup, _holdPreviewPopup))
             return;
-        ReleaseHoldPreviewImage(popup);
         popup.IsOpen = false;
         _holdPreviewPopup = null;
         _holdPreviewImageHost = null;
@@ -167,18 +166,8 @@ public sealed partial class MapListPage
         _holdPreviewDelayCancellation = null;
         _holdPreviewRevision++;
         if (_holdPreviewPopup is { } popup)
-        {
-            ReleaseHoldPreviewImage(popup);
             popup.IsOpen = false;
-        }
         _holdPreviewPopup = null;
         _holdPreviewImageHost = null;
-    }
-
-    private static void ReleaseHoldPreviewImage(Popup popup)
-    {
-        if (popup.Child is Grid overlay && overlay.Children.FirstOrDefault() is Border { Child: Image image })
-            MemoryImageBinding.Release(image);
-        popup.Child = null;
     }
 }

@@ -129,7 +129,7 @@ internal sealed class LegacyPluginV2Context : IIdvbPluginContext, IAsyncDisposab
     public LegacyPluginV2Context(IPlugin plugin, IPluginContext legacyContext)
     {
         LegacyContext = legacyContext;
-        var metadata = PluginMetadata.For(plugin.GetType());
+        var metadata = plugin.GetType().GetCustomAttribute<PluginAttribute>();
         Identity = new PluginIdentity
         {
             Id = plugin.Id,

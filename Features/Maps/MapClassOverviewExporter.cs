@@ -71,8 +71,6 @@ public static class MapClassOverviewExporter
             {
                 var temporary = Path.Combine(directory, $".overview_{Guid.NewGuid():N}.tmp");
                 staged.Add((temporary, plan.OutputPath));
-                using var floorProgress = MapOperationProgress.Range(.95 * (staged.Count - 1) / plans.Length,
-                    .95 * staged.Count / plans.Length);
                 RenderFloor(plan, temporary, imagePath, variantColors);
             }
             foreach (var (temporary, output) in staged)
@@ -115,7 +113,6 @@ public static class MapClassOverviewExporter
         using var font = new Font("Microsoft YaHei UI", 22, FontStyle.Bold, GraphicsUnit.Pixel);
         for (var index = 0; index < plan.Maps.Length; index++)
         {
-            MapOperationProgress.Report((double)index / plan.Maps.Length, "正在绘制全览……");
             var map = plan.Maps[index];
             var floor = MapFloorRules.GetOrderedFloors(map).First(candidate =>
                 string.Equals(candidate.Key, plan.FloorKey, StringComparison.OrdinalIgnoreCase));
@@ -172,7 +169,6 @@ public static class MapClassOverviewExporter
                 graphics.Restore(state);
             }
         }
-        MapOperationProgress.Report(.98, "正在保存全览图片……");
         canvas.Save(output, ImageFormat.Png);
     }
 

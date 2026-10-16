@@ -81,10 +81,7 @@ public static class Vpsg3VerificationGate
             var rx = (int)Math.Round((screenX - offsetX) * invScale);
             var ry = (int)Math.Round((screenY - offsetY) * invScale);
 
-            var hit = sparsePoints is Vpsg3SemanticPoints semantic && preparedFloor.SemanticIndex is { } index
-                && semantic.Classes[i] is SemanticStructureContours.Warm or SemanticStructureContours.Cool
-                ? index.IsHit(rx, ry, semantic.Classes[i], 2) : preparedFloor.IsHitK5(rx, ry);
-            if (hit)
+            if (preparedFloor.IsHitK5(rx, ry))
             {
                 totalHits++;
                 partHits[partIdx]++;

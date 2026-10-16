@@ -24,25 +24,6 @@ public sealed class AppModule
     public Symbol Icon { get; }
 
     /// <summary>Creates a fresh WinUI root view whenever the user enters this module.</summary>
-    public FrameworkElement CreateView()
-    {
-        using var operation = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("UI.Module.Create", Id);
-        var view = _source.CreateView() as FrameworkElement
-            ?? throw new InvalidOperationException($"Module '{Id}' must return a WinUI FrameworkElement from CreateView().");
-        var resource = "UI.Module/" + Id;
-        IDVBuff.Core.Diagnostics.MemoryJournal.ObserveManagedObject(view, resource);
-        var mounted = false;
-        view.Loaded += (_, _) =>
-        {
-            if (mounted) return;
-            mounted = true;
-            IDVBuff.Core.Diagnostics.MemoryJournal.TrackResource(view, resource, null, "Microsoft.UI.Xaml.dll");
-        };
-        view.Unloaded += (_, _) =>
-        {
-            mounted = false;
-            IDVBuff.Core.Diagnostics.MemoryJournal.ReleaseResource(view);
-        };
-        return view;
-    }
+    public FrameworkElement CreateView() => _source.CreateView() as FrameworkElement
+        ?? throw new InvalidOperationException($"Module '{Id}' must return a WinUI FrameworkElement from CreateView().");
 }

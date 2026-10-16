@@ -184,7 +184,7 @@ public sealed partial class SessionOrchestrator
             // and timeouts. Only a usable replacement or a changed target revokes it.
             if (frame is null || !execution.CanCompute) return;
 
-            using var result = CreateObservationRecognitionState();
+            var result = CreateObservationRecognitionState();
             await Task.Run(() => RunInitialSideEntranceRecognition(frame, result), pass.Token);
             if (!IsMapObservationCurrent(match, toggle, generation) || execution.Expired) return;
             if (!IsCurrentCaptureTarget(frame))

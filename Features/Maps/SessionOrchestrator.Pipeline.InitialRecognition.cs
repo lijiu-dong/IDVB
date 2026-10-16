@@ -12,7 +12,7 @@ namespace IDVBuff.Features.Maps;
 
 public sealed partial class SessionOrchestrator
 {
-    private sealed class InitialRecognitionPipelineState : IDisposable
+    private sealed class InitialRecognitionPipelineState
     {
         public RuntimeMapRecognition? Recognition;
         public bool ObserveUntilConfirmed;
@@ -30,7 +30,6 @@ public sealed partial class SessionOrchestrator
         public SideEntranceScanResult? PendingSideEntranceScan;
         public Dictionary<Guid, MapFeatureCacheKey> RepairCacheKeys = new();
         public bool ScanSucceeded;
-        public void Dispose() => Interlocked.Exchange(ref PendingSideEntranceScan, null)?.Dispose();
     }
 
     private void RunInitialRecognition(

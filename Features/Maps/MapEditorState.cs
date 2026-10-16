@@ -13,9 +13,7 @@ public enum MapEditorTool
     FreeCrop,
     Anchor,
     Pan,
-    Conceal,
-    AutomaticRoute,
-    Marker
+    Conceal
 }
 
 public enum MapEditorLineMode
@@ -161,10 +159,6 @@ public sealed class MapEditorConcealDefaults
 /// <summary>Pure editor-tool state used by the WinUI surface and unit tests.</summary>
 public sealed class MapEditorToolState
 {
-    public bool SpecialElementsReadOnly { get; set; }
-    public bool AutomaticRouteAvailable { get; set; }
-    public bool CanUse(MapEditorTool tool) => tool == MapEditorTool.AutomaticRoute ? AutomaticRouteAvailable
-        : !SpecialElementsReadOnly || tool is MapEditorTool.Select or MapEditorTool.Text or MapEditorTool.Line or MapEditorTool.Rectangle or MapEditorTool.Pan or MapEditorTool.Marker;
     public MapEditorTool ActiveTool { get; private set; } = MapEditorTool.Select;
     public string FirstFloorKey { get; set; } = "1f";
     public string ActiveFloorKey { get; set; } = "1f";
@@ -176,7 +170,6 @@ public sealed class MapEditorToolState
 
     public bool Select(MapEditorTool tool)
     {
-        if (!CanUse(tool)) return false;
         ActiveTool = tool;
         PendingMainGate = null;
         return true;
@@ -196,7 +189,7 @@ public sealed class MapEditorToolState
 
     public void CompleteCreation()
     {
-        if (ActiveTool is not (MapEditorTool.Text or MapEditorTool.Line or MapEditorTool.Rectangle or MapEditorTool.Anchor or MapEditorTool.Conceal or MapEditorTool.FreeCrop or MapEditorTool.Marker))
+        if (ActiveTool is not (MapEditorTool.Text or MapEditorTool.Line or MapEditorTool.Rectangle or MapEditorTool.Anchor or MapEditorTool.Conceal or MapEditorTool.FreeCrop))
             ActiveTool = MapEditorTool.Select;
     }
 

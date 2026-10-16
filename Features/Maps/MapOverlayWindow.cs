@@ -47,7 +47,6 @@ public sealed partial class MapOverlayWindow : IDisposable
     private bool _showLineAnnotationsOnMiniMap = true;
     private bool _showFloorOnMiniMap;
     private float _mapOpacity = 0.46f;
-    private float _routeOpacity = 1f;
     private float _statusOpacity = 1f;
     private float _statusScale = 1f;
     private float _statusOffsetX;
@@ -410,7 +409,7 @@ public sealed partial class MapOverlayWindow : IDisposable
             _showMainContent && showStatus,
             _showMainContent && _showMapContent ? _player : null,
             MiniMap: !_hideMiniMap && _persistentMiniMap is { } miniMap
-                ? miniMap with { RouteLineThickness = _routeLineThickness, RouteOpacity = _routeOpacity } : null,
+                ? miniMap with { RouteLineThickness = _routeLineThickness } : null,
             AllowMapExtendBeyondBounds: _allowExtend,
             GameScreenBounds: _gameBounds,
             MonitorWorkingArea: monitorWorkingArea,

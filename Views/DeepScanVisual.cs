@@ -1,5 +1,4 @@
 using System.Numerics;
-using IDVBuff.Core.Diagnostics;
 using Microsoft.Graphics.Canvas;
 using Microsoft.Graphics.Canvas.Brushes;
 using Microsoft.Graphics.Canvas.Effects;
@@ -17,32 +16,21 @@ internal sealed partial class DeepScanVisual : UserControl
     internal enum Layer { Atmosphere, Wisps, Dust, Shock }
     private readonly Layer _layer;
     private CanvasControl? _canvas;
-    private bool _active;
 
     internal DeepScanVisual(Layer layer)
     {
         _layer = layer;
         IsHitTestVisible = false;
-        Loaded += (_, _) => { if (_active) AttachCanvas(); };
+        Loaded += (_, _) => AttachCanvas();
         SizeChanged += (_, _) => _canvas?.Invalidate();
-        Unloaded += (_, _) => DetachCanvas();
-    }
-
-    internal void SetActive(bool active)
-    {
-        _active = active;
-        if (!active) DetachCanvas();
-        else if (IsLoaded) AttachCanvas();
-    }
-
-    private void DetachCanvas()
-    {
-        if (_canvas is not { } canvas) return;
-        canvas.Draw -= Draw;
-        canvas.RemoveFromVisualTree();
-        Content = null;
-        _canvas = null;
-        MemoryJournal.ReleaseResource(canvas);
+        Unloaded += (_, _) =>
+        {
+            if (_canvas is not { } canvas) return;
+            canvas.Draw -= Draw;
+            canvas.RemoveFromVisualTree();
+            Content = null;
+            _canvas = null;
+        };
     }
 
     private void AttachCanvas()
@@ -51,14 +39,10 @@ internal sealed partial class DeepScanVisual : UserControl
         _canvas = new CanvasControl { IsHitTestVisible = false };
         _canvas.Draw += Draw;
         Content = _canvas;
-        var owner = $"UI.Home.DeepScan.{_layer}.Canvas";
-        var request = MemoryJournal.Request(owner, nativeModule: "Microsoft.Graphics.Canvas.dll");
-        MemoryJournal.TrackResource(_canvas, owner, null, "Microsoft.Graphics.Canvas.dll", request);
     }
 
     private void Draw(CanvasControl sender, CanvasDrawEventArgs args)
     {
-        if (!_active) return;
         var w = (float)ActualWidth;
         var h = (float)ActualHeight;
         if (w <= 1 || h <= 1) return;

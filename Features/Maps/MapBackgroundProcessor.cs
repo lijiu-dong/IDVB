@@ -1,5 +1,4 @@
 using OpenCvSharp;
-using IDVBuff.Core.Diagnostics;
 
 namespace IDVBuff.Features.Maps;
 
@@ -14,11 +13,6 @@ public sealed class MapBackgroundProcessingResult : IDisposable
         Recognition = recognition;
         Overlay = overlay;
         BackgroundMask = backgroundMask;
-        foreach (var (image, name) in new[] { (recognition, "Background.Recognition"), (overlay, "Background.Overlay"), (backgroundMask, "Background.Mask") })
-        {
-            var request = MemoryJournal.Request(name, image.Total() * image.ElemSize(), "OpenCvSharpExtern.dll");
-            MemoryJournal.TrackResource(image, name, image.Total() * image.ElemSize(), "OpenCvSharpExtern.dll", request);
-        }
     }
 
     public Mat Recognition { get; }
@@ -30,9 +24,6 @@ public sealed class MapBackgroundProcessingResult : IDisposable
         Recognition.Dispose();
         Overlay.Dispose();
         BackgroundMask.Dispose();
-        MemoryJournal.ReleaseResource(Recognition);
-        MemoryJournal.ReleaseResource(Overlay);
-        MemoryJournal.ReleaseResource(BackgroundMask);
     }
 }
 
@@ -40,7 +31,7 @@ public sealed class MapBackgroundProcessingResult : IDisposable
 /// Shared image processing for editor previews, saves, repairs, class rebuilds,
 /// and PNG export. The source mat is never modified.
 /// </summary>
-public static partial class MapBackgroundProcessor
+public static class MapBackgroundProcessor
 {
     public const int DefaultBackgroundRemovalIntensity = 8;
     public const int MinBackgroundRemovalIntensity = 0;
@@ -106,92 +97,51 @@ public static partial class MapBackgroundProcessor
         if (source.Empty())
             throw new InvalidOperationException("无法解码楼层图像。");
 
-        using var operation = MemoryJournal.BeginOperation("Background.Process", profile.FloorKey);
-        Mat? recognition = null, recognitionMask = null, overlay = null;
-        try
+        using var bgra = ToBgra(source);
+        using var fullMask = RasterizeMask(profile.BackgroundLayers, bgra.Width, bgra.Height);
+        using var processedFull = bgra.Clone();
+        using var combinedMask = fullMask.Clone();
+        ApplyFreeCropMask(combinedMask, profile.FreeCropPoints);
+        if (removeBackground)
         {
-            if (!removeBackground
-                && profile.BackgroundLayers is null or { Count: 0 }
-                && profile.FreeCropPoints is null or { Count: 0 })
-            {
-                // With no mask, color conversion and white-key alpha are
-                // pixel-local. Crop first instead of cloning the full source
-                // and allocating two full-source black masks for a subfloor.
-                var rectangle = UsesWholeSourceImage(profile)
-                    ? new Rect(0, 0, source.Width, source.Height)
-                    : GetPixelRegion(profile.GetEffectiveRecognitionRegion(), source.Width, source.Height);
-                using var region = new Mat(source, rectangle);
-                recognition = ToBgra(region);
-                UpdateRecognitionDimensions(profile, recognition.Width, recognition.Height);
-                recognitionMask = new Mat(recognition.Height, recognition.Width, MatType.CV_8UC1, Scalar.Black);
-                overlay = CreateWhiteKeyOverlay(recognition);
-                return new MapBackgroundProcessingResult(recognition, overlay, recognitionMask);
-            }
-            // Process our own conversion in place; source remains unchanged.
-            using (var processedFull = ToBgra(source))
-            using (var fullMask = RasterizeMask(profile.BackgroundLayers, processedFull.Width, processedFull.Height))
-            {
-                using var combinedMask = fullMask.Clone();
-                ApplyFreeCropMask(combinedMask, profile.FreeCropPoints);
-                if (removeBackground)
-                {
-                    using var automatic = BuildAutomaticMask(
-                        processedFull,
-                        fullMask,
-                        ClampBackgroundRemovalIntensity(backgroundRemovalIntensity));
-                    Cv2.BitwiseOr(combinedMask, automatic, combinedMask);
-                }
-                if (Cv2.CountNonZero(combinedMask) > 0) ClearMaskedPixels(processedFull, combinedMask);
-
-                if (UsesWholeSourceImage(profile))
-                    recognition = new Mat(processedFull, new Rect(0, 0, processedFull.Width, processedFull.Height));
-                else
-                {
-                    using var region = new Mat(processedFull, GetPixelRegion(profile.GetEffectiveRecognitionRegion(), processedFull.Width, processedFull.Height));
-                    recognition = region.Clone();
-                }
-                UpdateRecognitionDimensions(profile, recognition.Width, recognition.Height);
-
-                if (UsesWholeSourceImage(profile))
-                    recognitionMask = new Mat(combinedMask, new Rect(0, 0, combinedMask.Width, combinedMask.Height));
-                else
-                {
-                    using var region = new Mat(combinedMask, GetPixelRegion(profile.GetEffectiveRecognitionRegion(), combinedMask.Width, combinedMask.Height));
-                    recognitionMask = region.Clone();
-                }
-            }
-            // Retire full-size working buffers before generating the overlay.
-            overlay = CreateWhiteKeyOverlay(recognition);
-            return new MapBackgroundProcessingResult(recognition, overlay, recognitionMask);
+            using var automatic = BuildAutomaticMask(
+                bgra,
+                fullMask,
+                ClampBackgroundRemovalIntensity(backgroundRemovalIntensity));
+            Cv2.BitwiseOr(combinedMask, automatic, combinedMask);
         }
-        catch
-        {
-            recognition?.Dispose(); recognitionMask?.Dispose(); overlay?.Dispose();
-            if (recognition is not null) MemoryJournal.ReleaseResource(recognition);
-            if (recognitionMask is not null) MemoryJournal.ReleaseResource(recognitionMask);
-            if (overlay is not null) MemoryJournal.ReleaseResource(overlay);
-            throw;
-        }
-    }
+        ClearMaskedPixels(processedFull, combinedMask);
 
-    private static void UpdateRecognitionDimensions(FloorRecognitionProfile profile, int width, int height)
-    {
         var previousWidth = profile.RecognitionPixelWidth;
         var previousHeight = profile.RecognitionPixelHeight;
         var previousBounds = profile.ValidMapBounds?.Clone();
-        profile.RecognitionPixelWidth = width;
-        profile.RecognitionPixelHeight = height;
-        if (previousBounds?.IsValid is true && previousWidth > 0 && previousHeight > 0
-            && (previousWidth != width || previousHeight != height))
+        var recognition = UsesWholeSourceImage(profile)
+            ? processedFull.Clone()
+            : new Mat(processedFull, GetPixelRegion(profile.GetEffectiveRecognitionRegion(), processedFull.Width, processedFull.Height)).Clone();
+        profile.RecognitionPixelWidth = recognition.Width;
+        profile.RecognitionPixelHeight = recognition.Height;
+        if (previousBounds?.IsValid is true
+            && previousWidth > 0
+            && previousHeight > 0
+            && (previousWidth != recognition.Width
+                || previousHeight != recognition.Height))
+        {
             profile.ValidMapBounds = new MapReferenceBounds
             {
-                X = previousBounds.X * width / previousWidth,
-                Y = previousBounds.Y * height / previousHeight,
-                Width = previousBounds.Width * width / previousWidth,
-                Height = previousBounds.Height * height / previousHeight
+                X = previousBounds.X * recognition.Width / previousWidth,
+                Y = previousBounds.Y * recognition.Height / previousHeight,
+                Width = previousBounds.Width * recognition.Width / previousWidth,
+                Height = previousBounds.Height * recognition.Height / previousHeight
             };
+        }
         else if (profile.ValidMapBounds?.IsValid is not true)
-            profile.ValidMapBounds = MapReferenceBounds.FullImage(width, height);
+            profile.ValidMapBounds = MapReferenceBounds.FullImage(recognition.Width, recognition.Height);
+
+        var recognitionMask = UsesWholeSourceImage(profile)
+            ? combinedMask.Clone()
+            : new Mat(combinedMask, GetPixelRegion(profile.GetEffectiveRecognitionRegion(), combinedMask.Width, combinedMask.Height)).Clone();
+        var overlay = CreateWhiteKeyOverlay(recognition);
+        return new MapBackgroundProcessingResult(recognition, overlay, recognitionMask);
     }
 
     public static Mat Apply(
@@ -206,27 +156,6 @@ public static partial class MapBackgroundProcessor
     }
 
     public static Mat CreateWhiteKeyOverlay(Mat source)
-    {
-        var width = source.Width;
-        var height = source.Height;
-        Mat? result = null;
-        try
-        {
-            for (var y = 0; y < height; y += 64)
-            {
-                var rectangle = new Rect(0, y, width, Math.Min(64, height - y));
-                using var input = new Mat(source, rectangle);
-                using var tile = CreateWhiteKeyOverlayTile(input);
-                result ??= new Mat(height, width, tile.Type());
-                using var destination = new Mat(result, rectangle);
-                tile.CopyTo(destination);
-            }
-            return result ?? throw new InvalidOperationException("无法解码楼层图像。");
-        }
-        catch { result?.Dispose(); throw; }
-    }
-
-    private static Mat CreateWhiteKeyOverlayTile(Mat source)
     {
         using var bgra = ToBgra(source);
         using var bgr = new Mat();
@@ -272,17 +201,6 @@ public static partial class MapBackgroundProcessor
         if (bgra is null || bgra.IsDisposed || bgra.Channels() != 4)
             return;
 
-        var width = bgra.Width;
-        var height = bgra.Height;
-        for (var y = 0; y < height; y += 64)
-        {
-            using var tile = new Mat(bgra, new Rect(0, y, width, Math.Min(64, height - y)));
-            NormalizeTransparentTile(tile);
-        }
-    }
-
-    private static void NormalizeTransparentTile(Mat bgra)
-    {
         var channels = Cv2.Split(bgra);
         try
         {
@@ -327,7 +245,32 @@ public static partial class MapBackgroundProcessor
         }
 
         if (source.Channels() == 4)
-            return CompositeAlphaToBgr(source);
+        {
+            var channels = Cv2.Split(source);
+            try
+            {
+                using var alpha = channels[3];
+                using var alphaFloat = new Mat();
+                alpha.ConvertTo(alphaFloat, MatType.CV_32FC1, 1.0 / 255.0);
+
+                for (var i = 0; i < 3; i++)
+                {
+                    using var channelFloat = new Mat();
+                    channels[i].ConvertTo(channelFloat, MatType.CV_32FC1);
+                    Cv2.Multiply(channelFloat, alphaFloat, channelFloat);
+                    channelFloat.ConvertTo(channels[i], MatType.CV_8UC1);
+                }
+
+                var bgr = new Mat();
+                Cv2.Merge([channels[0], channels[1], channels[2]], bgr);
+                return bgr;
+            }
+            finally
+            {
+                foreach (var channel in channels)
+                    channel.Dispose();
+            }
+        }
 
         throw new InvalidOperationException($"不支持的图像通道数: {source.Channels()}。");
     }

@@ -27,19 +27,18 @@ internal static class Vpsg3PrecisionRefiner
     internal static double? MeasureForwardMean(Vpsg3LiveObservation observation,
         Vpsg3PreparedFloor floor, double scale, double offsetX, double offsetY)
     {
-        using var distances = floor.RentPrecisionDistance();
-        if (distances is null) return null;
-        var distanceValues = distances.Span;
+        if (floor.PrecisionDistance.IsEmpty) return null;
         using var points = observation.ObservedEdges.FindNonZero();
-        var count = checked((int)points.Total());
-        if (count == 0) return null;
-        // FindNonZero owns one continuous native point list. Borrow it once;
-        // per-point Total/At calls previously crossed the native boundary.
-        var pointValues = System.Runtime.InteropServices.MemoryMarshal.CreateReadOnlySpan(
-            ref points.At<Point>(0), count);
-        return IDVBuff.Core.Imaging.NativeDistanceMetrics.ForwardMean(pointValues, distanceValues,
-            floor.ReferenceWidth, floor.ReferenceHeight, observation.ViewportBounds.X, observation.ViewportBounds.Y,
-            scale, offsetX, offsetY);
+        var sum = 0d;
+        for (var i = 0; i < points.Total(); i++)
+        {
+            var p = points.At<Point>(i);
+            var x = (p.X + observation.ViewportBounds.X - offsetX) / scale;
+            var y = (p.Y + observation.ViewportBounds.Y - offsetY) / scale;
+            sum += x < 0 || y < 0 || x >= floor.ReferenceWidth - 1 || y >= floor.ReferenceHeight - 1
+                ? 50d : Sample(floor.PrecisionDistance, floor.ReferenceWidth, floor.ReferenceHeight, x, y) * scale;
+        }
+        return points.Total() > 0 ? sum / points.Total() : null;
     }
     internal static Vpsg3PrecisionResult Refine(Vpsg3LiveObservation observation,
         Vpsg3PreparedFloor floor, double seedScale, double seedX, double seedY,
@@ -63,9 +62,7 @@ internal static class Vpsg3PrecisionRefiner
         var rcx = (centerX - seedX) / seedScale;
         var rcy = (centerY - seedY) / seedScale;
         if (budget.Expired) return Finish("budget");
-        using var distances = floor.RentPrecisionDistance();
-        if (floor.IsDisposed || distances is null) return Finish("distance-unavailable");
-        var distanceValues = distances.Span;
+        if (floor.IsDisposed || floor.PrecisionDistance.IsEmpty) return Finish("distance-unavailable");
 
         // Freeze the valid support once. Moving outside the reference incurs a penalty, never removal.
         var points = observation.SparseEdgePoints.Where(p =>
@@ -85,7 +82,7 @@ internal static class Vpsg3PrecisionRefiner
         if (points.Length < 35 || counts.Count(n => n >= 15) < 2 || !hasOrthogonalSpan || radius < 80d)
             return Finish("insufficient-support");
         if (budget.Expired) return Finish("budget");
-        before = Residuals(distanceValues, scale, dx, dy);
+        before = Residuals(scale, dx, dy);
         if (before.Loss >= 5.0d) return Finish("out-of-reference");
         var best = before.Loss;
         var ds = seedScale * 0.005d;
@@ -115,7 +112,7 @@ internal static class Vpsg3PrecisionRefiner
                 var y = dy + yi * dt;
                 if (!lockScale && Math.Abs(s / seedScale - 1) > 0.030000001d || Math.Abs(x) > 4.0000001d || Math.Abs(y) > 4.0000001d)
                     continue;
-                var loss = Loss(distanceValues, s, x, y);
+                var loss = Loss(s, x, y);
                 probes++;
                 if (loss < best - 1e-9d)
                 {
@@ -147,14 +144,14 @@ internal static class Vpsg3PrecisionRefiner
                 for (var yi = -2; yi <= 2; yi++)
                 {
                     if (budget.Expired) return Finish("budget");
-                    competitor = Math.Min(competitor, Loss(distanceValues, scale + sign * uncertaintyStep,
+                    competitor = Math.Min(competitor, Loss(scale + sign * uncertaintyStep,
                         dx + xi * 0.5d, dy + yi * 0.5d));
                     probes++;
                 }
                 if (competitor <= best + 1e-4d) return Finish("scale-unobservable");
             }
         }
-        after = Residuals(distanceValues, scale, dx, dy);
+        after = Residuals(scale, dx, dy);
         return Finish(budget.Expired ? "budget" : "converged");
 
         Vpsg3PrecisionResult Finish(string reason) => new(seedScale, scale,
@@ -163,25 +160,22 @@ internal static class Vpsg3PrecisionRefiner
             before, after, rounds, probes, Stopwatch.GetElapsedTime(started).TotalMilliseconds,
             reason, reason == "converged", radius);
 
-        double Distance(ReadOnlySpan<float> values, Point p, double s, double x, double y)
+        double Distance(Point p, double s, double x, double y)
         {
             var rx = rcx + (p.X - cx - x) / s;
             var ry = rcy + (p.Y - cy - y) / s;
-            if (floor.SemanticIndex is { } semantic && observation.SemanticLabels is { } labels
-                && labels.At<byte>(p.Y, p.X) is SemanticStructureContours.Warm or SemanticStructureContours.Cool)
-                return Math.Min(6d, semantic.Distance(rx, ry, labels.At<byte>(p.Y, p.X)) * s);
-            return Math.Min(6d, Sample(values, floor.ReferenceWidth,
+            return Math.Min(6d, Sample(floor.PrecisionDistance, floor.ReferenceWidth,
                 floor.ReferenceHeight, rx, ry) * s);
         }
 
-        double Loss(ReadOnlySpan<float> values, double s, double x, double y)
+        double Loss(double s, double x, double y)
         {
             Span<double> sums = stackalloc double[4];
             sums.Clear();
             var totalSum = 0d;
             for (var i = 0; i < points.Length; i++)
             {
-                var d = Distance(values, points[i], s, x, y);
+                var d = Distance(points[i], s, x, y);
                 var huber = d <= 1.5d ? 0.5d * d * d : 1.5d * (d - 0.75d);
                 sums[partitions[i]] += huber;
                 totalSum += huber;
@@ -193,7 +187,7 @@ internal static class Vpsg3PrecisionRefiner
             return active > 0 ? loss / active : totalSum / points.Length;
         }
 
-        Vpsg3PrecisionResiduals Residuals(ReadOnlySpan<float> values, double s, double x, double y)
+        Vpsg3PrecisionResiduals Residuals(double s, double x, double y)
         {
             var near = new List<double>();
             var far = new List<double>();
@@ -201,13 +195,13 @@ internal static class Vpsg3PrecisionRefiner
             for (var i = 0; i < points.Length; i++)
             {
                 var p = points[i];
-                var d = Distance(values, p, s, x, y);
+                var d = Distance(p, s, x, y);
                 quadrants[partitions[i]].Add(d);
                 var r = double.Hypot(p.X - cx, p.Y - cy);
                 if (r <= radius * 0.35d) near.Add(d);
                 if (r >= radius * 0.70d) far.Add(d);
             }
-            return new(Loss(values, s, x, y), Percentile(near), Percentile(far), quadrants.Select(Percentile).ToArray());
+            return new(Loss(s, x, y), Percentile(near), Percentile(far), quadrants.Select(Percentile).ToArray());
         }
     }
 

@@ -11,28 +11,10 @@ internal static class MapSubscriptionUpdater
             var root = options.SubscriptionRoot
                 ?? throw new ArgumentException("地图订阅目录为空。");
             var officialPublicKey = MapSubscriptionTrust.LoadOfficialPublicKey(AppContext.BaseDirectory);
-            using var cancellation = new CancellationTokenSource();
-            if (Console.IsInputRedirected)
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        if (await Console.In.ReadLineAsync(cancellation.Token) == "cancel") cancellation.Cancel();
-                    }
-                    catch (OperationCanceledException) { }
-                    catch (IOException) { }
-                });
             var summary = await new MapSubscriptionUpdateEngine().UpdateAllAsync(
                 root,
                 officialPublicKey,
-                cancellation.Token,
-                progress =>
-                {
-                    // stdout is a one-way progress channel owned by the launching client.
-                    try { Console.WriteLine("IDVB_PROGRESS " + System.Text.Json.JsonSerializer.Serialize(progress)); }
-                    catch (IOException) { /* The client may have cancelled its wait. */ }
-                });
-            cancellation.Cancel();
+                CancellationToken.None);
             UpdateLog.Write(
                 $"Map subscriptions checked={summary.Checked}, prepared={summary.Prepared}, failed={summary.Failed}");
             return summary.Failed == 0 ? 0 : 3;

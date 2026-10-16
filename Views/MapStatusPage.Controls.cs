@@ -219,14 +219,6 @@ public sealed partial class MapStatusPage : UserControl
         QueueSliderSave(_mapOpacitySave, percentage / 100d, _runtime.SetMapOpacityAsync);
     }
 
-    private void RouteOpacity_Changed(object sender, RangeBaseValueChangedEventArgs args)
-    {
-        if (_refreshing) return;
-        var percentage = Math.Clamp(args.NewValue, 0d, 100d);
-        _routeOpacityValue.Text = $"当前：{percentage:F0}%（越高越透明）";
-        QueueSliderSave(_routeOpacitySave, 1d - percentage / 100d, _runtime.SetRouteOpacityAsync);
-    }
-
     private async void ShowAuxiliaryAnchors_Toggled(object sender, RoutedEventArgs e)
     {
         if (_refreshing) return;
@@ -481,5 +473,28 @@ public sealed partial class MapStatusPage : UserControl
             _collectResearchToggle.IsOn);
     }
 
+    private async void DiagnosticModeToggle_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (_refreshing)
+            return;
+        var diagnosticMode = _diagnosticModeToggle.IsOn;
+        try
+        {
+            if (!diagnosticMode
+                && !await ConfirmDataCleanupAsync(
+                    "关闭诊断模式",
+                    "关闭后会清理诊断模式文件夹中的全部图片，此操作不可恢复。"))
+            {
+                RestoreToggle(_diagnosticModeToggle);
+                return;
+            }
+            await _runtime.SetDiagnosticModeAsync(diagnosticMode);
+        }
+        catch (Exception exception)
+        {
+            _status.Text = exception.Message;
+            Refresh();
+        }
+    }
 
 }

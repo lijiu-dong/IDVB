@@ -273,7 +273,7 @@ public sealed partial class MapListPage : UserControl
         exitButton.Click += async (_, _) =>
         {
             ResetBatchOperation();
-            _draft = null;
+            MapClassDiagnosticCoordinator.Instance.Trigger(_repository);
             await ShowListAsync();
         };
         controls.Children.Add(exitButton);

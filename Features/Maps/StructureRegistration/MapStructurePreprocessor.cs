@@ -188,18 +188,9 @@ public sealed partial class MapStructurePreprocessor
             null,
             MapStructurePreprocessingProfile.PrebuiltStructureLine);
 
-    // Cache borrowers read these pixels. Separate ref-counted Mat headers let
-    // every field be disposed normally while identical immutable rasters share
-    // one allocation. Public writable features and compatibility clones remain
-    // independent of one another.
-    internal static MapStructureFeatures UseResidentPrebuiltStructureLine(Mat line,
-        SemanticStructureIndex? residentSemanticIndex = null) =>
-        UseStructureLine(line, null, MapStructurePreprocessingProfile.PrebuiltStructureLine,
-            shareImmutableRaster: true, residentSemanticIndex: residentSemanticIndex);
-
     public static MapStructureFeatures UseNativeObservedStructureLine(
         Mat line,
-        Mat validMask, Mat? semanticLabels = null)
+        Mat validMask)
     {
         if (validMask.Empty()
             || validMask.Type() != MatType.CV_8UC1
@@ -211,82 +202,34 @@ public sealed partial class MapStructurePreprocessor
         return UseStructureLine(
             line,
             validMask,
-            MapStructurePreprocessingProfile.NativeObservedStructureLine, semanticLabels);
-    }
-
-    // The native scale estimator reads only edges, labels and visibility.
-    // Keep independent headers for the frame-owned masks and one thresholded
-    // geometry owner; registration still uses the full public feature builder.
-    internal static MapStructureFeatures UseNativeScaleStructure(
-        Mat line, Mat validMask, Mat? semanticLabels)
-    {
-        if (line.Type() != MatType.CV_8UC1 || validMask.Type() != MatType.CV_8UC1
-            || line.Empty() || validMask.Size() != line.Size()
-            || (semanticLabels is not null && (semanticLabels.Type() != MatType.CV_8UC1
-                || semanticLabels.Size() != line.Size())))
-            throw new InvalidDataException("实时尺度结构必须使用同尺寸的原生边缘、可见掩码和语义标签。");
-        var owned = new List<Mat>();
-        Mat Own(Mat mat) { owned.Add(mat); return mat; }
-        Mat Header(Mat mat) => Own(new Mat(mat, new Rect(0, 0, mat.Width, mat.Height)));
-        try
-        {
-            var edges = Own(SemanticStructureContours.Geometry(line));
-            return new MapStructureFeatures(Own(new Mat()), Own(new Mat()), edges,
-                normalizedGray: Own(new Mat()), repeatedRegionMask: Own(new Mat()),
-                diagnosticTiming: new PreprocessTiming
-                { Profile = MapStructurePreprocessingProfile.NativeObservedStructureLine, DescriptorExtractionSkipped = true },
-                rawVisibleMask: Header(validMask),
-                semanticLabels: semanticLabels is null ? null : Header(semanticLabels));
-        }
-        catch { foreach (var mat in owned) mat.Dispose(); throw; }
+            MapStructurePreprocessingProfile.NativeObservedStructureLine);
     }
 
     private static MapStructureFeatures UseStructureLine(
         Mat line,
         Mat? rawVisibleMask,
-        MapStructurePreprocessingProfile profile, Mat? semanticLabels = null,
-        bool shareImmutableRaster = false, SemanticStructureIndex? residentSemanticIndex = null)
+        MapStructurePreprocessingProfile profile)
     {
-        using var decodedLabels = line.Channels() == 3 ? SemanticStructureContours.Decode(line) : null;
-        // Complete distance-transform scratch before allocating persistent
-        // geometry planes, rather than making both peaks overlap.
-        var semanticIndex = decodedLabels is null ? null
-            : residentSemanticIndex?.HasSameLabelsAs(decodedLabels) == true
-                ? residentSemanticIndex.BorrowReader() : new SemanticStructureIndex(decodedLabels, prepareCorrelationBits: false,
-                    nativeStorage: residentSemanticIndex?.UsesNativeStorage == true);
-        if (semanticIndex is not null && ReferenceEquals(semanticIndex, residentSemanticIndex))
-            IDVBuff.Core.Diagnostics.MemoryJournal.ObserveManagedObject(semanticIndex, "Structure.Reference.SharedSemanticIndex");
-        var owned = new List<Mat>();
-        Mat Own(Mat mat) { owned.Add(mat); return mat; }
-        Mat Copy(Mat mat) => Own(shareImmutableRaster
-            ? new Mat(mat, new Rect(0, 0, mat.Width, mat.Height)) : mat.Clone());
-        try
-        {
-            var edges = Own(SemanticStructureContours.Geometry(line));
-            var width = edges.Width;
-            var height = edges.Height;
-            var half = Own(new Mat());
-            var quarter = Own(new Mat());
-            Cv2.Resize(edges, half, new Size(Math.Max(1, width / 2), Math.Max(1, height / 2)), 0d, 0d, InterpolationFlags.Nearest);
-            Cv2.Resize(edges, quarter, new Size(Math.Max(1, width / 4), Math.Max(1, height / 4)), 0d, 0d, InterpolationFlags.Nearest);
-            var nuisance = Own(shareImmutableRaster ? new Mat() : Mat.Zeros(edges.Size(), MatType.CV_8UC1).ToMat());
-            var repeated = shareImmutableRaster ? Own(new Mat())
-                : Own(Mat.Zeros(edges.Size(), MatType.CV_8UC1).ToMat());
-            var labels = semanticLabels ?? decodedLabels;
-            return new MapStructureFeatures(nuisance, Copy(edges), edges,
-                normalizedGray: Copy(edges), edgePyramid: [Copy(edges), half, quarter],
-                repeatedRegionMask: repeated,
-                diagnosticTiming: new PreprocessTiming { Profile = profile, DescriptorExtractionSkipped = true },
-                rawVisibleMask: rawVisibleMask is null ? null : Own(rawVisibleMask.Clone()),
-                semanticLabels: labels is null ? null : Copy(labels), semanticIndex: semanticIndex,
-                deferZeroMasks: shareImmutableRaster);
-        }
-        catch
-        {
-            foreach (var mat in owned) mat.Dispose();
-            semanticIndex?.Dispose();
-            throw;
-        }
+        if (line.Empty() || line.Type() != MatType.CV_8UC1)
+            throw new InvalidDataException("预制线图必须是非空的 8 位灰度图。");
+        var edges = line.Clone();
+        var half = new Mat();
+        var quarter = new Mat();
+        Cv2.Resize(edges, half, new Size(Math.Max(1, edges.Width / 2), Math.Max(1, edges.Height / 2)), 0d, 0d, InterpolationFlags.Nearest);
+        Cv2.Resize(edges, quarter, new Size(Math.Max(1, edges.Width / 4), Math.Max(1, edges.Height / 4)), 0d, 0d, InterpolationFlags.Nearest);
+        return new MapStructureFeatures(
+            Mat.Zeros(edges.Size(), MatType.CV_8UC1).ToMat(),
+            edges.Clone(),
+            edges,
+            normalizedGray: line.Clone(),
+            edgePyramid: [edges.Clone(), half, quarter],
+            repeatedRegionMask: Mat.Zeros(edges.Size(), MatType.CV_8UC1).ToMat(),
+            diagnosticTiming: new PreprocessTiming
+            {
+                Profile = profile,
+                DescriptorExtractionSkipped = true
+            },
+            rawVisibleMask: rawVisibleMask?.Clone());
     }
 
     /// <summary>

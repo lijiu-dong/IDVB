@@ -81,7 +81,6 @@ public sealed partial class HomePage
 
     private static bool IsGameRunning()
     {
-        using var operation = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("UI.Home.GameStatusQuery", "dwrg");
         var processes = Process.GetProcessesByName("dwrg");
         try { return processes.Length > 0; }
         finally { foreach (var process in processes) process.Dispose(); }

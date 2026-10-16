@@ -8,12 +8,9 @@ namespace IDVBuff.Cli;
 /// </summary>
 internal sealed class RealCliCandidateSelector(
     int? requestedPosition,
-    Guid? requestedMapId = null,
-    bool automaticOnly = false)
+    Guid? requestedMapId = null)
     : IMapCandidateSelector
 {
-    public bool AutomaticOnly => automaticOnly;
-
     public Task<MapCandidateDecision> SelectAsync(
         CapturedGameFrame frame,
         IReadOnlyList<MapRecognitionChoice> candidates,
@@ -21,7 +18,7 @@ internal sealed class RealCliCandidateSelector(
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (automaticOnly || candidates.Count == 0)
+        if (candidates.Count == 0)
             return Task.FromResult(MapCandidateDecision.Cancel());
 
         if (requestedMapId is { } mapId)

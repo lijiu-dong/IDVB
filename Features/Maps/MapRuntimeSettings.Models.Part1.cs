@@ -25,7 +25,6 @@ public sealed partial class MapRuntimeSettings
     public void Normalize()
     {
         RouteLineThickness = Math.Clamp(RouteLineThickness, 0, 3);
-        RouteOpacity = double.IsFinite(RouteOpacity) ? Math.Clamp(RouteOpacity, 0d, 1d) : 1d;
         if (!Enum.IsDefined(ScanPerformanceMode)) ScanPerformanceMode = ScanPerformanceMode.Balanced;
         if (!Enum.IsDefined(ScanUncertainAction)) ScanUncertainAction = ScanUncertainAction.ShowCandidates;
         var previousSchema = SchemaVersion;

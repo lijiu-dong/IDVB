@@ -4,6 +4,7 @@ using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
+using System.Reflection;
 
 namespace IDVBuff.Views;
 
@@ -127,7 +128,7 @@ public sealed partial class PluginsPage : Page
 
     private Border CreatePluginCard(IPlugin plugin, PluginManager manager)
     {
-        var metadata = PluginMetadata.For(plugin.GetType());
+        var metadata = plugin.GetType().GetCustomAttribute<PluginAttribute>();
         var grid = new Grid();
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });

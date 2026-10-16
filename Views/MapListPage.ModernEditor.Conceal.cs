@@ -20,7 +20,7 @@ public sealed partial class MapListPage : UserControl
             Text = "遮瑕笔头",
             FontSize = 16,
             FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-            Foreground = EditorText
+            Foreground = new SolidColorBrush(EditorText)
         });
         var shape = new ComboBox
         {

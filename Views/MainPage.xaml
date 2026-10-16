@@ -121,17 +121,11 @@
                                     Loaded="NavigationRow_Loaded"
                                     Unloaded="NavigationRow_Unloaded">
                                     <Grid Height="40" Margin="38,0,0,0">
-                                    <StackPanel Orientation="Horizontal" Spacing="10" Margin="24,0,0,0" VerticalAlignment="Center">
-                                        <TextBlock Text="{Binding DisplayName}"
-                                                   Foreground="{ThemeResource IdvbTextBrush}"
-                                                   Style="{StaticResource BodyTextBlockStyle}"
-                                                   VerticalAlignment="Center" />
-                                        <Border Visibility="{Binding BadgeVisibility}" Padding="5,2" CornerRadius="4"
-                                                Background="{ThemeResource AccentFillColorDefaultBrush}" VerticalAlignment="Center">
-                                            <TextBlock Text="{Binding Badge}" FontSize="9" FontWeight="SemiBold"
-                                                       Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
-                                        </Border>
-                                    </StackPanel>
+                                    <TextBlock Text="{Binding DisplayName}"
+                                               Margin="24,0,0,0"
+                                               Foreground="{ThemeResource IdvbTextBrush}"
+                                               Style="{StaticResource BodyTextBlockStyle}"
+                                               VerticalAlignment="Center" />
                                 </Grid>
                             </Button>
                         </DataTemplate>

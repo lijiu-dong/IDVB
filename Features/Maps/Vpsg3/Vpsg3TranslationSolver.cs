@@ -26,14 +26,12 @@ public static class Vpsg3TranslationSolver
         ArgumentNullException.ThrowIfNull(preparedFloor);
 
         var cfg = config ?? Vpsg3TuningConfig.Default;
-        using var scratchLease = scratch is null ? Vpsg3SolverScratch.Rent() : null;
-        var sc = scratch ?? scratchLease!.Scratch;
+        var sc = scratch ?? Vpsg3SolverScratch.Current;
         sc.CandidateCount = 0;
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(cfg.CoarseTranslationStride);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(cfg.MaxSparsePoints);
 
         var sparsePoints = observation.SparseEdgePoints;
-        var classes = (sparsePoints as Vpsg3SemanticPoints)?.Classes;
         var pointCount = sparsePoints.Count;
         if (pointCount == 0 || !double.IsFinite(estimatedScale) || estimatedScale <= 0.01d)
         {
@@ -71,10 +69,10 @@ public static class Vpsg3TranslationSolver
         if (maxDx < minDx || maxDy < minDy) return (default, null, null, false);
         var columns = (maxDx - minDx) / stride + 1;
         var scoreCount = checked(columns * ((maxDy - minDy) / stride + 1));
-        sc.EnsureTranslationCapacity(scoreCount);
+        if (sc.TranslationScores.Length < scoreCount)
+            sc.TranslationScores = new int[scoreCount];
         var scores = sc.TranslationScores.AsSpan(0, scoreCount);
-        ScoreClassifiedGridBands(sc.ScaledQueryPointsBuffer, limitPts, preparedFloor, maxDx, maxDy, stride,
-            sc.TranslationScores, minDx, minDy, classes);
+        ScoreCoarseGrid(scaledPts, preparedFloor, maxDx, maxDy, stride, scores, minDx, minDy);
 
         // 2. Coarse 2D translation grid search across reference space maintaining Top-32 candidates
         Span<CoarseCand> topPool = stackalloc CoarseCand[32];
@@ -103,7 +101,7 @@ public static class Vpsg3TranslationSolver
         for (var i = 0; i < poolCount; i++)
         {
             var (pDx, pDy, pHits) = PolishTranslationSubWindow(
-                scaledPts, preparedFloor, topPool[i].Dx, topPool[i].Dy, maxDx, maxDy, minDx, minDy, classes);
+                scaledPts, preparedFloor, topPool[i].Dx, topPool[i].Dy, maxDx, maxDy, minDx, minDy);
             polished[i] = new CoarseCand(pDx, pDy, pHits);
         }
         SortCoarsePool(polished);
@@ -213,7 +211,7 @@ public static class Vpsg3TranslationSolver
             if (foundRunnerUp && runnerUpHits >= 3)
             {
                 var (pDx2, pDy2, pHits2) = PolishTranslationSubWindow(
-                    scaledPts, preparedFloor, runnerUpDx, runnerUpDy, maxDx, maxDy, minDx, minDy, classes);
+                    scaledPts, preparedFloor, runnerUpDx, runnerUpDy, maxDx, maxDy, minDx, minDy);
 
                 var pDistSq = (pDx2 - best.Dx) * (pDx2 - best.Dx) + (pDy2 - best.Dy) * (pDy2 - best.Dy);
                 if (pDistSq >= minDistinctDistSqRef)
@@ -232,70 +230,12 @@ public static class Vpsg3TranslationSolver
 
     private readonly record struct CoarseCand(int Dx, int Dy, int Hits);
 
-    // Every translation row is scored independently, so bands of rows run
-    // concurrently and write disjoint score ranges. Results are bit-identical.
-    private static readonly int TranslationWorkers = Math.Clamp(Environment.ProcessorCount - 2, 1, 4);
-
-    private static void ScoreClassifiedGridBands(Point[] points, int pointCount, Vpsg3PreparedFloor floor,
-        int maxDx, int maxDy, int stride, int[] scores, int minDx, int minDy, byte[]? classes)
-    {
-        var rows = (maxDy - minDy) / stride + 1;
-        var columns = (maxDx - minDx) / stride + 1;
-        var bands = Math.Min(rows, TranslationWorkers * 2);
-        if (TranslationWorkers <= 1 || bands <= 1)
-        {
-            ScoreClassifiedGrid(points.AsSpan(0, pointCount), floor, maxDx, maxDy, stride,
-                scores.AsSpan(0, rows * columns), minDx, minDy, classes);
-            return;
-        }
-        // Derive the lazily built geometry once, under its own lock, before sharing it.
-        _ = floor.DilatedBitsetK3Span.Length;
-        try
-        {
-            Parallel.For(0, bands, new ParallelOptions { MaxDegreeOfParallelism = TranslationWorkers }, band =>
-            {
-                var first = rows * band / bands;
-                var last = rows * (band + 1) / bands;
-                if (first == last) return;
-                ScoreClassifiedGrid(points.AsSpan(0, pointCount), floor, maxDx, minDy + (last - 1) * stride, stride,
-                    scores.AsSpan(first * columns, (last - first) * columns), minDx, minDy + first * stride, classes);
-            });
-        }
-        catch (AggregateException exception) when (exception.InnerExceptions.Count > 0)
-        {
-            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(exception.InnerExceptions[0]).Throw();
-            throw;
-        }
-    }
-
     // Each bit lane counts one translation. Binary addition scores 64 offsets together,
     // preserving integer scores, grid order and ties; the runner-up reuses the same grid.
     internal static void ScoreCoarseGrid(ReadOnlySpan<Point> points, Vpsg3PreparedFloor floor,
         int maxDx, int maxDy, int stride, Span<int> scores, int minDx = 0, int minDy = 0)
-        => ScoreClassifiedGrid(points, floor, maxDx, maxDy, stride, scores, minDx, minDy, null);
-
-    private static void ScoreClassifiedGrid(ReadOnlySpan<Point> points, Vpsg3PreparedFloor floor,
-        int maxDx, int maxDy, int stride, Span<int> scores, int minDx, int minDy, byte[]? classes)
     {
-        // A floor lease keeps these immutable words alive throughout the grid.
-        // Resolve lazy geometry and class fields once, rather than for every
-        // point at every translation. No scores, search bounds or pixels change.
         var words = floor.DilatedBitsetK3Span;
-        var semantic = floor.SemanticIndex;
-        var warm = semantic?.BitsK3(SemanticStructureContours.Warm);
-        var cool = semantic?.BitsK3(SemanticStructureContours.Cool);
-        if (warm?.NativeWords is { } nativeWarm && cool?.NativeWords is { } nativeCool)
-        {
-            IDVBuff.Core.Imaging.NativeSemanticCorrelationGrid.Score(points, words, nativeWarm, nativeCool,
-                floor.ReferenceWidth, floor.ReferenceHeight, floor.WordsPerRow,
-                maxDx, maxDy, stride, scores, minDx, minDy, classes);
-            return;
-        }
-        // Keep the managed path's original direct CompactBitWords access.
-        var warmWords = warm?.ManagedWords;
-        var coolWords = cool?.ManagedWords;
-        var referenceWidth = floor.ReferenceWidth;
-        var referenceHeight = floor.ReferenceHeight;
         var wordsPerRow = floor.WordsPerRow;
         var columns = (maxDx - minDx) / stride + 1;
         Span<ulong> planes = stackalloc ulong[9]; // Up to 256 sampled points.
@@ -304,32 +244,26 @@ public static class Vpsg3TranslationSolver
             for (var blockX = minDx; blockX <= maxDx; blockX += 64)
             {
                 planes.Clear();
-                for (var pointIndex = 0; pointIndex < points.Length; pointIndex++)
+                foreach (var point in points)
                 {
-                    var point = points[pointIndex];
-                    var kind = classes?[pointIndex] ?? 0;
-                    var semanticWords = kind == SemanticStructureContours.Warm ? warmWords
-                        : kind == SemanticStructureContours.Cool ? coolWords : null;
                     var x = point.X + blockX;
                     var y = point.Y + dy;
-                    if ((uint)y >= (uint)referenceHeight || x >= referenceWidth || x <= -64)
+                    if ((uint)y >= (uint)floor.ReferenceHeight || x >= floor.ReferenceWidth || x <= -64)
                         continue;
                     ulong carry;
                     if (x < 0)
                     {
-                        var index = y * wordsPerRow;
-                        carry = (semanticWords is null ? words[index] : semanticWords[index]) << -x;
+                        carry = words[y * wordsPerRow] << -x;
                     }
                     else
                     {
                         var wordX = x >> 6;
                         var shift = x & 63;
-                        var index = y * wordsPerRow + wordX;
-                        carry = (semanticWords is null ? words[index] : semanticWords[index]) >> shift;
+                        carry = words[y * wordsPerRow + wordX] >> shift;
                         if (shift != 0 && wordX + 1 < wordsPerRow)
-                            carry |= (semanticWords is null ? words[index + 1] : semanticWords[index + 1]) << (64 - shift);
+                            carry |= words[y * wordsPerRow + wordX + 1] << (64 - shift);
                     }
-                    var remaining = referenceWidth - x;
+                    var remaining = floor.ReferenceWidth - x;
                     if (remaining < 64)
                         carry &= (1UL << remaining) - 1;
                     for (var bit = 0; carry != 0; bit++)
@@ -344,16 +278,9 @@ public static class Vpsg3TranslationSolver
                 var last = Math.Min(63, maxDx - blockX);
                 for (var lane = first; lane <= last; lane += stride)
                 {
-                    // Constant plane indices let the JIT avoid loop/index overhead.
-                    var hits = (int)((planes[0] >> lane) & 1)
-                        | (int)((planes[1] >> lane) & 1) << 1
-                        | (int)((planes[2] >> lane) & 1) << 2
-                        | (int)((planes[3] >> lane) & 1) << 3
-                        | (int)((planes[4] >> lane) & 1) << 4
-                        | (int)((planes[5] >> lane) & 1) << 5
-                        | (int)((planes[6] >> lane) & 1) << 6
-                        | (int)((planes[7] >> lane) & 1) << 7
-                        | (int)((planes[8] >> lane) & 1) << 8;
+                    var hits = 0;
+                    for (var bit = 0; bit < planes.Length; bit++)
+                        hits |= (int)((planes[bit] >> lane) & 1) << bit;
                     scores[(dy - minDy) / stride * columns + (blockX + lane - minDx) / stride] = hits;
                 }
             }
@@ -408,8 +335,7 @@ public static class Vpsg3TranslationSolver
         int maxDx,
         int maxDy,
         int minDx,
-        int minDy,
-        byte[]? classes = null)
+        int minDy)
     {
         var bestDx = centerDx;
         var bestDy = centerDy;
@@ -418,7 +344,7 @@ public static class Vpsg3TranslationSolver
         {
             var rx = scaledPts[i].X + centerDx;
             var ry = scaledPts[i].Y + centerDy;
-            if (Hit(i, rx, ry))
+            if (preparedFloor.IsHitK3(rx, ry))
             {
                 bestHits++;
             }
@@ -441,7 +367,7 @@ public static class Vpsg3TranslationSolver
                 {
                     var rx = scaledPts[i].X + ldx;
                     var ry = scaledPts[i].Y + ldy;
-                    if (Hit(i, rx, ry))
+                    if (preparedFloor.IsHitK3(rx, ry))
                     {
                         hits++;
                     }
@@ -457,9 +383,5 @@ public static class Vpsg3TranslationSolver
         }
 
         return (bestDx, bestDy, bestHits);
-
-        bool Hit(int i, int x, int y) => preparedFloor.SemanticIndex is { } semantic
-            && classes is not null && classes[i] is SemanticStructureContours.Warm or SemanticStructureContours.Cool
-            ? semantic.IsHit(x, y, classes[i], 1) : preparedFloor.IsHitK3(x, y);
     }
 }

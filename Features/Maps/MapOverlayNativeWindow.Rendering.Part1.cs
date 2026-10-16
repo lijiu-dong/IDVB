@@ -8,124 +8,6 @@ using System.Runtime.InteropServices;
 namespace IDVBuff.Features.Maps;
 internal static partial class MapOverlayBitmapRenderer
 {
-    // A GDI+ clone of a Bitmap wrapping external DIB pixels can retain that
-    // backing storage. Compatibility callers own this result independently
-    // of cache eviction, so copy locked premultiplied bytes into owned pixels.
-    private static Bitmap CopyOwnedRaster(Bitmap source)
-    {
-        var width = source.Width;
-        var height = source.Height;
-        var copy = new Bitmap(width, height, PixelFormat.Format32bppPArgb);
-        try
-        {
-            copy.SetResolution(source.HorizontalResolution, source.VerticalResolution);
-            var rectangle = new Rectangle(0, 0, width, height);
-            var input = source.LockBits(rectangle, ImageLockMode.ReadOnly, PixelFormat.Format32bppPArgb);
-            try
-            {
-                var output = copy.LockBits(rectangle, ImageLockMode.WriteOnly, PixelFormat.Format32bppPArgb);
-                try
-                {
-                    var rowBytes = checked(width * 4);
-                    for (var y = 0; y < height; y++)
-                        CopyRasterBytes(output.Scan0 + checked(y * output.Stride), input.Scan0 + checked(y * input.Stride), (IntPtr)rowBytes);
-                }
-                finally { copy.UnlockBits(output); }
-            }
-            finally { source.UnlockBits(input); }
-            return copy;
-        }
-        catch { copy.Dispose(); throw; }
-    }
-
-    [DllImport("kernel32.dll", EntryPoint = "RtlMoveMemory")]
-    private static extern void CopyRasterBytes(IntPtr destination, IntPtr source, IntPtr length);
-
-    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Bitmap, MapOverlayNativeWindow.SharedDib> SharedMapLayers = new();
-    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Bitmap, MemoryStream> SourceImageStreams = new();
-    internal static bool TryGetSharedMapLayer(Bitmap bitmap, out MapOverlayNativeWindow.SharedDib? layer) =>
-        SharedMapLayers.TryGetValue(bitmap, out layer);
-    // Native presentation synchronously copies into a retained DIB. The callback
-    // must neither mutate nor retain this cache-owned bitmap; hold the cache lock
-    // through that copy instead of creating another full-raster clone.
-    internal static void WithMapLayer(MapOverlayRenderMap map, uint dpi,
-        bool showGateMarkers, bool showAuxiliaryAnchors, bool showTextAnnotations,
-        bool showBoxAnnotations, bool showLineAnnotations, float mapOpacity,
-        Action<Bitmap> consume, Rectangle? sourceRegion = null)
-    {
-        ArgumentNullException.ThrowIfNull(consume);
-        using var operation = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("Overlay.MapLayer.Present", map.ImagePath);
-        var width = MapOverlayRealtimeTransformPlanner.RoundToPixel(map.Width);
-        var height = MapOverlayRealtimeTransformPlanner.RoundToPixel(map.Height);
-        lock (ImageCacheLock)
-        {
-            var bitmap = GetOrBuildMapLayer(map with { Left = 0f, Top = 0f, Width = width, Height = height },
-                width, height, ScaleFor(dpi), mapOpacity, showGateMarkers, showAuxiliaryAnchors,
-                showTextAnnotations, showBoxAnnotations, showLineAnnotations, sourceRegion);
-            consume(bitmap);
-        }
-    }
-
-    // Same contract as WithMapLayer, but any cached window of this layer that
-    // contains `coverage` is presented instead of rebuilding `sourceRegion`.
-    // The callback receives the window actually used for its raster placement.
-    internal static void WithMapLayerCovering(MapOverlayRenderMap map, uint dpi,
-        bool showGateMarkers, bool showAuxiliaryAnchors, bool showTextAnnotations,
-        bool showBoxAnnotations, bool showLineAnnotations, float mapOpacity,
-        Rectangle coverage, Rectangle sourceRegion, Action<Bitmap, Rectangle> consume)
-    {
-        ArgumentNullException.ThrowIfNull(consume);
-        using var operation = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("Overlay.MapLayer.Present", map.ImagePath);
-        var width = MapOverlayRealtimeTransformPlanner.RoundToPixel(map.Width);
-        var height = MapOverlayRealtimeTransformPlanner.RoundToPixel(map.Height);
-        lock (ImageCacheLock)
-        {
-            var bitmap = GetOrBuildMapLayer(map with { Left = 0f, Top = 0f, Width = width, Height = height },
-                width, height, ScaleFor(dpi), mapOpacity, showGateMarkers, showAuxiliaryAnchors,
-                showTextAnnotations, showBoxAnnotations, showLineAnnotations, sourceRegion, coverage,
-                out var usedRegion);
-            consume(bitmap, usedRegion);
-        }
-    }
-
-
-    private static Bitmap CreateCachedBitmap(int width, int height, string resource)
-    {
-        var bytes = checked((long)width * height * 4);
-        if (resource == "Overlay.BakedMapLayer")
-        {
-            var layer = new MapOverlayNativeWindow.SharedDib(width, height, resource);
-            try
-            {
-                SharedMapLayers.Add(layer.Bitmap, layer);
-                return layer.Bitmap;
-            }
-            catch { layer.Dispose(); throw; }
-        }
-        var request = IDVBuff.Core.Diagnostics.MemoryJournal.Request(resource, bytes, "gdiplus.dll");
-        var bitmap = new Bitmap(width, height, PixelFormat.Format32bppPArgb);
-        IDVBuff.Core.Diagnostics.MemoryJournal.TrackResource(bitmap, resource, bytes, "gdiplus.dll", request);
-        return bitmap;
-    }
-
-    private static void DisposeCachedBitmap(Bitmap bitmap)
-    {
-        if (SharedMapLayers.TryGetValue(bitmap, out var layer))
-        {
-            SharedMapLayers.Remove(bitmap);
-            layer.Dispose();
-            return;
-        }
-        bitmap.Dispose();
-        if (SourceImageStreams.TryGetValue(bitmap, out var stream))
-        {
-            SourceImageStreams.Remove(bitmap);
-            stream.Dispose();
-        }
-        // Complete physical cleanup even if the diagnostic writer has failed.
-        IDVBuff.Core.Diagnostics.MemoryJournal.ReleaseResource(bitmap);
-        if (stream is not null) IDVBuff.Core.Diagnostics.MemoryJournal.ReleaseResource(stream);
-    }
 
     internal static Bitmap GetOrLoadScaledMapImage(
         string imagePath,
@@ -141,17 +23,16 @@ internal static partial class MapOverlayBitmapRenderer
         var key = $"{Path.GetFullPath(imagePath)}|dpi={dpi}";
         lock (ImageCacheLock)
         {
-            EnsureImageCacheSourceVersionCore(imagePath);
             if (ScaledImageCache.TryGetValue(key, out var cached))
             {
                 if (cached.Width == width && cached.Height == height)
                     return cached.Bitmap;
-                DisposeCachedBitmap(cached.Bitmap);
+                cached.Bitmap.Dispose();
                 ScaledImageCache.Remove(key);
             }
 
             var source = GetOrLoadMapImage(imagePath);
-            var scaled = CreateCachedBitmap(width, height, "Overlay.ScaledSource");
+            var scaled = new Bitmap(width, height, PixelFormat.Format32bppPArgb);
             scaled.SetResolution(
                 dpi == 0 ? DefaultDpi : dpi,
                 dpi == 0 ? DefaultDpi : dpi);

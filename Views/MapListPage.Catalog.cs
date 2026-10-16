@@ -24,10 +24,10 @@ public sealed partial class MapListPage : UserControl
             return;
         var canConfirm = _draft.Recognition.HasFirstFloorGateMarkers();
         _markerConfirmButton.IsEnabled = canConfirm;
+        _markerConfirmButton.Background = new SolidColorBrush(
+            canConfirm ? AccentBlue : _modernEditorActive ? EditorPanelRaised : DisabledGray);
         if (_modernEditorActive)
-            IDVBuff.Presentation.Theming.ThemeButton.Apply(_markerConfirmButton, IDVBuff.Appearance.ThemeButtonRole.Accent);
-        else
-            _markerConfirmButton.Background = new SolidColorBrush(canConfirm ? AccentBlue : DisabledGray);
+            _markerConfirmButton.Foreground = new SolidColorBrush(canConfirm ? EditorText : EditorMuted);
     }
 
     private async Task SaveDraftAsync()
@@ -36,24 +36,12 @@ public sealed partial class MapListPage : UserControl
             return;
         try
         {
-            await RunMapOperationAsync("正在保存地图……", async () =>
-            {
-                await PrepareCoCreationSaveAsync();
-                var savedMap = await MapOperationProgress.RunAsync(0, .85, () => Task.Run(() => _repository.SaveAsync(_draft)));
-                if (_coCreationPackage is { } coCreationPackage)
-                    await _mapSubscriptionService.RegisterCoCreationEditAsync(coCreationPackage.Record, coCreationPackage.Publication, savedMap, _coCreationSelectedClass?.ImportedClass?.SourceName, _coCreationSourceDraft?.SourcePackageMapId);
-                if (_coCreationMode) _draft.Id = savedMap.Id;
-                _selectedMapIds.Add(savedMap.Id);
-                // Saving no longer needs the editor's decoded images or XAML tree.
-                // Release them before cache refresh/list I/O so every confirm path
-                // has the same immediate lifetime boundary as cancel/navigation.
-                ResetMarkerEditorSession();
-
-                MapOperationProgress.Report(.9, "正在刷新地图……");
-                if (!App.IsSafeMode)
-                    await MapOperationProgress.RunAsync(.9, 1, () => App.Session.RefreshMapCacheAsync(savedMap.Id));
-
-            });
+            var savedMap = await _repository.SaveAsync(_draft);
+            _selectedMapIds.Add(savedMap.Id);
+            // Saving no longer needs the editor's decoded images or XAML tree.
+            // Release them before cache refresh/list I/O so every confirm path
+            // has the same immediate lifetime boundary as cancel/navigation.
+            ResetMarkerEditorSession();
 
             // Old batch import flow (multiple image pairs dropped at once)
             if (TryAdvanceBatch())
@@ -73,7 +61,8 @@ public sealed partial class MapListPage : UserControl
                 return;
             }
 
-
+            if (!App.IsSafeMode)
+                await App.Session.RefreshMapCacheAsync(savedMap.Id);
             MapClassDiagnosticCoordinator.Instance.Trigger(_repository);
             _draft = null;
             _activeAnchorId = null;
@@ -137,24 +126,18 @@ public sealed partial class MapListPage : UserControl
         IdvmImportPlan? plan = null;
         try
         {
-            var result = await RunMapOperationAsync("正在解析地图……", async () =>
+            plan = await Task.Run(() => _idvmPackageService.InspectAsync(packagePath));
+            var result = await _idvmPackageService.ImportAsync(plan);
+            plan = null; // ImportAsync owns disposal after this point.
+            try
             {
-                plan = await MapOperationProgress.RunAsync(0, .35, () => Task.Run(() => _idvmPackageService.InspectAsync(packagePath)));
-                var imported = await MapOperationProgress.RunAsync(.35, .9, () => Task.Run(() => _idvmPackageService.ImportAsync(plan)));
-                MapOperationProgress.Report(.9, "正在刷新地图……");
-                plan = null; // ImportAsync owns disposal after this point.
-                try
-                {
-                    if (!App.IsSafeMode)
-                        await MapOperationProgress.RunAsync(.9, 1, () => App.Session.RefreshMapCacheAsync());
-                }
-                catch (Exception exception)
-                {
-                    System.Diagnostics.Debug.WriteLine($"Imported maps but runtime refresh failed: {exception}");
-                }
-
-                return imported;
-            });
+                if (!App.IsSafeMode)
+                    await App.Session.RefreshMapCacheAsync();
+            }
+            catch (Exception exception)
+            {
+                System.Diagnostics.Debug.WriteLine($"Imported maps but runtime refresh failed: {exception}");
+            }
 
             // ShowListAsync rebuilds the action row. Clear the operation state
             // before rebuilding so the newly-created import/export buttons are
@@ -204,13 +187,6 @@ public sealed partial class MapListPage : UserControl
 
     private async Task<string?> PickIdvmPackageAsync()
     {
-#if IDVB_DEVELOPMENT_BUILD
-        if (_developmentImportPackage is { } replayPackage)
-        {
-            _developmentImportPackage = null;
-            return ValidateDevelopmentPackagePath(replayPackage, mustExist: true);
-        }
-#endif
         try
         {
             var picker = new FileOpenPicker(((App)Application.Current).MainWindow.AppWindow.Id)

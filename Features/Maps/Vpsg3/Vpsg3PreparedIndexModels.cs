@@ -184,24 +184,18 @@ public sealed record Vpsg3ScalePrior(
 /// Supports ref-counted delayed disposal so active lease holders are never invalidated during background swaps.
 /// Prohibits 0->1 resurrection via CAS TryRetain.
 /// </summary>
-public sealed partial class Vpsg3PreparedFloor : IDisposable
+public sealed class Vpsg3PreparedFloor : IDisposable
 {
     private int _refCount = 1;
-    private int _ownerReleased;
     private int _disposed;
     private ulong[]? _dilatedBitsetK5;
     private ulong[]? _dilatedBitsetK3;
-    private PrecisionDistanceBuffer? _precisionDistance;
+    private float[]? _precisionDistance;
     private readonly object _precisionGate = new();
     private readonly long _baseMemoryBytes;
 
+    internal ReadOnlySpan<float> PrecisionDistance => _precisionDistance;
     public bool HasPrecisionDistance => _precisionDistance is not null;
-
-    internal PrecisionDistanceLease? RentPrecisionDistance()
-    {
-        lock (_precisionGate)
-            return _precisionDistance?.Rent();
-    }
 
     public Vpsg3IndexCacheKey CacheKey { get; }
     public int ReferenceWidth { get; }
@@ -209,28 +203,27 @@ public sealed partial class Vpsg3PreparedFloor : IDisposable
     public int EdgePixelCount { get; }
     public Vpsg3ScalePrior ScalePrior { get; }
     public int WordsPerRow { get; }
-    public long MemoryBytes => _baseMemoryBytes + DerivedGeometryK3Bytes + DerivedGeometryK5Bytes + (SemanticIndex?.MemoryBytes ?? 0) + (_precisionDistance?.MemoryBytes ?? 0L);
+    public long MemoryBytes => _baseMemoryBytes + (_precisionDistance is null ? 0L : _precisionDistance.LongLength * sizeof(float) + 24L);
 
     public bool IsDisposed => Volatile.Read(ref _disposed) != 0;
 
     public ReadOnlySpan<ulong> DilatedBitsetSpan =>
-        GetGeometryK5() is { } words ? words.AsSpan() : ReadOnlySpan<ulong>.Empty;
+        _dilatedBitsetK5 is not null ? _dilatedBitsetK5.AsSpan() : ReadOnlySpan<ulong>.Empty;
 
     public ReadOnlySpan<ulong> DilatedBitsetK5Span =>
-        GetGeometryK5() is { } words ? words.AsSpan() : ReadOnlySpan<ulong>.Empty;
+        _dilatedBitsetK5 is not null ? _dilatedBitsetK5.AsSpan() : ReadOnlySpan<ulong>.Empty;
 
     public ReadOnlySpan<ulong> DilatedBitsetK3Span =>
-        GetGeometryK3() is { } words ? words.AsSpan() : ReadOnlySpan<ulong>.Empty;
+        _dilatedBitsetK3 is not null ? _dilatedBitsetK3.AsSpan() : ReadOnlySpan<ulong>.Empty;
 
     public ReadOnlyMemory<ulong> DilatedBitsetMemory =>
-        GetGeometryK5() is { } words ? words.AsMemory() : ReadOnlyMemory<ulong>.Empty;
+        _dilatedBitsetK5 is not null ? _dilatedBitsetK5.AsMemory() : ReadOnlyMemory<ulong>.Empty;
 
-    public int BitsetWordCount => IsDisposed ? 0 : _deriveGeometryK5
-        ? checked(WordsPerRow * ReferenceHeight) : _dilatedBitsetK5?.Length ?? 0;
+    public int BitsetWordCount => _dilatedBitsetK5?.Length ?? 0;
 
     public ulong GetBitsetWord(int index)
     {
-        var bitset = GetGeometryK5();
+        var bitset = _dilatedBitsetK5;
         if (bitset is null || (uint)index >= (uint)bitset.Length)
             throw new IndexOutOfRangeException($"Bitset word index {index} out of range.");
         return bitset[index];
@@ -239,7 +232,7 @@ public sealed partial class Vpsg3PreparedFloor : IDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool IsHitK5(int rx, int ry)
     {
-        var bitset = GetGeometryK5();
+        var bitset = _dilatedBitsetK5;
         if ((uint)rx < (uint)ReferenceWidth && (uint)ry < (uint)ReferenceHeight && bitset is not null)
         {
             return (bitset[ry * WordsPerRow + (rx >> 6)] & (1UL << (rx & 63))) != 0;
@@ -250,7 +243,7 @@ public sealed partial class Vpsg3PreparedFloor : IDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool IsHitK3(int rx, int ry)
     {
-        var bitset = GetGeometryK3();
+        var bitset = _dilatedBitsetK3;
         if ((uint)rx < (uint)ReferenceWidth && (uint)ry < (uint)ReferenceHeight && bitset is not null)
         {
             return (bitset[ry * WordsPerRow + (rx >> 6)] & (1UL << (rx & 63))) != 0;
@@ -261,8 +254,8 @@ public sealed partial class Vpsg3PreparedFloor : IDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void TestK3K5(int rx, int ry, out bool isK5, out bool isK3)
     {
-        var b5 = GetGeometryK5();
-        var b3 = GetGeometryK3();
+        var b5 = _dilatedBitsetK5;
+        var b3 = _dilatedBitsetK3;
         if ((uint)rx < (uint)ReferenceWidth && (uint)ry < (uint)ReferenceHeight && b5 is not null && b3 is not null)
         {
             var idx = ry * WordsPerRow + (rx >> 6);
@@ -287,8 +280,7 @@ public sealed partial class Vpsg3PreparedFloor : IDisposable
         ulong[] dilatedBitsetK5,
         ulong[] dilatedBitsetK3,
         long memoryBytes,
-        float[]? precisionDistance = null,
-        long memoryRequestId = 0, bool deriveGeometryK3 = false, bool deriveGeometryK5 = false)
+        float[]? precisionDistance = null)
     {
         CacheKey = cacheKey;
         ReferenceWidth = referenceWidth;
@@ -298,14 +290,10 @@ public sealed partial class Vpsg3PreparedFloor : IDisposable
         WordsPerRow = wordsPerRow;
         _dilatedBitsetK5 = dilatedBitsetK5 ?? throw new ArgumentNullException(nameof(dilatedBitsetK5));
         _dilatedBitsetK3 = dilatedBitsetK3 ?? throw new ArgumentNullException(nameof(dilatedBitsetK3));
-        _deriveGeometryK3 = deriveGeometryK3;
-        _deriveGeometryK5 = deriveGeometryK5;
         if (precisionDistance is not null && precisionDistance.LongLength != (long)referenceWidth * referenceHeight)
             throw new ArgumentException("Precision distance field must match the reference dimensions.", nameof(precisionDistance));
         _baseMemoryBytes = memoryBytes - (precisionDistance is null ? 0L : precisionDistance.LongLength * sizeof(float) + 24L);
-        _precisionDistance = precisionDistance is null ? null : new PrecisionDistanceBuffer(precisionDistance, $"VPSG3.Precision/{cacheKey}");
-        _baseOwnership = IDVBuff.Core.Diagnostics.MemoryJournal.Own($"VPSG3.Base/{cacheKey}", _baseMemoryBytes,
-            requestId: memoryRequestId);
+        _precisionDistance = precisionDistance;
     }
 
     public Vpsg3PreparedFloor(
@@ -337,12 +325,10 @@ public sealed partial class Vpsg3PreparedFloor : IDisposable
 
             try
             {
-                using var input = Cv2.ImRead(linePath, ImreadModes.Unchanged);
-                using var edgeImage = SemanticStructureContours.Geometry(input);
+                using var edgeImage = Cv2.ImRead(linePath, ImreadModes.Grayscale);
                 if (edgeImage.Empty() || edgeImage.Width != ReferenceWidth || edgeImage.Height != ReferenceHeight)
                     return false;
 
-                input.Dispose(); // Geometry owns independent pixels; PNG pixels are no longer read.
                 return EnsurePrecisionDistance(edgeImage);
             }
             catch
@@ -362,9 +348,14 @@ public sealed partial class Vpsg3PreparedFloor : IDisposable
             if (_precisionDistance is not null || Volatile.Read(ref _disposed) != 0)
                 return _precisionDistance is not null;
 
-            if (edgeImage.Empty() || edgeImage.Width != ReferenceWidth || edgeImage.Height != ReferenceHeight)
-                return false;
-            var buffer = CreateNativePrecisionDistance(edgeImage, $"VPSG3.Precision/{CacheKey}");
+            using var binary = new Mat();
+            using var inverse = new Mat();
+            using var distance = new Mat();
+            Cv2.Threshold(edgeImage, binary, 128, 255, ThresholdTypes.Binary);
+            Cv2.BitwiseNot(binary, inverse);
+            Cv2.DistanceTransform(inverse, distance, DistanceTypes.L2, DistanceTransformMasks.Precise);
+            var buffer = new float[checked(ReferenceWidth * ReferenceHeight)];
+            Marshal.Copy(distance.Data, buffer, 0, buffer.Length);
             Interlocked.Exchange(ref _precisionDistance, buffer);
             return true;
         }
@@ -374,7 +365,7 @@ public sealed partial class Vpsg3PreparedFloor : IDisposable
     {
         lock (_precisionGate)
         {
-            Interlocked.Exchange(ref _precisionDistance, null)?.Dispose();
+            Interlocked.Exchange(ref _precisionDistance, null);
         }
     }
 
@@ -415,26 +406,15 @@ public sealed partial class Vpsg3PreparedFloor : IDisposable
     {
         if (Interlocked.Exchange(ref _disposed, 1) == 0)
         {
-            lock (_precisionGate)
-            {
-                _dilatedBitsetK5 = null;
-                _dilatedBitsetK3 = null;
-                _derivedGeometryK3Ownership?.Dispose();
-                _derivedGeometryK3Ownership = null;
-                _derivedGeometryK5Ownership?.Dispose();
-                _derivedGeometryK5Ownership = null;
-                Interlocked.Exchange(ref _precisionDistance, null)?.Dispose();
-                _baseOwnership?.Dispose();
-                Interlocked.Exchange(ref _semanticIndex, null)?.Dispose();
-                _semanticOwnership?.Dispose();
-                _semanticOwnership = null;
-            }
+            _dilatedBitsetK5 = null;
+            _dilatedBitsetK3 = null;
+            _precisionDistance = null;
         }
     }
 
     public void Dispose()
     {
-        if (Interlocked.Exchange(ref _ownerReleased, 1) == 0) Release();
+        Release();
     }
 }
 

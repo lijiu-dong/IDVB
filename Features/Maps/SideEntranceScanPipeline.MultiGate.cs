@@ -1,5 +1,4 @@
 using OpenCvSharp;
-using IDVBuff.Pipeline;
 
 namespace IDVBuff.Features.Maps;
 
@@ -7,14 +6,6 @@ public sealed partial class SideEntranceScanPipeline
 {
     public IReadOnlyList<SideEntranceScanCandidate> RunScan(Mat capturedFrame,
         IReadOnlyList<(MapRecord map, string floorKey, Mat featureTemplate)> candidates,
-        IReadOnlyList<GateDetection> detectedGates, int topK = 5,
-        MapScreenRect? viewportBounds = null, Action<double>? progress = null)
-        => RunScan(capturedFrame, candidates.Select(c =>
-            (c.map, c.floorKey, ScanStructureIndex.Get(c.featureTemplate))).ToArray(),
-            detectedGates, topK, viewportBounds, progress);
-
-    internal IReadOnlyList<SideEntranceScanCandidate> RunScan(Mat capturedFrame,
-        IReadOnlyList<(MapRecord map, string floorKey, ScanStructureIndex featureTemplate)> candidates,
         IReadOnlyList<GateDetection> detectedGates, int topK = 5,
         MapScreenRect? viewportBounds = null, Action<double>? progress = null)
     {
@@ -29,20 +20,17 @@ public sealed partial class SideEntranceScanPipeline
         var viewport = viewportBounds ?? new MapScreenRect(0, 0, capturedFrame.Width, capturedFrame.Height);
         // Shared evidence depends only on this capture. An unrelated candidate's
         // authored anchor or maximum search scale must never erase visible walls.
-        using var evidenceTiming = MapOperationTraceAmbient.StartChild("side_frame_evidence");
         var frame = new ScanFrameEvidence(capturedFrame, viewport, detectedGates, policy);
         if (context is not null)
         {
             context.SetFrame(frame);
             context.EligibleIdentities = candidates.Select(c => (c.map.Id, c.floorKey)).Distinct().Count();
         }
-        evidenceTiming.Complete();
         try
         {
             if (frame.SearchPoints.Length == 0) return [];
             var found = new SideEntranceScanCandidate?[candidates.Count];
             var completed = 0;
-            using var searchTiming = MapOperationTraceAmbient.StartChild("side_all_floor_search");
             Parallel.For(0, candidates.Count, new ParallelOptions
             { MaxDegreeOfParallelism = Math.Max(1, SideEntranceScanRules.ScanParallelism) }, i =>
             {
@@ -62,8 +50,6 @@ public sealed partial class SideEntranceScanPipeline
                 var finished = Interlocked.Increment(ref completed);
                 progress?.Invoke(finished / (double)candidates.Count);
             });
-            searchTiming.Complete();
-            using var resultTiming = MapOperationTraceAmbient.StartChild("side_search_result_assembly");
             var results = found.Where(c => c is not null).Select(c => c!).OrderByDescending(c => c.MatchScore).ToArray();
             if (context is not null && (completed != candidates.Count || results.Length != context.EligibleIdentities
                 || topK < results.Length))

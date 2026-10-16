@@ -37,17 +37,11 @@ internal sealed class CaptureDeviceOwner<T>(Func<T> create) where T : class, IDi
     internal sealed class Entry(T value)
     {
         private int _references = 1; // The owner holds one reference between requests.
-        private readonly IDisposable? _memoryOwnership = IDVBuff.Core.Diagnostics.MemoryJournal.Own(
-            $"CaptureDeviceOwner<{typeof(T).Name}>", nativeModule: "d3d11.dll");
         internal T Value { get; } = value;
         internal void Retain() => Interlocked.Increment(ref _references);
         internal void Release()
         {
-            if (Interlocked.Decrement(ref _references) == 0)
-            {
-                Value.Dispose();
-                _memoryOwnership?.Dispose();
-            }
+            if (Interlocked.Decrement(ref _references) == 0) Value.Dispose();
         }
     }
 

@@ -2,13 +2,13 @@ namespace IDVBuff.Features.Maps;
 
 public sealed partial class MapRepository
 {
-    private static MapRecord DetachFreshCatalogRecord(MapCatalogDocument catalog, MapRecord record)
+    private static MapRecord CloneWithClassProperties(
+        MapCatalogDocument catalog,
+        MapRecord record)
     {
-        // ReadCatalogAsync constructs a fresh, unshared document each time.
-        // Transfer its record to the returned snapshot instead of allocating
-        // another complete recognition graph. Class properties stay detached.
-        record.ClassProperties = GetClassProperties(catalog, record.Class);
-        return record;
+        var clone = record.Clone();
+        clone.ClassProperties = GetClassProperties(catalog, record.Class);
+        return clone;
     }
 
     public async Task SetClassScanFloorAsync(
@@ -22,10 +22,7 @@ public sealed partial class MapRepository
         await Gate.WaitAsync(cancellationToken);
         try
         {
-            var catalog = await ReadClassCatalogAsync(canonicalName);
-            var revision = GetCatalogRevision();
-            if (!CanonicalCatalogRevisions.TryGetValue(CatalogPath, out var canonicalRevision) || canonicalRevision != revision)
-                throw new IOException("地图目录在读取期间发生变化，请刷新后重试。");
+            var catalog = await ReadCatalogAsync();
             var actualName = catalog.Classes.SingleOrDefault(candidate =>
                 string.Equals(candidate, canonicalName, StringComparison.OrdinalIgnoreCase))
                 ?? throw new InvalidOperationException("找不到要修改的 Class。");
@@ -61,7 +58,7 @@ public sealed partial class MapRepository
             }
             properties.ScanFloorKey = normalizedFloor;
             catalog.ClassProperties[actualName] = properties;
-            await WriteScanFloorPropertiesAsync(catalog, revision, actualName, normalizedFloor, cancellationToken);
+            await WriteCatalogAsync(catalog);
         }
         finally
         {
@@ -118,12 +115,8 @@ public sealed partial class MapRepository
                     CopyDirectory(sourceDirectory, Path.Combine(backupDirectory, map.Id.ToString("N")));
                 }
 
-                var completedMaps = 0;
                 foreach (var map in maps)
                 {
-                    using var mapProgress = MapOperationProgress.Range(.1 + .8 * completedMaps / Math.Max(1, maps.Count),
-                        .1 + .8 * ++completedMaps / Math.Max(1, maps.Count));
-                    MapOperationProgress.Report(0, "正在去除背景……");
                     cancellationToken.ThrowIfCancellationRequested();
                     var draft = await CreateDraftCoreAsync(map.Id, gateAlreadyHeld: true)
                         ?? throw new InvalidOperationException($"地图 {map.DisplayName} 已不存在。");

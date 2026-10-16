@@ -159,8 +159,6 @@ internal static class ThemeService
 
     internal static ThemeProfile ProfileFor(FrameworkElement owner) => FindScope(owner)?.Profile ?? ThemeProfile.Application;
 
-    internal static Window? WindowFor(FrameworkElement owner) => FindScope(owner)?.HostWindow;
-
     private static ThemeScope? FindScope(FrameworkElement owner)
     {
         DependencyObject? current = owner;

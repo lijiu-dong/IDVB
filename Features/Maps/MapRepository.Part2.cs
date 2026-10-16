@@ -57,7 +57,7 @@ public sealed partial class MapRepository
             var catalog = await ReadCatalogAsync();
             return catalog.Maps
                 .OrderBy(record => record.SequenceNumber)
-                .Select(record => DetachFreshCatalogRecord(catalog, record))
+                .Select(record => CloneWithClassProperties(catalog, record))
                 .ToArray();
         }
         finally

@@ -67,7 +67,7 @@ public sealed record ScanExecutionPolicy(
 
 /// <summary>One immutable policy and monotonic deadline from dispatch through publication.
 /// The lease flows into worker tasks; user selection explicitly ends automatic scanning.</summary>
-internal sealed partial class ScanExecutionContext : IDisposable
+internal sealed class ScanExecutionContext : IDisposable
 {
     private static readonly AsyncLocal<ScanExecutionContext?> Ambient = new();
     private readonly ScanExecutionContext? _previous;
@@ -170,17 +170,10 @@ internal sealed partial class ScanExecutionContext : IDisposable
     }
     public void Dispose()
     {
-        lock (_indexReaderGate)
-        {
-            if (_disposed) return;
-            _disposed = true;
-        }
-        try { Frame?.Dispose(); }
-        finally
-        {
-            try { ReleaseIndexReaders(); }
-            finally { Ambient.Value = _previous; }
-        }
+        if (_disposed) return;
+        _disposed = true;
+        Frame?.Dispose();
+        Ambient.Value = _previous;
     }
 }
 
@@ -196,57 +189,41 @@ internal sealed class ScanFrameEvidence : IDisposable
         ScanExecutionPolicy policy)
     {
         Source = frame;
-        using var workspace = Vpsg3FastLiveExtractor.RentScratch();
-        var scratch = workspace.Scratch;
-        Observation = Vpsg3FastLiveExtractor.Extract(frame, viewport, policy.SparsePoints, scratch);
-        try
+        Observation = Vpsg3FastLiveExtractor.Extract(frame, viewport, policy.SparsePoints);
+        if (policy.Mode == ScanPerformanceMode.DeepScan)
+            DeepScanLiveEvidence.MaskAnnotations(frame, Observation);
+        else MaskColoredAnnotations(frame, Observation);
+        // Remove icons in evidence space, not by painting artificial edges into the source frame.
+        var bounds = new Rect(0, 0, frame.Width, frame.Height);
+        foreach (var gate in gates)
         {
-            // Extraction outputs have independent storage. Its completed temporary
-            // color buffers can now serve annotation masking on this same frame.
-            if (frame.Channels() is 3 or 4)
+            var width = gate.ScreenBounds.Width + 18;
+            var height = gate.ScreenBounds.Height + 18;
+            var rect = new Rect((int)Math.Floor(gate.ScreenBounds.CenterX - (viewport?.X ?? 0) - width / 2),
+                (int)Math.Floor(gate.ScreenBounds.CenterY - (viewport?.Y ?? 0) - height / 2),
+                (int)Math.Ceiling(width), (int)Math.Ceiling(height)).Intersect(bounds);
+            if (rect.Width > 0 && rect.Height > 0)
             {
-                if (frame.Channels() == 4) Cv2.CvtColor(frame, scratch.Bgr, ColorConversionCodes.BGRA2BGR);
-                else frame.CopyTo(scratch.Bgr);
-                Cv2.CvtColor(scratch.Bgr, scratch.Hsv, ColorConversionCodes.BGR2HSV);
+                Cv2.Rectangle(Observation.ObservedEdges, rect, Scalar.Black, -1);
+                Cv2.Rectangle(Observation.ValidMask, rect, Scalar.Black, -1);
+                Cv2.Rectangle(Observation.ProposalEdges, rect, Scalar.Black, -1);
             }
-            if (policy.Mode == ScanPerformanceMode.DeepScan)
-            {
-                if (frame.Channels() is 3 or 4) DeepScanLiveEvidence.MaskHsvAnnotations(scratch.Hsv, Observation);
-            }
-            else if (frame.Channels() is 3 or 4) MaskColoredAnnotations(scratch.Hsv, Observation);
-            // Remove icons in evidence space, not by painting artificial edges into the source frame.
-            var bounds = new Rect(0, 0, frame.Width, frame.Height);
-            foreach (var gate in gates)
-            {
-                var width = gate.ScreenBounds.Width + 18;
-                var height = gate.ScreenBounds.Height + 18;
-                var rect = new Rect((int)Math.Floor(gate.ScreenBounds.CenterX - (viewport?.X ?? 0) - width / 2),
-                    (int)Math.Floor(gate.ScreenBounds.CenterY - (viewport?.Y ?? 0) - height / 2),
-                    (int)Math.Ceiling(width), (int)Math.Ceiling(height)).Intersect(bounds);
-                if (rect.Width > 0 && rect.Height > 0)
-                {
-                    Cv2.Rectangle(Observation.ObservedEdges, rect, Scalar.Black, -1);
-                    Cv2.Rectangle(Observation.ValidMask, rect, Scalar.Black, -1);
-                    Cv2.Rectangle(Observation.ProposalEdges, rect, Scalar.Black, -1);
-                }
-            }
-            using var points = Observation.ObservedEdges.FindNonZero();
-            DensePoints = new Point[(int)points.Total()];
-            for (var i = 0; i < DensePoints.Length; i++) DensePoints[i] = points.At<Point>(i);
-            SearchPoints = SampleUniform(DensePoints, frame.Width, frame.Height, policy.SparsePoints);
-            if (Observation.SemanticLabels is { } labels)
-            {
-                Cv2.BitwiseNot(Observation.ObservedEdges, scratch.Exclusion);
-                labels.SetTo(0, scratch.Exclusion);
-            }
-            Observation.RefreshPixelMetrics(DensePoints.Length, Cv2.CountNonZero(Observation.ValidMask));
-            Cv2.FindContours(Observation.ObservedEdges, out Point[][] contours, out _,
-                RetrievalModes.List, ContourApproximationModes.ApproxNone);
-            Contours = contours.Where(c => Cv2.ArcLength(c, false) >= 30).ToArray();
-            if (policy.Mode == ScanPerformanceMode.DeepScan)
-                PreparedConflictContours = Contours.Select(c => Cv2.ApproxPolyDP(c, 1.5, true)).ToArray();
         }
-        catch { Observation.Dispose(); throw; }
+        using var points = Observation.ObservedEdges.FindNonZero();
+        DensePoints = new Point[(int)points.Total()];
+        for (var i = 0; i < DensePoints.Length; i++) DensePoints[i] = points.At<Point>(i);
+        SearchPoints = SampleUniform(DensePoints, frame.Width, frame.Height, policy.SparsePoints);
+        var extracted = Observation;
+        Observation = new Vpsg3LiveObservation(extracted.ObservedEdges.Clone(), extracted.ValidMask.Clone(),
+            frame.Width, frame.Height, DensePoints.Length, Cv2.CountNonZero(extracted.ValidMask),
+            extracted.ViewportBounds, policy.SparsePoints, extractionMilliseconds: extracted.ExtractionMilliseconds,
+            proposalEdges: extracted.ProposalEdges.Clone());
+        extracted.Dispose();
+        Cv2.FindContours(Observation.ObservedEdges, out Point[][] contours, out _,
+            RetrievalModes.List, ContourApproximationModes.ApproxNone);
+        Contours = contours.Where(c => Cv2.ArcLength(c, false) >= 30).ToArray();
+        if (policy.Mode == ScanPerformanceMode.DeepScan)
+            PreparedConflictContours = Contours.Select(c => Cv2.ApproxPolyDP(c, 1.5, true)).ToArray();
     }
     internal static Point[] SampleUniform(IReadOnlyList<Point> points, int width, int height, int maximum)
     {
@@ -270,9 +247,15 @@ internal sealed class ScanFrameEvidence : IDisposable
         return result.ToArray();
     }
 
-    private static void MaskColoredAnnotations(Mat hsv, Vpsg3LiveObservation observation)
+    private static void MaskColoredAnnotations(Mat source, Vpsg3LiveObservation observation)
     {
+        if (source.Channels() is not (3 or 4)) return;
+        using var bgr = new Mat();
+        if (source.Channels() == 4) Cv2.CvtColor(source, bgr, ColorConversionCodes.BGRA2BGR);
+        else source.CopyTo(bgr);
+        using var hsv = new Mat();
         using var markers = new Mat();
+        Cv2.CvtColor(bgr, hsv, ColorConversionCodes.BGR2HSV);
         DeepScanLiveEvidence.MaskChests(hsv, observation);
         // Saturated yellow/green player markers lie outside both floor color classes.
         // Remove only compact annotations, in evidence space, on the same frame for
@@ -282,7 +265,7 @@ internal sealed class ScanFrameEvidence : IDisposable
         using var stats = new Mat();
         using var centroids = new Mat();
         var count = Cv2.ConnectedComponentsWithStats(markers, labels, stats, centroids);
-        var bounds = new Rect(0, 0, hsv.Width, hsv.Height);
+        var bounds = new Rect(0, 0, source.Width, source.Height);
         for (var i = 1; i < count; i++)
         {
             var area = stats.At<int>(i, (int)ConnectedComponentsTypes.Area);

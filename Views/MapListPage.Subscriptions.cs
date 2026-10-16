@@ -1,5 +1,4 @@
 using IDVBuff.UpdateCore;
-using IDVBuff.Features.Maps;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.Windows.Storage.Pickers;
@@ -16,13 +15,12 @@ public sealed partial class MapListPage
         await ShowMapSubscriptionsDialogAsync(_importButton!, _publishButton!, showTutorial: true);
     }
 
-    private async Task ShowMapSubscriptionsDialogAsync(Button importButton, Button exportButton, bool showTutorial = false, string? initialLink = null)
+    private async Task ShowMapSubscriptionsDialogAsync(Button importButton, Button exportButton, bool showTutorial = false)
     {
         var reconciliation = await _mapSubscriptionService.ReconcileInstalledMapsAsync();
         var content = new StackPanel { Spacing = 10, MinWidth = 560 };
         var linkBox = new TextBox
         {
-            Text = initialLink ?? string.Empty,
             PlaceholderText = "粘贴地图订阅链接",
             HorizontalAlignment = HorizontalAlignment.Stretch
         };
@@ -50,7 +48,7 @@ public sealed partial class MapListPage
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         var addButton = new Button { Content = "添加并更新" };
         var updateButton = new Button { Content = "立即更新全部" };
-        var progressHost = new ContentControl { Visibility = Visibility.Collapsed };
+        var progressRing = new ProgressRing { IsActive = false, Width = 20, Height = 20 };
         var isUpdating = false;
         var refreshListAfterDialog = false;
         var updateStartedAt = DateTimeOffset.MinValue;
@@ -62,7 +60,7 @@ public sealed partial class MapListPage
         };
         actions.Children.Add(addButton);
         actions.Children.Add(updateButton);
-        content.Children.Add(progressHost);
+        actions.Children.Add(progressRing);
         content.Children.Add(actions);
         content.Children.Add(status);
         content.Children.Add(new ScrollViewer
@@ -92,10 +90,8 @@ public sealed partial class MapListPage
                 toggle.IsEnabled = !isUpdating;
                 toggle.Toggled += async (_, _) =>
                 {
-                    var enabled = toggle.IsOn;
-                    await BeginRecordChangeAsync(
-                        token => _mapSubscriptionService.SetEnabledAsync(record.Id, enabled, token),
-                        "修改订阅失败：");
+                    try { await _mapSubscriptionService.SetEnabledAsync(record.Id, toggle.IsOn); }
+                    catch (Exception exception) { status.Text = "修改订阅失败：" + exception.Message; }
                 };
                 row.Children.Add(toggle);
                 var publisherName = string.IsNullOrWhiteSpace(record.PublisherDisplayName)
@@ -117,9 +113,12 @@ public sealed partial class MapListPage
                 remove.IsEnabled = !isUpdating;
                 remove.Click += async (_, _) =>
                 {
-                    await BeginRecordChangeAsync(
-                        token => _mapSubscriptionService.RemoveAsync(record.Id, token),
-                        "移除订阅失败：");
+                    try
+                    {
+                        await _mapSubscriptionService.RemoveAsync(record.Id);
+                        RenderRecords();
+                    }
+                    catch (Exception exception) { status.Text = "移除订阅失败：" + exception.Message; }
                 };
                 Grid.SetColumn(remove, 2);
                 row.Children.Add(remove);
@@ -128,12 +127,10 @@ public sealed partial class MapListPage
         }
 
         CancellationTokenSource? updateCts = null;
-        Task? activeUpdate = null;
-        var dialogClosed = false;
 
-        async Task UpdateAsync(string? newLink)
+        async Task UpdateAsync()
         {
-            if (isUpdating || dialogClosed) return;
+            if (isUpdating) return;
             isUpdating = true;
             updateStartedAt = DateTimeOffset.Now;
             addButton.IsEnabled = false;
@@ -141,33 +138,16 @@ public sealed partial class MapListPage
             RenderRecords();
             SetPackageOperationState(importButton, exportButton, true, "正在更新…");
             status.Text = "正在检查更新……";
-            using var operationProgress = new MapOperationProgressView("正在检查订阅……");
-            progressHost.Content = operationProgress;
-            progressHost.Visibility = Visibility.Visible;
-            using var progressScope = MapOperationProgress.Begin(operationProgress);
+            progressRing.IsActive = true;
             progressTimer.Start();
-            using var operationCancellation = new CancellationTokenSource();
-            updateCts = operationCancellation;
-            var addingLink = newLink is not null;
+            updateCts?.Dispose();
+            updateCts = new CancellationTokenSource();
             try
             {
-                // Adding waits on the same service gate as an update. Establish
-                // the busy/cancellation owner before that first await, so closing
-                // cannot leave a queued add to launch an update after the dialog.
-                if (newLink is not null)
-                {
-                    await _mapSubscriptionService.AddAsync(newLink, operationCancellation.Token);
-                    addingLink = false;
-                    linkBox.Text = string.Empty;
-                    RenderRecords();
-                }
-                var result = await MapOperationProgress.RunAsync(0, .95, () => Task.Run(() => _mapSubscriptionService.CheckAndApplyAsync(operationCancellation.Token)));
-                MapOperationProgress.Report(.96, "正在刷新订阅地图……");
+                var result = await _mapSubscriptionService.CheckAndApplyAsync(updateCts.Token);
                 refreshListAfterDialog |= result.AppliedCount > 0;
                 if (result.AppliedCount > 0 && !App.IsSafeMode)
-                    await MapOperationProgress.RunAsync(.96, .99, () => App.Session.RefreshMapCacheAsync());
-                if (result.FailedCount == 0) operationProgress.Complete();
-                else MapOperationProgress.Report(.99, "部分订阅更新失败");
+                    await App.Session.RefreshMapCacheAsync();
                 status.Text = result.FailedCount > 0
                     ? $"更新完成，{result.FailedCount} 个失败。"
                     : result.AppliedCount > 0
@@ -180,14 +160,12 @@ public sealed partial class MapListPage
             }
             catch (Exception exception)
             {
-                status.Text = (addingLink ? "无法添加订阅：" : "更新失败：") + exception.Message;
+                status.Text = "更新失败：" + exception.Message;
             }
             finally
             {
-                updateCts = null;
                 progressTimer.Stop();
-                progressHost.Visibility = Visibility.Collapsed;
-                progressHost.Content = null;
+                progressRing.IsActive = false;
                 isUpdating = false;
                 SetPackageOperationState(importButton, exportButton, false, null);
                 addButton.IsEnabled = true;
@@ -196,49 +174,18 @@ public sealed partial class MapListPage
             }
         }
 
-        async Task ChangeRecordAsync(Func<CancellationToken, Task> change, string failurePrefix)
+        addButton.Click += async (_, _) =>
         {
-            // Toggle/remove also wait on OperationGate and belong to this dialog.
-            // Cancel queued work before it can change the store after closing.
-            isUpdating = true;
-            using var cancellation = new CancellationTokenSource();
-            updateCts = cancellation;
-            addButton.IsEnabled = false;
-            updateButton.IsEnabled = false;
-            RenderRecords();
             try
             {
-                await change(cancellation.Token);
-                status.Text = string.Empty;
-            }
-            catch (OperationCanceledException) { status.Text = "操作已取消。"; }
-            catch (Exception exception) { status.Text = failurePrefix + exception.Message; }
-            finally
-            {
-                updateCts = null;
-                isUpdating = false;
-                addButton.IsEnabled = true;
-                updateButton.IsEnabled = true;
+                await _mapSubscriptionService.AddAsync(linkBox.Text);
+                linkBox.Text = string.Empty;
                 RenderRecords();
+                await UpdateAsync();
             }
-        }
-
-        Task BeginRecordChangeAsync(Func<CancellationToken, Task> change, string failurePrefix)
-        {
-            if (isUpdating || dialogClosed) return activeUpdate ?? Task.CompletedTask;
-            activeUpdate = ChangeRecordAsync(change, failurePrefix);
-            return activeUpdate;
-        }
-
-        Task BeginUpdateAsync(string? newLink = null)
-        {
-            if (isUpdating || dialogClosed) return activeUpdate ?? Task.CompletedTask;
-            activeUpdate = UpdateAsync(newLink);
-            return activeUpdate;
-        }
-
-        addButton.Click += async (_, _) => await BeginUpdateAsync(linkBox.Text);
-        updateButton.Click += async (_, _) => await BeginUpdateAsync();
+            catch (Exception exception) { status.Text = "无法添加订阅：" + exception.Message; }
+        };
+        updateButton.Click += async (_, _) => await UpdateAsync();
         RenderRecords();
         var dialog = new ContentDialog
         {
@@ -247,11 +194,10 @@ public sealed partial class MapListPage
             Content = content,
             CloseButtonText = "完成"
         };
-        dialog.Closing += (_, args) =>
+        dialog.Closing += (_, _) =>
         {
             if (isUpdating)
             {
-                args.Cancel = true;
                 try
                 {
                     updateCts?.Cancel();
@@ -259,19 +205,7 @@ public sealed partial class MapListPage
                 catch { }
             }
         };
-        try
-        {
-            await dialog.ShowThemedAsync(this);
-        }
-        finally
-        {
-            dialogClosed = true;
-            updateCts?.Cancel();
-            if (activeUpdate is { } pending) await pending;
-            activeUpdate = null;
-            progressTimer.Stop();
-            progressHost.Content = null;
-        }
+        await dialog.ShowThemedAsync(this);
         if (refreshListAfterDialog)
             await ShowListAsync();
     }

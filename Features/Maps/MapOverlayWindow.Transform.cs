@@ -45,7 +45,7 @@ public sealed partial class MapOverlayWindow
             return;
         if (requiresBitmapRebuild
             || !preservePlayer
-            || !HasRetainedMapLayer(
+            || !_mapNativeWindow.HasRetainedLayer(
                 MapOverlayRealtimeTransformPlanner.RoundToPixel(newWidth),
                 MapOverlayRealtimeTransformPlanner.RoundToPixel(newHeight)))
             Present();
@@ -135,7 +135,7 @@ public sealed partial class MapOverlayWindow
         if (IsVisible && _showMapContent)
         {
             if (requiresBitmapRebuild
-                || !HasRetainedMapLayer(
+                || !_mapNativeWindow.HasRetainedLayer(
                     MapOverlayRealtimeTransformPlanner.RoundToPixel(newWidth),
                     MapOverlayRealtimeTransformPlanner.RoundToPixel(newHeight)))
                 Present();

@@ -15,17 +15,14 @@ public sealed partial class MapListPage : UserControl
         if (_modernCanvas is null || _modernScene is null || _draft is null
             || _modernCanvas.Width <= 0 || _modernCanvas.Height <= 0)
             return;
-        _modernRenderedZoom = ModernZoomFactor;
-        ++_modernRenderCount;
         _modernCanvas.Children.Clear();
         if (!_modernExportRendering && _modernGridVisible)
             AddModernGrid();
-        AddModernAutomaticRouteNetworkPreview();
 
         var profile = GetActiveFloorProfile();
         if (IsModernItemVisible("graphics", string.Empty))
         {
-            foreach (var annotation in profile.Annotations.Where(a => !a.IsMarker))
+            foreach (var annotation in profile.Annotations)
             {
                 if (!annotation.IsValid || !IsModernItemVisible("graphics", ModernAnnotationKey(annotation.Id)))
                     continue;
@@ -37,7 +34,7 @@ public sealed partial class MapListPage : UserControl
             && IsModernItemVisible("special", "crop"))
         {
             var hasFreeCrop = profile.FreeCropPoints.Count >= 3;
-            var crop = _modernSelection?.Kind == MapEditorElementKind.Crop
+            var crop = _modernSelection?.Kind == EditorSelectionKind.Crop
                 && _modernPendingBounds?.IsValid is true
                     ? _modernPendingBounds
                     : profile.RecognitionRegion;
@@ -63,8 +60,6 @@ public sealed partial class MapListPage : UserControl
                     AddModernConcealLayer(layer);
             }
         }
-
-        AddModernRoomMarkers(profile);
 
         if (!_modernExportRendering && _modernToolState.PendingMainGate?.IsValid is true)
         {
@@ -112,10 +107,7 @@ public sealed partial class MapListPage : UserControl
             AddModernGatePreview();
 
         if (!_modernExportRendering)
-        {
-            AddModernAutomaticRoutePreview();
             AddModernSelectionAdorner();
-        }
     }
 
     private void AddModernGrid()
@@ -159,11 +151,6 @@ public sealed partial class MapListPage : UserControl
     private void AddModernAnnotation(MapAnnotation annotation)
     {
         var color = ParseEditorColor(annotation.EffectiveColorHex);
-        if (annotation.Type == MapAnnotationType.Route)
-        {
-            AddModernRouteAnnotation(annotation, color);
-            return;
-        }
         if (annotation.Type == MapAnnotationType.Line)
         {
             if (annotation.Start is not null && annotation.End is not null)
@@ -172,7 +159,6 @@ public sealed partial class MapListPage : UserControl
         }
         if (annotation.Bounds?.IsValid is not true)
             return;
-        if (TryAddModernRoomMarker(annotation)) return;
         if (annotation.Type == MapAnnotationType.Outline)
         {
             AddModernRectangle(annotation.Bounds, color, false, 2.5);
@@ -220,6 +206,13 @@ public sealed partial class MapListPage : UserControl
                 IsHitTestVisible = false
             });
         }
+    }
+
+    private static double CalculateModernAnnotationFontSize(MapAnnotation annotation, double pixelWidth, double pixelHeight)
+    {
+        var requested = annotation.FontSize ?? CalculateFittingFontSize(annotation.Text ?? string.Empty, pixelWidth, pixelHeight);
+        var fitting = CalculateFittingFontSize(annotation.Text ?? string.Empty, pixelWidth, pixelHeight);
+        return Math.Min(requested, fitting);
     }
 
     private void AddModernRectangle(NormalizedRectangle? bounds, Color color, bool dashed, double thickness)
@@ -339,13 +332,12 @@ public sealed partial class MapListPage : UserControl
 
     private void AddModernSelectionAdorner()
     {
-        if (_modernSelection is null || _modernCanvas is null || !CanEditModernSelection())
+        if (_modernSelection is null || _modernCanvas is null)
             return;
-        if (_modernSelection.Kind == MapEditorElementKind.Crop
+        if (_modernSelection.Kind == EditorSelectionKind.Crop
             && GetActiveFloorProfile().FreeCropPoints.Count >= 3)
             return;
-        if (AddModernRouteSelectionAdorner()) return;
-        if (_modernSelection.Kind == MapEditorElementKind.Annotation
+        if (_modernSelection.Kind == EditorSelectionKind.Annotation
             && FindModernSelectedAnnotation() is { Type: MapAnnotationType.Line } line
             && line.Start is not null && line.End is not null)
         {
@@ -357,7 +349,7 @@ public sealed partial class MapListPage : UserControl
         if (bounds?.IsValid is not true)
             return;
         AddModernRectangle(bounds, Color.FromArgb(255, 255, 255, 255), true, 1.5);
-        if (_modernSelection.Kind == MapEditorElementKind.Anchor
+        if (_modernSelection.Kind == EditorSelectionKind.Anchor
             && FindModernSelectedAnchor() is { } selectedAnchor
             && IsGateAnchor(selectedAnchor.Key))
         {
@@ -439,11 +431,11 @@ public sealed partial class MapListPage : UserControl
     {
         if (_modernSelection is null)
             return null;
-        if (_modernSelection.Kind == MapEditorElementKind.Crop)
+        if (_modernSelection.Kind == EditorSelectionKind.Crop)
             return _modernPendingBounds?.IsValid is true
                 ? _modernPendingBounds
                 : GetActiveFloorProfile().RecognitionRegion;
-        if (_modernSelection.Kind == MapEditorElementKind.Anchor)
+        if (_modernSelection.Kind == EditorSelectionKind.Anchor)
         {
             var anchor = FindModernSelectedAnchor();
             if (anchor?.Bounds?.IsValid is not true)
@@ -472,18 +464,18 @@ public sealed partial class MapListPage : UserControl
     }
 
     private RecognitionAnchor? FindModernSelectedAnchor() =>
-        _modernSelection is { Kind: MapEditorElementKind.Anchor, Id: { } id }
+        _modernSelection is { Kind: EditorSelectionKind.Anchor, Id: { } id }
             ? GetActiveFloorProfile().FindAnchor(id)
             : null;
 
     private MapAnnotation? FindModernSelectedAnnotation() =>
-        _modernSelection is { Kind: MapEditorElementKind.Annotation, Id: { } id }
+        _modernSelection is { Kind: EditorSelectionKind.Annotation, Id: { } id }
             ? GetActiveFloorProfile().Annotations.FirstOrDefault(annotation => annotation.Id == id)
             : null;
 
     private double ModernZoomFactor => _modernExportRendering
         ? 1d
-        : Math.Max(.000001, (_modernViewport?.ZoomFactor ?? 1) * _modernDisplayScale);
+        : Math.Max(.1, _modernViewport?.ZoomFactor ?? 1);
 
     private double GetModernGridSpacingPixels()
     {

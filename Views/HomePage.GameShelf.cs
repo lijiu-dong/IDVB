@@ -55,10 +55,10 @@ public sealed partial class HomePage
         {
             Width = 112,
             Height = 112,
-            Stretch = Stretch.UniformToFill
+            Stretch = Stretch.UniformToFill,
+            Source = new BitmapImage(new Uri(
+                "ms-appx:///Assets/Games/identity-v.png"))
         };
-        MemoryImageBinding.AttachOwned(this, image,
-            new Uri("ms-appx:///Assets/Games/identity-v.png"), "UI.Home.GameArtwork");
         var frame = new Border
         {
             Width = 120,

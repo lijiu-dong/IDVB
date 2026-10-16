@@ -40,9 +40,6 @@ public sealed partial class MapRepository
                 .OrderBy(map => map.SequenceNumber)
                 .Select(map => map.Clone())
                 .ToList();
-            if (maps.Any(map => map.IsCoCreationTemplate)
-                && ClampImageDownsampleFactor(current.ImageDownsampleFactor) != normalizedFactor)
-                throw new InvalidOperationException("共创模板的固定二值轮廓不支持更改降采样设置。");
             if (ClampImageDownsampleFactor(current.ImageDownsampleFactor) != 0
                 && maps.Any(map => !HasCompleteDownsampleOriginals(map)))
             {
@@ -68,17 +65,11 @@ public sealed partial class MapRepository
                     var originalDirectory = GetDownsampleOriginalDirectory(originalsRoot, map.Id);
                 }
 
-                var completedMaps = 0;
                 foreach (var map in maps)
                 {
-                    using var mapProgress = MapOperationProgress.Range(.1 + .8 * completedMaps / Math.Max(1, maps.Count),
-                        .1 + .8 * ++completedMaps / Math.Max(1, maps.Count));
-                    MapOperationProgress.Report(0, "正在处理地图尺寸……");
                     cancellationToken.ThrowIfCancellationRequested();
                     var draft = await CreateDraftCoreAsync(map.Id, gateAlreadyHeld: true)
                         ?? throw new InvalidOperationException($"地图 {map.DisplayName} 已不存在。");
-                    if (draft.Navigation is not null)
-                        await MapNavigationRules.ValidateImagesAsync(draft.Navigation, draft.FloorPaths, cancellationToken);
                     var mapInputs = Path.Combine(inputDirectory, map.Id.ToString("N"));
                     Directory.CreateDirectory(mapInputs);
                     for (var index = 0; index < draft.Floors.Count; index++)
@@ -116,8 +107,6 @@ public sealed partial class MapRepository
                                 cancellationToken);
                         }
                     }
-                    if (draft.Navigation is not null)
-                        await MapNavigationRules.RebindGeneratedImagesAsync(draft.Navigation, draft.FloorPaths, cancellationToken);
                     ScaleBackgroundBrushes(
                         draft.Recognition,
                         current.ImageDownsampleFactor,

@@ -10,7 +10,7 @@ internal sealed class AdaptiveScaleCoverageMilestones
     // back nor schedule an already-consumed refresh again.
     private static readonly int[] MilestonePercents = [10, 15, 20, 25, 30, 40, 50];
 
-    internal static int CountCoveredPoints(ReadOnlySpan<Point> referencePoints, Mat observedEdges,
+    internal static int CountCoveredPoints(IReadOnlyList<Point> referencePoints, Mat observedEdges,
         MapOverlayTransform transform, MapScreenRect viewport)
     {
         using var supported = new Mat();

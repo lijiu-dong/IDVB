@@ -26,9 +26,6 @@ public sealed partial class MapListPage : UserControl
     /// <summary>Renders an in-memory class filter; never performs I/O.</summary>
     private void ShowListFromLoadedSnapshot()
     {
-        using var memory = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("MapList.FilterClass", _selectedClass);
-        if (_mapCardsRepeater is { } previous) previous.ItemsSource = null;
-        ReleaseMapCardPreviews();
         var maps = GetVisibleMaps();
         _selectedMapIds = _selectedMapIds
             .Where(id => maps.Any(map => map.Id == id))
@@ -150,7 +147,38 @@ public sealed partial class MapListPage : UserControl
         scrollContent.Children.Add(new Border { Height = 80 });
         scrollContent.Children.Add(CreateSurveyProjectsSection());
 
-        var mapContent = CreateMapCardsContent(maps);
+        UIElement mapContent;
+        if (maps.Count == 0)
+        {
+            var emptyState = new Grid();
+            emptyState.Children.Add(new TextBlock
+            {
+                Text = "尚未导入地图",
+                FontSize = 16,
+                Foreground = new SolidColorBrush(Color.FromArgb(255, 110, 110, 110)),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextAlignment = TextAlignment.Center
+            });
+            mapContent = emptyState;
+        }
+        else
+        {
+            var cardsGrid = new Grid { Margin = new Thickness(7, 12, 7, 12) };
+            for (var column = 0; column < 3; column++)
+                cardsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            for (var index = 0; index < maps.Count; index++)
+            {
+                if (index % 3 == 0)
+                    cardsGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+                var card = CreateMapCard(maps[index]);
+                Grid.SetRow(card, index / 3);
+                Grid.SetColumn(card, index % 3);
+                cardsGrid.Children.Add(card);
+            }
+            mapContent = cardsGrid;
+        }
 
         var mapSurface = new Border
         {
@@ -235,15 +263,8 @@ public sealed partial class MapListPage : UserControl
                 _selectedTagFilters.Clear();
                 _selectedMapIds.Clear();
                 _lastClickedMapId = null;
-                using var memory = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("MapList.FilterClass", className);
-                // Keep the toolbar, picker, survey section and teaching tips.
-                // Replacing them from inside SelectionChanged creates another
-                // complete native control tree for an in-memory filter.
-                // Tag controls are built only when their stable flyout opens.
-                if (_classEditButton is not null) AttachClassEditMenu(_classEditButton);
-                RefreshMapCardsOnly();
-                // Filtering changes no persisted assets. Startup and mutation
-                // paths own integrity diagnosis; do not rescan the entire catalog.
+                ShowListFromLoadedSnapshot();
+                MapClassDiagnosticCoordinator.Instance.Trigger(_repository);
             }
         };
 
@@ -346,7 +367,7 @@ public sealed partial class MapListPage : UserControl
             return;
         try
         {
-            var created = await RunMapOperationAsync("正在创建地图类……", () => _repository.CreateClassAsync(nameBox.Text));
+            var created = await _repository.CreateClassAsync(nameBox.Text);
             _selectedClass = created;
             _selectedMapIds.Clear();
             await ShowListAsync();
@@ -357,12 +378,9 @@ public sealed partial class MapListPage : UserControl
         }
     }
 
-    private async Task ConfirmDeleteClassAsync(string className, IReadOnlySet<Guid>? expectedMapIds = null)
+    private async Task ConfirmDeleteClassAsync(string className)
     {
-        expectedMapIds ??= (await _repository.GetCatalogSnapshotAsync()).Maps
-            .Where(map => string.Equals(map.Class, className, StringComparison.OrdinalIgnoreCase))
-            .Select(map => map.Id).ToHashSet();
-        var count = expectedMapIds.Count;
+        var count = _loadedMaps.Count(map => string.Equals(map.Class, className, StringComparison.OrdinalIgnoreCase));
         var dialog = new ContentDialog
         {
             XamlRoot = XamlRoot,
@@ -376,18 +394,14 @@ public sealed partial class MapListPage : UserControl
             return;
         try
         {
-            await RunMapOperationAsync("正在删除地图类……", async () =>
-            {
-                await Task.Run(() => _repository.DeleteClassAsync(className, expectedMapIds));
-                MapOperationProgress.Report(.9, "正在刷新地图……");
-                if (!App.IsSafeMode)
-                    await MapOperationProgress.RunAsync(.9, 1, () => App.Session.RefreshMapCacheAsync());
-                if (string.Equals(_selectedClass, className, StringComparison.OrdinalIgnoreCase))
-                    _selectedClass = _classes.First(name => !string.Equals(name, className, StringComparison.OrdinalIgnoreCase));
-                _selectedMapIds.Clear();
-                _lastClickedMapId = null;
-                await ShowListAsync();
-            });
+            await _repository.DeleteClassAsync(className);
+            if (!App.IsSafeMode)
+                await App.Session.RefreshMapCacheAsync();
+            if (string.Equals(_selectedClass, className, StringComparison.OrdinalIgnoreCase))
+                _selectedClass = _classes.First(name => !string.Equals(name, className, StringComparison.OrdinalIgnoreCase));
+            _selectedMapIds.Clear();
+            _lastClickedMapId = null;
+            await ShowListAsync();
         }
         catch (Exception exception)
         {

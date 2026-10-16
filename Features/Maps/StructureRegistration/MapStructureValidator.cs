@@ -274,8 +274,8 @@ internal static partial class MapStructureValidator
         // 参考图像素只在缺少 PreparedReference 时才会被用到（Registrar 会现场
         // 预处理它）。结构缓存常驻命中的调用方不再解码 PNG，此时 ReferenceImage
         // 为空是正常输入，不能据此判定 InvalidInput。
-        if ((request.PreparedReference is null && (request.ReferenceImage is null || request.ReferenceImage.Empty()))
-            || request.LiveRoi is null || request.LiveRoi.Empty()
+        if ((request.PreparedReference is null && request.ReferenceImage.Empty())
+            || request.LiveRoi.Empty()
             || !request.ViewportBounds.IsValid)
         {
             return MapStructureRegistrationResult.Reject(

@@ -6,10 +6,7 @@ public sealed record MapViewportColorSignature(
     IReadOnlyList<double> Histogram,
     double BlueGrayFraction,
     double MeanValue,
-    MapViewportStructureSignature? Structure = null)
-{
-    public IReadOnlyList<byte>? ValuePixels { get; init; }
-}
+    MapViewportStructureSignature? Structure = null);
 
 public sealed record MapViewportStructureSignature(
     double EdgeDensity,
@@ -62,9 +59,7 @@ public static class MapViewportPresenceDetector
     private const int SignatureWidth = 160;
     private const int SignatureHeight = 100;
 
-    public static MapViewportColorSignature CreateSignature(Mat viewport) => CreateSignature(viewport, true);
-
-    public static MapViewportColorSignature CreateSignature(Mat viewport, bool includeStructure)
+    public static MapViewportColorSignature CreateSignature(Mat viewport)
     {
         ArgumentNullException.ThrowIfNull(viewport);
         if (viewport.Empty())
@@ -89,20 +84,14 @@ public static class MapViewportPresenceDetector
         }
         using var hsv = new Mat();
         Cv2.CvtColor(resized, hsv, ColorConversionCodes.BGR2HSV);
-        MapViewportStructureSignature? structure = null;
-        if (includeStructure)
-        {
-            using var gray = new Mat();
-            Cv2.CvtColor(resized, gray, ColorConversionCodes.BGR2GRAY);
-            using var edges = new Mat();
-            Cv2.Canny(gray, edges, 45d, 135d);
-            structure = CreateStructureSignature(edges);
-        }
+        using var gray = new Mat();
+        Cv2.CvtColor(resized, gray, ColorConversionCodes.BGR2GRAY);
+        using var edges = new Mat();
+        Cv2.Canny(gray, edges, 45d, 135d);
 
         var histogram = new double[HueBins * SaturationBins];
         var blueGrayPixels = 0;
         var valueSum = 0d;
-        var valuePixels = new byte[hsv.Rows * hsv.Cols];
         var rows = hsv.Rows;
         var columns = hsv.Cols;
         var pixelCount = rows * columns;
@@ -121,7 +110,6 @@ public static class MapViewportPresenceDetector
                 if (pixel.Item0 is >= 90 and <= 130 && pixel.Item1 < 140)
                     blueGrayPixels++;
                 valueSum += pixel.Item2;
-                valuePixels[y * columns + x] = pixel.Item2;
             }
         }
 
@@ -135,7 +123,7 @@ public static class MapViewportPresenceDetector
             histogram,
             pixelCount > 0 ? blueGrayPixels / (double)pixelCount : 0d,
             pixelCount > 0 ? valueSum / pixelCount : 0d,
-            structure) { ValuePixels = valuePixels };
+            CreateStructureSignature(edges));
     }
 
     public static MapViewportPresenceResult Evaluate(
@@ -179,16 +167,8 @@ public static class MapViewportPresenceDetector
         MapViewportColorSignature? previousFrame = null,
         bool requireStructure = false,
         int requiredStableStructureFrames = 3,
-        int observedStableStructureFrames = 0,
-        bool floorIndicatorVerified = false) =>
-        // A never-aligned floor has no color reference. Its independently
-        // verified, same-frame floor indicator establishes that the map is open;
-        // stable pixels and structure establish readiness, not map identity or
-        // a valid pose. The caller must still run the target floor's aligner.
-        floorIndicatorVerified && reference is null && requireStructure
-            ? EvaluateFloorConfirmedReadiness(candidate, previousFrame,
-                requiredStableStructureFrames, observedStableStructureFrames)
-            : EvaluateCore(
+        int observedStableStructureFrames = 0) =>
+        EvaluateCore(
             candidate,
             reference,
             previousFrame,
@@ -199,45 +179,6 @@ public static class MapViewportPresenceDetector
             requireStructure,
             requiredStableStructureFrames,
             observedStableStructureFrames);
-
-    private static MapViewportPresenceResult EvaluateFloorConfirmedReadiness(
-        MapViewportColorSignature candidate, MapViewportColorSignature? previous,
-        int requiredFrames, int observedFrames)
-    {
-        var structure = candidate.Structure;
-        var hasStructure = structure is { EdgeDensity: > 0, BoundsWidth: > 0, BoundsHeight: > 0 };
-        var stable = hasStructure && observedFrames >= Math.Max(2, requiredFrames)
-            && IsStructureConsistent(structure, previous?.Structure)
-            && HasStablePixels(candidate, previous);
-        var brightnessDelta = previous is null ? (double?)null
-            : Math.Abs(candidate.MeanValue - previous.MeanValue) / 255d;
-        var ready = stable && brightnessDelta <= MaximumReadyBrightnessDelta;
-        return new MapViewportPresenceResult(ready,
-            ready ? "floor-indicator-stable-structure" : "floor-indicator-structure-pending",
-            previous?.Structure is { } prior && structure is not null
-                ? StructureSimilarity(structure, prior) : 0,
-            candidate.BlueGrayFraction)
-        {
-            Checks = new(false, previous is not null,
-                MinimumReadyBlueGrayFraction, candidate.BlueGrayFraction >= MinimumReadyBlueGrayFraction,
-                brightnessDelta, MaximumReadyBrightnessDelta,
-                brightnessDelta <= MaximumReadyBrightnessDelta,
-                true, hasStructure, observedFrames, Math.Max(2, requiredFrames), ready)
-        };
-    }
-
-    // Global HSV/mean brightness can stay constant while a translucent scene
-    // changes underneath it. Compare corresponding pixels, not just averages.
-    internal static bool HasStablePixels(MapViewportColorSignature candidate,
-        MapViewportColorSignature? previous)
-    {
-        if (candidate.ValuePixels is not { Count: > 0 } pixels
-            || previous?.ValuePixels is not { } prior || prior.Count != pixels.Count)
-            return false;
-        var difference = 0L;
-        for (var i = 0; i < pixels.Count; i++) difference += Math.Abs(pixels[i] - prior[i]);
-        return difference / (255d * pixels.Count) <= 0.005d;
-    }
 
     public static bool IsStructureConsistent(
         MapViewportStructureSignature? first,
@@ -300,12 +241,6 @@ public static class MapViewportPresenceDetector
                 && previousFrame is not null
                 && Math.Abs(candidate.MeanValue - previousFrame.MeanValue) / 255d
                     <= brightnessTolerance;
-            if (requireBlueGrayBrightnessStability && similarity < 0.98d
-                && !HasStablePixels(candidate, previousFrame))
-            {
-                referenceReady = false;
-                stableFallbackReady = false;
-            }
             return new MapViewportPresenceResult(
                 referenceReady || stableFallbackReady,
                 stableFallbackReady && !referenceReady
@@ -327,7 +262,6 @@ public static class MapViewportPresenceDetector
         {
             blueGrayReady = blueGrayReady
                 && previousFrame is not null
-                && HasStablePixels(candidate, previousFrame)
                 && Math.Abs(candidate.MeanValue - previousFrame.MeanValue) / 255d
                     <= brightnessTolerance;
         }

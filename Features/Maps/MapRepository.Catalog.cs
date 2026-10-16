@@ -4,10 +4,8 @@ namespace IDVBuff.Features.Maps;
 
 public sealed partial class MapRepository
 {
-    private async Task<MapCatalogDocument> ReadCatalogAsync(ImportCatalogReuse? importCatalog = null)
+    private async Task<MapCatalogDocument> ReadCatalogAsync()
     {
-        using var memory = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("Catalog.Read", _rootDirectory);
-        var readRevision = GetCatalogRevision();
         Directory.CreateDirectory(_rootDirectory);
         if (!File.Exists(CatalogPath))
             return new MapCatalogDocument
@@ -15,32 +13,24 @@ public sealed partial class MapRepository
                 StorageSchemaVersion = CurrentStorageSchemaVersion
             };
 
-        // Only an import's private, sequential owner can reuse its own committed
-        // document. Public snapshots still receive freshly deserialized records.
-        var catalog = importCatalog is null ? null : await importCatalog.TakeAsync(CatalogPath);
-        if (catalog is null)
+        MapCatalogDocument catalog;
+        await using (var stream = File.OpenRead(CatalogPath))
         {
-            await using var stream = File.OpenRead(CatalogPath);
-            catalog = await JsonSerializer.DeserializeAsync<MapCatalogDocument>(stream, SerializerOptions)
+            catalog =
+                await JsonSerializer.DeserializeAsync<MapCatalogDocument>(
+                    stream,
+                    SerializerOptions)
                 ?? new MapCatalogDocument();
         }
         if (catalog.StorageSchemaVersion > CurrentStorageSchemaVersion)
             throw new InvalidDataException("地图目录由更高版本的 Identity Vision Bridge 创建，当前版本不能安全写入。");
         var originalStorageSchemaVersion = catalog.StorageSchemaVersion;
-        // Keep the original monolithic catalog until all external payloads and
-        // the replacement index have been committed successfully.
-        if (originalStorageSchemaVersion < 19)
-        {
-            var backupPath = $"{CatalogPath}.bak-v18";
-            if (!File.Exists(backupPath))
-                File.Copy(CatalogPath, backupPath);
-        }
         if (originalStorageSchemaVersion < 16)
             await EnsureVariantMigrationBackupAsync();
         var migrated = false;
         var repairedFloorProfileIds = new List<Guid>();
         var requiresLegacyBindingMigration = catalog.StorageSchemaVersion < 10;
-        var requiresFloorProfileMigration = catalog.StorageSchemaVersion < 18
+        var requiresFloorProfileMigration = catalog.StorageSchemaVersion < CurrentStorageSchemaVersion
             || catalog.Maps.Any(record => record.NeedsCanonicalFloorNormalization());
         if (requiresFloorProfileMigration)
         {
@@ -52,8 +42,6 @@ public sealed partial class MapRepository
         var needsV5Backup = false;
         foreach (var record in catalog.Maps)
         {
-            BindNavigationStorage(record);
-            migrated |= record.LoadedNavigation is not null;
             var needsFloorProfileRepair = record.NeedsCanonicalFloorNormalization();
             if (needsFloorProfileRepair)
                 repairedFloorProfileIds.Add(record.Id);
@@ -118,53 +106,17 @@ public sealed partial class MapRepository
             System.Diagnostics.Debug.WriteLine(
                 $"[MapRepository] repaired canonical floor profiles for map {mapId}");
         }
-        if (GetCatalogRevision() == readRevision)
-        {
-            ClassNamesCache[CatalogPath] = (readRevision, catalog.Classes.ToArray());
-            RememberMapCount(readRevision, catalog.Maps.Count);
-            CanonicalCatalogRevisions[CatalogPath] = readRevision;
-        }
         return catalog;
     }
 
-    private async Task WriteCatalogAsync(MapCatalogDocument catalog,
-        [System.Runtime.CompilerServices.CallerMemberName] string writer = "",
-        ImportCatalogReuse? importCatalog = null)
+    private async Task WriteCatalogAsync(MapCatalogDocument catalog)
     {
-        if (catalog.Maps.Any(record => record.IsListProjection))
-            throw new InvalidOperationException("列表显示数据不能写入地图目录，必须重新读取完整地图。");
-        using var memory = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("Catalog.Write", $"{_rootDirectory};writer={writer}");
         ValidateVariantGroups(catalog, normalizeClassCasing: false);
-        foreach (var record in catalog.Maps)
-            await PersistNavigationAsync(record);
         catalog.StorageSchemaVersion = CurrentStorageSchemaVersion;
         var temporaryPath = $"{CatalogPath}.tmp";
         await using (var stream = File.Create(temporaryPath))
-            await JsonSerializer.SerializeAsync(stream, catalog, CatalogWriteOptions);
-        // Fingerprint our own serialized bytes before publishing them. Hashing
-        // the destination afterwards could associate an external replacement
-        // with our older in-memory document.
-        byte[]? committedHash = null;
-        if (importCatalog?.NeedsAnotherSave == true)
-        {
-            await using var stream = File.OpenRead(temporaryPath);
-            committedHash = await System.Security.Cryptography.SHA256.HashDataAsync(stream);
-        }
-        var writtenFile = new FileInfo(temporaryPath);
-        var writtenRevision = new MapCatalogRevision(writtenFile.LastWriteTimeUtc.Ticks, writtenFile.Length);
+            await JsonSerializer.SerializeAsync(stream, catalog, SerializerOptions);
         File.Move(temporaryPath, CatalogPath, overwrite: true);
-        MetadataRevisionAdvances.TryRemove(CatalogPath, out _);
-        ScanFloorAdvances.TryRemove(CatalogPath, out _);
-        // Writers own a complete, normalized catalog. Metadata repair and saves
-        // legitimately invalidate snapshots, but their committed revision need
-        // not deserialize unrelated maps again when opening one editor.
-        if (GetCatalogRevision() == writtenRevision)
-        {
-            ClassNamesCache[CatalogPath] = (writtenRevision, catalog.Classes.ToArray());
-            RememberMapCount(writtenRevision, catalog.Maps.Count);
-            CanonicalCatalogRevisions[CatalogPath] = writtenRevision;
-        }
-        importCatalog?.CompleteSave(catalog, committedHash);
     }
 
     private static string? NormalizeClassName(string? name)

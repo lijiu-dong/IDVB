@@ -25,27 +25,18 @@ public sealed partial class MapListPage : UserControl
     {
         var card = new Border
         {
-            Tag = map,
             Margin = new Thickness(11),
             Padding = new Thickness(11),
-            Background = new SolidColorBrush(),
+            Background = FluentTheme.CardBrush(this),
             BorderBrush = new SolidColorBrush(Color.FromArgb(0, 0, 0, 0)),
             BorderThickness = new Thickness(3),
             CornerRadius = new CornerRadius(9)
         };
         _cardBorders[map.Id] = card;
-        card.Loaded += (_, _) =>
-        {
-            if (card.Tag is not MapRecord) return;
-            IDVBuff.Core.Diagnostics.MemoryJournal.ReleaseResource(card);
-            IDVBuff.Core.Diagnostics.MemoryJournal.TrackResource(card, "MapList.VisibleCard", null, "Microsoft.UI.Xaml.dll");
-        };
-        card.Unloaded += (_, _) => IDVBuff.Core.Diagnostics.MemoryJournal.ReleaseResource(card);
         AttachCardInteractionFeedback(card);
-        AttachHoldPreview(card);
+        AttachHoldPreview(card, map);
 
         var content = new Grid();
-        content.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         content.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         content.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         content.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -66,7 +57,7 @@ public sealed partial class MapListPage : UserControl
         var label = new TextBlock
         {
             Text = map.DisplayName,
-            Foreground = new SolidColorBrush(),
+            Foreground = FluentTheme.Brush(this, "TextFillColorPrimaryBrush"),
             FontSize = 15,
             HorizontalAlignment = HorizontalAlignment.Center,
             Margin = new Thickness(0, 10, 0, 0)
@@ -77,38 +68,26 @@ public sealed partial class MapListPage : UserControl
         {
             Text = BuildRecognitionSummary(map),
             FontSize = 11,
-            Foreground = new SolidColorBrush(),
+            Foreground = FluentTheme.Brush(this, "TextFillColorSecondaryBrush"),
             HorizontalAlignment = HorizontalAlignment.Center,
             TextAlignment = TextAlignment.Center,
             Margin = new Thickness(0, 4, 0, 0)
         };
         Grid.SetRow(readiness, 2);
         content.Children.Add(readiness);
-        var variantLabel = new TextBlock
-        {
-            Tag = "variant-group",
-            Foreground = new SolidColorBrush(),
-            FontSize = 12,
-            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            Margin = new Thickness(0, 4, 0, 0)
-        };
-        Grid.SetRow(variantLabel, 3);
-        content.Children.Add(variantLabel);
         card.Child = content;
 
-        card.Tapped += (_, _) => { if (card.Tag is MapRecord current) SelectMap(current); };
+        card.Tapped += (_, _) => SelectMap(map);
         card.DoubleTapped += async (_, _) =>
         {
-            if (card.Tag is not MapRecord current) return;
-            SelectMap(current);
-            await ImportMapAsync(current);
+            SelectMap(map);
+            await ImportMapAsync(map);
         };
         if (App.IsSafeMode)
         {
             var flyout = new MenuFlyout();
             var showNow = new MenuFlyoutItem { Text = "立刻展示" };
-            showNow.Click += async (_, _) => { if (card.Tag is MapRecord current) await ShowMapImmediatelyAsync(current); };
+            showNow.Click += async (_, _) => await ShowMapImmediatelyAsync(map);
             flyout.Items.Add(showNow);
             card.ContextFlyout = flyout;
         }
@@ -116,19 +95,6 @@ public sealed partial class MapListPage : UserControl
     }
 
     private static Border CreateMapOriginBadge(MapRecord map)
-    {
-        var badge = new Border
-        {
-            Background = new SolidColorBrush(), CornerRadius = new CornerRadius(6),
-            Padding = new Thickness(8, 3, 8, 3), Margin = new Thickness(7),
-            HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top,
-            Child = new TextBlock { Foreground = new SolidColorBrush(Color.FromArgb(255, 255, 255, 255)), FontSize = 11 }
-        };
-        BindMapOriginBadge(badge, map);
-        return badge;
-    }
-
-    private static void BindMapOriginBadge(Border badge, MapRecord map)
     {
         var label = map.AcquisitionKind switch
         {
@@ -150,11 +116,26 @@ public sealed partial class MapListPage : UserControl
             : map.SubscriptionPublisherIsOfficial
                 ? Color.FromArgb(225, 22, 135, 255)
                 : Color.FromArgb(205, 22, 29, 38);
-        ((TextBlock)badge.Child).Text = label;
-        var brush = (SolidColorBrush)badge.Background;
-        if (brush.Color != background) brush.Color = background;
-        ToolTipService.SetToolTip(badge, map.AcquisitionKind == MapAcquisitionKind.Subscription
-            ? $"订阅版本：{map.SubscriptionVersion ?? "未知"}" : null);
+        var badge = new Border
+        {
+            Background = new SolidColorBrush(background),
+            CornerRadius = new CornerRadius(6),
+            Padding = new Thickness(8, 3, 8, 3),
+            Margin = new Thickness(7),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
+            Child = new TextBlock
+            {
+                Text = label,
+                Foreground = new SolidColorBrush(Color.FromArgb(255, 255, 255, 255)),
+                FontSize = 11
+            }
+        };
+        if (map.AcquisitionKind == MapAcquisitionKind.Subscription)
+            ToolTipService.SetToolTip(
+                badge,
+                $"订阅版本：{map.SubscriptionVersion ?? "未知"}");
+        return badge;
     }
 
 
@@ -179,25 +160,16 @@ public sealed partial class MapListPage : UserControl
         var border = new Border
         {
             Margin = margin,
-            Background = new SolidColorBrush(Microsoft.UI.Colors.Black),
+            Background = new SolidColorBrush(Color.FromArgb(255, 196, 196, 196)),
             CornerRadius = new CornerRadius(6)
         };
         if (File.Exists(path))
         {
             var image = new Image
             {
-                Stretch = Stretch.UniformToFill,
-                Tag = path
+                Stretch = Stretch.UniformToFill
             };
-            image.Loaded += (_, _) =>
-            {
-                if (image.Source is null && image.Tag is string current && File.Exists(current))
-                    BindMapPreview(image, current);
-            };
-            image.Unloaded += (_, _) =>
-            {
-                ReleaseMapPreview(image);
-            };
+            image.Loaded += (_, _) => image.Source ??= GetPreviewBitmap(path);
             border.Child = image;
         }
         return border;
@@ -217,72 +189,10 @@ public sealed partial class MapListPage : UserControl
     {
         if (_previewImages.TryGetValue(path, out var bitmap))
             return bitmap;
-        bitmap = CreatePreviewBitmap();
-        ConfigurePreviewBitmap(bitmap, path);
-        return bitmap;
-    }
-
-    private static BitmapImage CreatePreviewBitmap()
-    {
-        var bitmap = new BitmapImage { DecodePixelWidth = 400, CreateOptions = BitmapCreateOptions.IgnoreImageCache };
-        IDVBuff.Core.Diagnostics.MemoryJournal.ObserveManagedObject(bitmap, "MapList.PreviewWrapper");
-        // No captured page, image or prior path. One handler per reusable source.
-        bitmap.ImageOpened += static (sender, _) =>
-        {
-            if (sender is BitmapImage decoded) IDVBuff.Core.Diagnostics.MemoryJournal.Current?.Record("preview-decoded",
-                new { path = decoded.UriSource?.LocalPath, decoded.PixelWidth, decoded.PixelHeight, decoded.DecodePixelWidth,
-                    meaning = "source dimensions and requested decode width; not measured native heap payload" });
-        };
-        return bitmap;
-    }
-
-    private void ConfigurePreviewBitmap(BitmapImage bitmap, string path)
-    {
-        var request = IDVBuff.Core.Diagnostics.MemoryJournal.Request("MapList.Preview/" + path,
-            nativeModule: "Microsoft.UI.Xaml.dll");
-        IDVBuff.Core.Diagnostics.MemoryJournal.TrackResource(bitmap, "MapList.Preview/" + path,
-            null, "Microsoft.UI.Xaml.dll", request);
-        bitmap.UriSource = new Uri(path);
+        bitmap = CreateBitmap(path, decodePixelWidth: 400);
         _previewImages[path] = bitmap;
+        return bitmap;
     }
-
-    private void BindMapPreview(Image image, string path)
-    {
-        ReleaseMapPreview(image);
-        // The bitmap wrapper follows the pooled Image. Rebinding a class clears
-        // its decoded surface but does not manufacture another native wrapper.
-        var bitmap = _mapPreviewBitmaps.GetValue(image, static _ => CreatePreviewBitmap());
-        ConfigurePreviewBitmap(bitmap, path);
-        image.Source = bitmap;
-        _activeMapPreviewImages.Add(image);
-    }
-
-    private void ReleaseMapPreview(Image image)
-    {
-        _activeMapPreviewImages.Remove(image);
-        if (image.Source is not BitmapImage bitmap) return;
-        if (bitmap.UriSource?.LocalPath is string path && _previewImages.TryGetValue(path, out var cached)
-            && ReferenceEquals(cached, bitmap)) _previewImages.Remove(path);
-        bitmap.UriSource = null;
-        image.Source = null;
-        IDVBuff.Core.Diagnostics.MemoryJournal.ReleaseResource(bitmap);
-    }
-
-    private void ReleaseMapCardPreviews()
-    {
-        CloseHoldPreviewImmediately();
-        // Weak-table enumeration can expose finalized WinRT projections. Only
-        // mounted consumers own a live Image; pooled sources already have no URI.
-        foreach (var image in _activeMapPreviewImages.ToArray()) ReleaseMapPreview(image);
-        foreach (var bitmap in _previewImages.Values)
-        {
-            bitmap.UriSource = null;
-            IDVBuff.Core.Diagnostics.MemoryJournal.ReleaseResource(bitmap);
-        }
-        _previewImages.Clear();
-    }
-
-    internal void RetireImageConsumers() => ReleaseMapCardPreviews();
 
     private void SelectMap(MapRecord map)
     {
@@ -327,24 +237,14 @@ public sealed partial class MapListPage : UserControl
 
     private async Task ToggleSelectedVariantGroupAsync()
     {
-        var selectedMapIds = _selectedMapIds.ToArray();
-        var className = _selectedClass;
-        if (selectedMapIds.Length < 2)
-        {
-            await ShowMessageAsync("无法绑定或解绑变体", "请至少选择两张地图来绑定或解绑变体。");
+        if (_selectedMapIds.Count < 2)
             return;
-        }
         try
         {
-            await RunMapOperationAsync("正在更新变体绑定……", async () =>
-            {
-                MapOperationProgress.Report(.1, "正在更新变体绑定……");
-                await Task.Run(() => _repository.ToggleVariantGroupAsync(className, selectedMapIds));
-                MapOperationProgress.Report(.9, "正在刷新地图……");
-                if (!App.IsSafeMode)
-                    await MapOperationProgress.RunAsync(.9, 1, () => App.Session.RefreshMapCacheAsync());
-                await ShowListAsync();
-            });
+            await _repository.ToggleVariantGroupAsync(_selectedClass, _selectedMapIds);
+            if (!App.IsSafeMode)
+                await App.Session.RefreshMapCacheAsync();
+            await ShowListAsync();
         }
         catch (Exception exception)
         {
@@ -354,14 +254,9 @@ public sealed partial class MapListPage : UserControl
 
     private async Task EditMapAsync(MapRecord map)
     {
-        if (_editMapPending || _modernEditorActive) return;
-        _editMapPending = true;
-        using var editOperation = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("Editor.Open", map.Id.ToString());
-        var workflowRevision = ++_workflowRevision;
         try
         {
-            var draft = await _repository.CreateDraftFromSnapshotAsync(map);
-            if (!IsWorkflowCurrent(workflowRevision, "edit-draft")) return;
+            var draft = await _repository.CreateDraftAsync(map.Id);
             if (draft is null)
             {
                 await ShowMessageAsync("地图不存在", "该地图已被删除，请刷新列表。");
@@ -373,16 +268,13 @@ public sealed partial class MapListPage : UserControl
             if (!IsBatchOperation)
                 ResetBatchImport();
             _draft = draft;
-            RecordModernEditorMemory("draft-loaded");
             _draft.Recognition.EnsureStandardAnchors();
             ShowMarkerEditor();
-            RecordModernEditorMemory("editor-created");
         }
         catch (Exception exception)
         {
             await ShowMessageAsync("无法编辑地图", exception.Message);
         }
-        finally { _editMapPending = false; }
     }
 
     private async Task DeleteSelectedMapAsync(MapRecord map)
@@ -401,17 +293,13 @@ public sealed partial class MapListPage : UserControl
 
         try
         {
-            await RunMapOperationAsync("正在删除地图……", async () =>
-            {
-                await Task.Run(() => _repository.DeleteAsync(map.Id));
-                MapOperationProgress.Report(.9, "正在刷新地图……");
-                if (!App.IsSafeMode)
-                    await MapOperationProgress.RunAsync(.9, 1, () => App.Session.RefreshMapCacheAsync(map.Id));
-                _selectedMapIds.Remove(map.Id);
-                if (_lastClickedMapId == map.Id)
-                    _lastClickedMapId = null;
-                await ShowListAsync();
-            });
+            await _repository.DeleteAsync(map.Id);
+            if (!App.IsSafeMode)
+                await App.Session.RefreshMapCacheAsync(map.Id);
+            _selectedMapIds.Remove(map.Id);
+            if (_lastClickedMapId == map.Id)
+                _lastClickedMapId = null;
+            await ShowListAsync();
         }
         catch (Exception exception)
         {

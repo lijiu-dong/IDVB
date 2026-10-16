@@ -11,8 +11,6 @@ namespace IDVBuff.Views;
 
 public sealed partial class MapListPage
 {
-    private bool _packagePromptBusy;
-
     private TeachingTip CreatePublishTeachingTip(
         Button importButton,
         Button publishButton)
@@ -29,29 +27,16 @@ public sealed partial class MapListPage
             updating ? "请选择导出普通 IDVM 地图包，或更新官网地图包。"
                 : "请选择导出普通 IDVM 地图包，或生成官网签名发布目录。",
             choices);
-        var choosing = false;
 
         exportPackage.Click += async (_, _) =>
         {
-            if (choosing || _packagePromptBusy || _isPackageOperation) return;
-            choosing = true;
-            try
-            {
-                await CloseTeachingTipAsync(tip);
-                await ShowExportIdvmDialogAsync(importButton, publishButton);
-            }
-            finally { choosing = false; }
+            await CloseTeachingTipAsync(tip);
+            await ShowExportIdvmDialogAsync(importButton, publishButton);
         };
         publishWebsite.Click += async (_, _) =>
         {
-            if (choosing || _packagePromptBusy || _isPackageOperation) return;
-            choosing = true;
-            try
-            {
-                await CloseTeachingTipAsync(tip);
-                await ShowWebsitePublishDialogAsync(importButton, publishButton);
-            }
-            finally { choosing = false; }
+            await CloseTeachingTipAsync(tip);
+            await ShowWebsitePublishDialogAsync(importButton, publishButton);
         };
         return tip;
     }
@@ -59,18 +44,6 @@ public sealed partial class MapListPage
     private async Task ShowExportIdvmDialogAsync(
         Button importButton,
         Button publishButton)
-    {
-        if (_packagePromptBusy || _isPackageOperation) return;
-        _packagePromptBusy = true;
-        using var operation = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("UI.Idvm.ExportPrompt", _selectedClass);
-        var request = IDVBuff.Core.Diagnostics.MemoryJournal.Request("UI.Idvm.ExportPrompt", nativeModule: "Microsoft.UI.Xaml.dll");
-        using var ownership = IDVBuff.Core.Diagnostics.MemoryJournal.Own("UI.Idvm.ExportPrompt",
-            nativeModule: "Microsoft.UI.Xaml.dll", requestId: request);
-        try { await ShowExportIdvmDialogCoreAsync(importButton, publishButton); }
-        finally { _packagePromptBusy = false; }
-    }
-
-    private async Task ShowExportIdvmDialogCoreAsync(Button importButton, Button publishButton)
     {
         var currentCount = GetVisibleMaps().Count;
         var totalCount = _loadedMaps.Count;
@@ -83,16 +56,6 @@ public sealed partial class MapListPage
         choices.Children.Add(new TextBlock
         {
             Text = $"全部地图类：{totalCount} 张地图",
-            TextWrapping = TextWrapping.Wrap
-        });
-        var compression = new ComboBox { Header = "地图包格式", HorizontalAlignment = HorizontalAlignment.Stretch };
-        compression.Items.Add(new ComboBoxItem { Content = "最高无损压缩（需新版 Windows 客户端）", Tag = IdvmCompressionMode.Maximum });
-        compression.Items.Add(new ComboBoxItem { Content = "兼容压缩（按原有格式导出）", Tag = IdvmCompressionMode.Compatible });
-        compression.SelectedIndex = 0;
-        choices.Children.Add(compression);
-        choices.Children.Add(new TextBlock
-        {
-            Text = "两种格式均包含完整地图资源。最高压缩导出可能耗时较长，导入需支持 IDVM 1.6。",
             TextWrapping = TextWrapping.Wrap
         });
         var dialog = new ContentDialog
@@ -117,21 +80,12 @@ public sealed partial class MapListPage
                 ? IdvmExportScope.CurrentClass
                 : IdvmExportScope.AllClasses,
             importButton,
-            publishButton,
-            compression.SelectedItem is ComboBoxItem { Tag: IdvmCompressionMode mode } ? mode : IdvmCompressionMode.Maximum);
+            publishButton);
     }
 
     private async Task ShowWebsitePublishDialogAsync(
         Button importButton,
         Button publishButton)
-    {
-        if (_packagePromptBusy || _isPackageOperation) return;
-        _packagePromptBusy = true;
-        try { await ShowWebsitePublishDialogCoreAsync(importButton, publishButton); }
-        finally { _packagePromptBusy = false; }
-    }
-
-    private async Task ShowWebsitePublishDialogCoreAsync(Button importButton, Button publishButton)
     {
         AccountIdentity identity;
         try
@@ -231,8 +185,7 @@ public sealed partial class MapListPage
     private async Task ExportIdvmAsync(
         IdvmExportScope scope,
         Button importButton,
-        Button exportButton,
-        IdvmCompressionMode compressionMode)
+        Button exportButton)
     {
         var suggestedName = scope == IdvmExportScope.CurrentClass
             ? $"IDVB-{SanitizeFileName(_selectedClass)}-{DateTime.Now:yyyyMMdd-HHmmss}"
@@ -244,11 +197,10 @@ public sealed partial class MapListPage
         SetPackageOperationState(importButton, exportButton, isBusy: true, "正在导出…");
         try
         {
-            await RunMapOperationAsync("正在打包地图……", () => Task.Run(() => _idvmPackageService.ExportAsync(
+            await Task.Run(() => _idvmPackageService.ExportAsync(
                 scope,
                 scope == IdvmExportScope.CurrentClass ? _selectedClass : null,
-                destination,
-                compressionMode: compressionMode)));
+                destination));
             await ShowMessageAsync("数据包导出完成", $"已保存到：\n{destination}");
         }
         catch (Exception exception)
@@ -312,45 +264,39 @@ public sealed partial class MapListPage
         using var publicationProtection = AppDataPaths.ProtectCachePath(outputDirectory);
         try
         {
-            var subscriptionLink = await RunMapOperationAsync(publicationId is null ? "正在发布地图……" : "正在更新已发布地图……", async () =>
+            var publication = await _mapPublicationService.PublishAsync(
+                scope,
+                scope == IdvmExportScope.CurrentClass ? _selectedClass : null,
+                outputDirectory,
+                publisherHandle,
+                publisherDisplayName,
+                isOfficialPublisher,
+                isBuilderPublisher,
+                intendedForWebsite,
+                packageName,
+                coverPath,
+                publicationId,
+                existingContentKey);
+            var subscriptionLink = intendedForWebsite
+                ? await AccountSession.UploadPublicationAsync(publication)
+                : publication.SubscriptionLink;
+            if (intendedForWebsite)
             {
-                var publication = await MapOperationProgress.RunAsync(0, .6, () => Task.Run(() => _mapPublicationService.PublishAsync(
-                    scope,
-                    scope == IdvmExportScope.CurrentClass ? _selectedClass : null,
-                    outputDirectory,
-                    publisherHandle,
-                    publisherDisplayName,
-                    isOfficialPublisher,
-                    isBuilderPublisher,
-                    intendedForWebsite,
-                    packageName,
-                    coverPath,
-                    publicationId,
-                    existingContentKey)));
-                MapOperationProgress.Report(.6, "正在上传地图……");
-                var linkText = intendedForWebsite
-                    ? await MapOperationProgress.RunAsync(.6, .9, () => AccountSession.UploadPublicationAsync(publication))
-                    : publication.SubscriptionLink;
-                if (intendedForWebsite)
-                {
-                    var publishedMaps = scope == IdvmExportScope.CurrentClass ? GetVisibleMaps() : _loadedMaps;
-                    MapOperationProgress.Report(.92, "正在登记发布结果……");
-                    var link = MapSubscriptionLink.Parse(linkText);
-                    await _repository.MarkPublishedMapsAsSubscriptionAsync(
-                        publishedMaps.Select(map => map.Id).ToArray(), publication.PublicationId,
-                        publication.PublisherDisplayName, link.PublisherKeyId, publication.Version,
-                        publication.IsOfficialPublisher, publication.IsBuilderPublisher);
-                    await _mapSubscriptionService.RegisterPublishedAsync(publication, linkText, publishedMaps);
-                    await ShowListAsync();
-                }
-                return linkText;
-            });
+                var publishedMaps = scope == IdvmExportScope.CurrentClass ? GetVisibleMaps() : _loadedMaps;
+                var link = MapSubscriptionLink.Parse(subscriptionLink);
+                await _repository.MarkPublishedMapsAsSubscriptionAsync(
+                    publishedMaps.Select(map => map.Id).ToArray(), publication.PublicationId,
+                    publication.PublisherDisplayName, link.PublisherKeyId, publication.Version,
+                    publication.IsOfficialPublisher, publication.IsBuilderPublisher);
+                await _mapSubscriptionService.RegisterPublishedAsync(publication, subscriptionLink, publishedMaps);
+                await ShowListAsync();
+            }
             var data = new DataPackage();
             data.SetText(subscriptionLink);
             Clipboard.SetContent(data);
             var publisherName = intendedForWebsite
-                ? AccountSession.Identity?.DisplayName ?? publisherHandle
-                : publisherHandle;
+                ? AccountSession.Identity?.DisplayName ?? publication.PublisherHandle
+                : publication.PublisherHandle;
             var targetText = intendedForWebsite
                 ? "已发布到 IDVB 官网"
                 : "已生成本地更新订阅";
@@ -397,13 +343,6 @@ public sealed partial class MapListPage
 
     private async Task<string?> PickIdvmDestinationAsync(string suggestedName)
     {
-#if IDVB_DEVELOPMENT_BUILD
-        if (_developmentExportDestination is { } replayDestination)
-        {
-            _developmentExportDestination = null;
-            return ValidateDevelopmentPackagePath(replayDestination, mustExist: false);
-        }
-#endif
         try
         {
             var picker = new FileSavePicker(((App)Application.Current).MainWindow.AppWindow.Id)

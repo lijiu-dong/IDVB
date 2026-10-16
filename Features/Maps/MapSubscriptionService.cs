@@ -62,7 +62,6 @@ public sealed class MapSubscriptionService
             record.LastAppliedVersion = publication.Version;
             record.LastPublishedAtUtc = DateTimeOffset.UtcNow;
             record.InstalledMapIds = maps.Select(map => map.Id).ToList();
-            record.CoCreationMapBindings.Clear();
             record.ClassBindings = maps.Select(map => map.Class).Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(name => name, name => name, StringComparer.OrdinalIgnoreCase);
             _store.Save(records);
@@ -77,7 +76,7 @@ public sealed class MapSubscriptionService
         try
         {
             var records = _store.Load().ToList();
-            var installedMapIds = (await _repository.GetTagCatalogSnapshotAsync())
+            var installedMapIds = (await _repository.GetCatalogSnapshotAsync())
                 .Maps.Select(map => map.Id).ToHashSet();
             var removed = 0;
             var incomplete = 0;
@@ -98,37 +97,6 @@ public sealed class MapSubscriptionService
             if (removed > 0 || incomplete > 0)
                 _store.Save(records);
             return new MapSubscriptionReconciliationResult(removed, incomplete);
-        }
-        finally { OperationGate.Release(); }
-    }
-
-    internal async Task RegisterCoCreationEditAsync(MapSubscriptionRecord verifiedRecord,
-        MapPublicationPayload publication, MapRecord map, string? sourceClassName = null, Guid? sourceMapId = null)
-    {
-        await OperationGate.WaitAsync();
-        try
-        {
-            if (map.SubscriptionId != verifiedRecord.Id || publication.PublicationId != verifiedRecord.Id)
-                throw new InvalidDataException("保存的地图与已验证方案不匹配。");
-            var records = _store.Load().ToList();
-            var record = records.SingleOrDefault(item => item.Id == verifiedRecord.Id);
-            if (record is null)
-            {
-                record = verifiedRecord;
-                records.Add(record);
-            }
-            record.PublisherHandle = publication.PublisherHandle;
-            record.PublisherDisplayName = publication.PublisherDisplayName;
-            record.PackageName = publication.PackageName ?? verifiedRecord.PackageName;
-            record.LastPublishedAtUtc = publication.PublishedAtUtc;
-            record.LastAppliedVersion = publication.Version;
-            if (!record.InstalledMapIds.Contains(map.Id)) record.InstalledMapIds.Add(map.Id);
-            record.ClassBindings[sourceClassName ?? map.Class] = map.Class;
-            if (sourceMapId is { } sourceId) record.CoCreationMapBindings[sourceId] = map.Id;
-            _store.Save(records);
-            verifiedRecord.ClassBindings = new(record.ClassBindings, StringComparer.OrdinalIgnoreCase);
-            verifiedRecord.CoCreationMapBindings = new(record.CoCreationMapBindings);
-            verifiedRecord.InstalledMapIds = record.InstalledMapIds.ToList();
         }
         finally { OperationGate.Release(); }
     }
@@ -158,9 +126,9 @@ public sealed class MapSubscriptionService
         finally { OperationGate.Release(); }
     }
 
-    public async Task SetEnabledAsync(Guid id, bool enabled, CancellationToken cancellationToken = default)
+    public async Task SetEnabledAsync(Guid id, bool enabled)
     {
-        await OperationGate.WaitAsync(cancellationToken);
+        await OperationGate.WaitAsync();
         try
         {
             var records = _store.Load().ToList();
@@ -172,9 +140,9 @@ public sealed class MapSubscriptionService
         finally { OperationGate.Release(); }
     }
 
-    public async Task RemoveAsync(Guid id, CancellationToken cancellationToken = default)
+    public async Task RemoveAsync(Guid id)
     {
-        await OperationGate.WaitAsync(cancellationToken);
+        await OperationGate.WaitAsync();
         try
         {
             var records = _store.Load().ToList();
@@ -198,8 +166,6 @@ public sealed class MapSubscriptionService
                 FileName = updaterPath,
                 WorkingDirectory = Path.GetDirectoryName(updaterPath)!,
                 UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardInput = true,
                 CreateNoWindow = true,
                 WindowStyle = ProcessWindowStyle.Hidden
             };
@@ -210,27 +176,8 @@ public sealed class MapSubscriptionService
             startInfo.ArgumentList.Add(Environment.ProcessId.ToString());
             using var process = Process.Start(startInfo)
                 ?? throw new InvalidOperationException("无法启动独立地图订阅更新器。");
-            using var cancelUpdater = cancellationToken.Register(() =>
-            {
-                try { process.StandardInput.WriteLine("cancel"); process.StandardInput.Flush(); }
-                catch (Exception exception) when (exception is IOException or InvalidOperationException or ObjectDisposedException) { }
-            });
-            // Drain the child after cancellation so a second update cannot race it.
-            while (await process.StandardOutput.ReadLineAsync() is { } line)
-            {
-                const string prefix = "IDVB_PROGRESS ";
-                if (!line.StartsWith(prefix, StringComparison.Ordinal)) continue;
-                try
-                {
-                    var update = JsonSerializer.Deserialize<MapSubscriptionUpdateProgress>(line[prefix.Length..]);
-                    if (update is not null) MapOperationProgress.Report(.65 * update.Fraction, update.Operation);
-                }
-                catch (JsonException) { /* Ignore malformed diagnostics; receipts remain authoritative. */ }
-            }
-            await process.WaitForExitAsync();
-            cancellationToken.ThrowIfCancellationRequested();
-            MapOperationProgress.Report(.65, "正在应用订阅地图……");
-            var applied = await MapOperationProgress.RunAsync(.65, .98, () => ApplyPendingAsync(cancellationToken));
+            await process.WaitForExitAsync(cancellationToken);
+            var applied = await ApplyPendingAsync(cancellationToken);
             if (process.ExitCode == 4)
                 throw new InvalidOperationException("独立地图订阅更新器未能完成初始化，请查看 updater.log。");
             var records = _store.Load();
@@ -253,11 +200,9 @@ public sealed class MapSubscriptionService
         var pendingRoot = Path.Combine(_rootDirectory, "pending");
         if (!Directory.Exists(pendingRoot)) return 0;
         var applied = 0;
-        var receipts = Directory.EnumerateFiles(pendingRoot, "pending.json", SearchOption.AllDirectories).ToArray();
-        var processed = 0;
-        foreach (var receiptPath in receipts)
+        foreach (var receiptPath in Directory.EnumerateFiles(
+            pendingRoot, "pending.json", SearchOption.AllDirectories))
         {
-            using var receiptProgress = MapOperationProgress.Range((double)processed / receipts.Length, (double)++processed / receipts.Length);
             cancellationToken.ThrowIfCancellationRequested();
             var receipt = JsonSerializer.Deserialize<PendingMapSubscriptionUpdate>(
                 await File.ReadAllTextAsync(receiptPath, cancellationToken),
@@ -320,13 +265,12 @@ public sealed class MapSubscriptionService
                 receipt.Publication.PlaintextSha256,
                 StringComparison.OrdinalIgnoreCase))
             throw new CryptographicException("待应用 IDVM 与已验证订阅回执不一致。");
-        IdvmImportPlan? plan = await MapOperationProgress.RunAsync(0, .25, () => _packages.InspectAsync(receipt.PackagePath, cancellationToken));
+        IdvmImportPlan? plan = await _packages.InspectAsync(receipt.PackagePath, cancellationToken);
         var sourceNames = plan.Classes.Select(item => item.SourceName).ToArray();
         IdvmImportResult? imported = null;
         try
         {
-            imported = await MapOperationProgress.RunAsync(.25, .9, () => _packages.ImportAsync(plan, cancellationToken));
-            MapOperationProgress.Report(.92, "正在替换订阅地图……");
+            imported = await _packages.ImportAsync(plan, cancellationToken);
             plan = null;
             var mappings = sourceNames.Zip(
                 imported.CreatedClasses,
@@ -345,7 +289,6 @@ public sealed class MapSubscriptionService
             record.ClassBindings = new Dictionary<string, string>(
                 promotion.ClassBindings, StringComparer.OrdinalIgnoreCase);
             record.InstalledMapIds = promotion.InstalledMapIds.ToList();
-            record.CoCreationMapBindings.Clear();
             MapClassDiagnosticCoordinator.Instance.Trigger(_repository);
         }
         catch
@@ -357,7 +300,7 @@ public sealed class MapSubscriptionService
                 {
                     try
                     {
-                        if ((await _repository.GetMapClassesAsync()).Contains(
+                        if ((await _repository.GetCatalogSnapshotAsync()).Classes.Contains(
                             className, StringComparer.OrdinalIgnoreCase))
                             await _repository.RollBackImportedClassAsync(className);
                     }

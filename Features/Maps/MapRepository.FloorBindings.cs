@@ -268,11 +268,9 @@ public sealed partial class MapRepository
             throw new InvalidOperationException(
                 $"{context} uses an unsupported image format: '{path}'. Use PNG, JPG, or JPEG.");
 
-        try { MapImageFileValidation.ValidateImageFile(path, CancellationToken.None); }
-        catch (Exception exception) when (exception is InvalidDataException or EndOfStreamException)
-        {
-            throw new InvalidOperationException($"{context} image cannot be decoded: '{path}'.", exception);
-        }
+        using var image = DecodeImage(path);
+        if (image.Empty())
+            throw new InvalidOperationException($"{context} image cannot be decoded: '{path}'.");
     }
 
     private string GetMapDirectory(Guid id) => Path.Combine(_rootDirectory, id.ToString("N"));

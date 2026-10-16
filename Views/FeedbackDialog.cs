@@ -182,11 +182,7 @@ public sealed class FeedbackDialog : ContentDialog
             AccountSession.Changed += AccountSession_Changed;
             UpdateLoginState();
         };
-        Closed += (_, _) =>
-        {
-            AccountSession.Changed -= AccountSession_Changed;
-            _submissionCts?.Cancel();
-        };
+        Closed += (_, _) => AccountSession.Changed -= AccountSession_Changed;
 
         // 初始化登录校验状态
         UpdateLoginState();
@@ -224,17 +220,6 @@ public sealed class FeedbackDialog : ContentDialog
     }
 
     private CancellationTokenSource? _submissionCts;
-
-    internal bool ResetForOpen()
-    {
-        if (_isBusy) return false;
-        _descriptionBox.Text = string.Empty;
-        _contactQqBox.Text = string.Empty;
-        _sendLogsCheckBox.IsChecked = _sendDiagnosticsCheckBox.IsChecked = false;
-        _statusBlock.Text = string.Empty;
-        SetBusyState(false);
-        return true;
-    }
 
     private async void FeedbackDialog_PrimaryButtonClick(ContentDialog sender, ContentDialogButtonClickEventArgs args)
     {
@@ -276,8 +261,8 @@ public sealed class FeedbackDialog : ContentDialog
                 includeLogs,
                 includeDiagnostics);
 
-            tempDirectory = buildResult.OutputDirectory;
             ct.ThrowIfCancellationRequested();
+            tempDirectory = buildResult.OutputDirectory;
 
             _statusBlock.Text = "正在提交反馈数据至官网后台...";
 
@@ -330,7 +315,6 @@ public sealed class FeedbackDialog : ContentDialog
         }
         finally
         {
-            SetBusyState(false);
             // 4. 清理临时生成的 ZIP 目录
             if (!string.IsNullOrEmpty(tempDirectory))
             {

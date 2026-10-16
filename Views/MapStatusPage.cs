@@ -177,7 +177,6 @@ public sealed partial class MapStatusPage : UserControl
 
     private void MapStatusPage_Unloaded(object sender, RoutedEventArgs e)
     {
-        StopForegroundRecording();
         _displayPreviewExpanded = false;
         DisplayPreviewVisibilityChanged?.Invoke(false);
         if (!_subscribedToRuntime)

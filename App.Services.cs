@@ -30,15 +30,6 @@ public partial class App
     /// <summary>全局 DI 容器是否已完成构建并可用。</summary>
     public static bool IsServicesReady => _currentApp?._serviceProvider is not null;
 
-    internal static bool CanReturnUnusedNativeBacking()
-    {
-        var app = _currentApp;
-        if (app is null || app.IsApplicationStopping || !ServicesReadyTask.IsCompletedSuccessfully
-            || app._serviceProvider is not { } services) return false;
-        try { return !services.GetRequiredService<Features.Maps.SessionOrchestrator>().MatchSnapshot.IsStarted; }
-        catch (ObjectDisposedException) { return false; }
-    }
-
     private async ValueTask<bool> TryCommitStartupServicesAsync(ServiceProvider services)
     {
         if (IsApplicationStopping)

@@ -191,7 +191,7 @@ public sealed partial class NativeMarkdownView
                 MaxWidth = 640,
                 MaxHeight = 400
             };
-            MemoryImageBinding.Attach(image, uri, 1280, "UI.Markdown.Image");
+            image.Source = new BitmapImage(uri);
             container.Children.Add(image);
         }
 

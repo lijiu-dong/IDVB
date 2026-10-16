@@ -14,8 +14,6 @@ public static class Program
 {
     private static GuiInstanceCoordinator? _guiInstance;
     internal static bool IsDevelopmentInstance { get; private set; }
-    private static MemoryDiagnosticsRuntime? _memoryDiagnostics;
-    private static DispatcherQueue? _guiDispatcher;
 
     [STAThread]
     public static int Main(string[] args)
@@ -32,19 +30,6 @@ public static class Program
 #endif
         IsDevelopmentInstance = args.Any(argument =>
             string.Equals(argument, "--isolated-dev-instance", StringComparison.OrdinalIgnoreCase));
-#if IDVB_DEVELOPMENT_BUILD
-        try
-        {
-            AppDataPaths.ConfigureMemoryTestRoot(args);
-            BackgroundTestRuntime.Initialize(args.Any(argument => argument.Equals("--idvb-background-test", StringComparison.OrdinalIgnoreCase)));
-        }
-        catch (Exception exception) when (exception is InvalidOperationException or ArgumentException
-            or IOException or UnauthorizedAccessException)
-        {
-            Console.Error.WriteLine(exception.Message);
-            return 2;
-        }
-#endif
         var mainEntered = Stopwatch.GetTimestamp();
         var mainUtc = DateTimeOffset.UtcNow;
         // Velopack lifecycle processing must precede WinUI, logging, DI, and
@@ -142,22 +127,6 @@ public static class Program
             : null;
         usage?.Start();
 
-        if (!isCli)
-        {
-            try
-            {
-                _memoryDiagnostics = new MemoryDiagnosticsRuntime(AppDataPaths.RootDirectory,
-                    BuildVersionInfo.BuildVersion, HandleMemoryFailure);
-                _memoryDiagnostics.ConfigureNativeBackingReturns(App.CanReturnUnusedNativeBacking);
-            }
-            catch (Exception exception)
-            {
-                MessageBoxW(0, $"无法启动内存诊断，IDVB 已停止：{exception.Message}",
-                    "Identity Vision Bridge · 内存诊断", 0x10);
-                return 3;
-            }
-        }
-
         StartupTimeline.Write($"Launch mode: cli={isCli}; isolatedDevelopment={isIsolatedDevelopmentInstance}.");
         if (!isCli)
         {
@@ -172,32 +141,12 @@ public static class Program
         }
         finally
         {
-            StopMemoryDiagnostics();
             StartupTimeline.StopSampling();
             StartupSplash.Close();
             // Commit usage before releasing the primary mutex to the next process.
             usage?.Dispose();
             _guiInstance?.Dispose();
         }
-    }
-
-    internal static void StopMemoryDiagnostics() => Interlocked.Exchange(ref _memoryDiagnostics, null)?.Dispose();
-    internal static void SuspendNativeBackingReturns() => Volatile.Read(ref _memoryDiagnostics)?.SuspendNativeBackingReturns();
-
-    private static void HandleMemoryFailure(string message)
-    {
-        Environment.ExitCode = 3;
-        // Install the deadline before any UI calls that may themselves fail.
-        new Thread(() =>
-        {
-            Thread.Sleep(5000);
-            Environment.Exit(3);
-        }) { IsBackground = true, Name = "IDVB memory shutdown deadline" }.Start();
-        // An error dialog must not keep recognition running until the user clicks OK.
-        new Thread(() => MessageBoxW(0, message, "Identity Vision Bridge · 内存错误", 0x10))
-            { IsBackground = true, Name = "IDVB memory error" }.Start();
-        try { _guiDispatcher?.TryEnqueue(DispatcherQueuePriority.High, App.ExitForMemoryFailure); }
-        catch (Exception exception) { Debug.WriteLine(exception); }
     }
 
     private static void ShowDevelopmentInstanceConflict() =>
@@ -222,7 +171,6 @@ public static class Program
                 DispatcherQueue.GetForCurrentThread());
             SynchronizationContext.SetSynchronizationContext(context);
             var dispatcher = DispatcherQueue.GetForCurrentThread();
-            _guiDispatcher = dispatcher;
             StartupTimeline.StartSampling(action => dispatcher.TryEnqueue(() => action()));
             StartupTimeline.Write("App construction begin (includes Application base constructor).");
             _ = new App();

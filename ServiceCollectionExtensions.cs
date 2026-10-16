@@ -41,7 +41,7 @@ public static class ServiceCollectionExtensions
         // ════════════════════════════════════════════════════════════
         using var registrationTiming = StartupTimeline.Measure("DI registration body (after method JIT)");
         using (StartupTimeline.Measure("DI configuration provider construction"))
-            configProvider ??= new TomlConfigProvider(AppDataPaths.RootDirectory);
+            configProvider ??= new TomlConfigProvider();
         services.AddSingleton(configProvider);
         if (configProvider is TomlConfigProvider toml)
             services.AddSingleton(toml);
@@ -49,7 +49,7 @@ public static class ServiceCollectionExtensions
             new ResolutionProfileManager(
                 sp.GetRequiredService<IConfigProvider>() is TomlConfigProvider t
                     ? t
-                    : new TomlConfigProvider(AppDataPaths.RootDirectory)));
+                    : new TomlConfigProvider()));
 
         // 将 TOML 配置应用到各算法模块的静态规则类
         using (StartupTimeline.Measure("DI GateTemplateRules.ApplyConfig"))

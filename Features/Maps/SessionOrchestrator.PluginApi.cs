@@ -146,8 +146,6 @@ public sealed partial class SessionOrchestrator
 
     private sealed class ApiCandidateSelector(Guid? selectedMapId) : IMapCandidateSelector
     {
-        public bool AutomaticOnly => selectedMapId is null;
-
         public Task<MapCandidateDecision> SelectAsync(CapturedGameFrame frame,
             IReadOnlyList<MapRecognitionChoice> candidates, string reason, CancellationToken cancellationToken)
         {

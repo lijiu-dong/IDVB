@@ -164,108 +164,33 @@ public sealed class Vpsg3BootstrapResult
 }
 
 /// <summary>
-/// Reusable, exclusively leased solver buffers. Idle storage is bounded across
-/// worker threads; it contains temporary pixels/scores, never floor scale state.
+/// Reusable hot-path scratch buffers for zero steady-state managed allocations during VPSG 3.0 solving.
+/// Thread-safe via thread-local or pooled instances.
 /// </summary>
 public sealed class Vpsg3SolverScratch
 {
     [ThreadStatic]
-    private static WeakReference<Vpsg3SolverScratch>? _threadLocal;
-    private static readonly object PoolGate = new();
-    private static Vpsg3SolverScratch? _cached;
-    private static long _generation;
-    private const long MaximumCachedBytes = 8L * 1024 * 1024;
+    private static Vpsg3SolverScratch? _threadLocal;
 
-    // Compatibility for callers retaining their own scratch. A worker thread
-    // must not become a permanent strong owner of megabytes after that call.
-    public static Vpsg3SolverScratch Current
-    {
-        get
-        {
-            if (_threadLocal?.TryGetTarget(out var current) == true) return current;
-            var scratch = new Vpsg3SolverScratch();
-            _threadLocal = new(scratch);
-            return scratch;
-        }
-    }
+    public static Vpsg3SolverScratch Current => _threadLocal ??= new Vpsg3SolverScratch();
 
-    internal static Lease Rent()
-    {
-        // Allocate the lease before detaching an existing cached owner.
-        var lease = new Lease();
-        Vpsg3SolverScratch? scratch;
-        long generation;
-        lock (PoolGate) { scratch = _cached; _cached = null; generation = _generation; }
-        lease.Attach(scratch ?? new(), generation);
-        return lease;
-    }
+    public double[] ProjectionBufferX { get; private set; } = new double[2048];
+    public double[] ProjectionBufferY { get; } = new double[2048];
+    public double[] CenteredSignalBuffer { get; private set; } = new double[2048];
+    public double[] AutocorrBuffer { get; private set; } = new double[1024];
 
-    internal static void ReleaseSharedScratch()
-    {
-        lock (PoolGate) { _generation++; _cached = null; }
-    }
-
-    internal sealed class Lease : IDisposable
-    {
-        private Vpsg3SolverScratch? _scratch;
-        private long _generation;
-        internal Vpsg3SolverScratch Scratch => _scratch ?? throw new ObjectDisposedException(nameof(Lease));
-        internal void Attach(Vpsg3SolverScratch scratch, long generation) { _scratch = scratch; _generation = generation; }
-        public void Dispose()
-        {
-            var scratch = Interlocked.Exchange(ref _scratch, null);
-            if (scratch is null) return;
-            bool cached;
-            lock (PoolGate)
-            {
-                cached = _generation == Vpsg3SolverScratch._generation && _cached is null
-                    && scratch.MemoryBytes <= MaximumCachedBytes;
-                if (cached) _cached = scratch;
-            }
-            IDVBuff.Core.Diagnostics.MemoryJournal.Current?.Record("workspace-returned", new
-            {
-                resource = "VPSG3.SolverScratch", cached, payloadBytes = scratch.MemoryBytes,
-                meaning = "Exclusive reader finished; at most one bounded idle scratch. Managed collection observed separately."
-            });
-        }
-    }
-
-    public double[] ProjectionBufferX { get; private set; } = Allocate<double>(2048, "ProjectionX");
-    public double[] ProjectionBufferY { get; } = Allocate<double>(2048, "ProjectionY");
-    public double[] CenteredSignalBuffer { get; private set; } = Allocate<double>(2048, "CenteredSignal");
-    public double[] AutocorrBuffer { get; private set; } = Allocate<double>(1024, "Autocorrelation");
-
-    public Point[] ScaledQueryPointsBuffer { get; } = Allocate<Point>(256, "ScaledPoints");
+    public Point[] ScaledQueryPointsBuffer { get; } = new Point[256];
     internal int[] TranslationScores = [];
-    public Vpsg3TranslationCandidate[] CandidateBuffer { get; } = Allocate<Vpsg3TranslationCandidate>(64, "Candidates");
+    public Vpsg3TranslationCandidate[] CandidateBuffer { get; } = new Vpsg3TranslationCandidate[64];
     internal int CandidateCount;
-    public byte[] EdgeMaskBuffer { get; private set; } = [];
-    internal long MemoryBytes => EdgeMaskBuffer.LongLength + TranslationScores.LongLength * sizeof(int)
-        + (ProjectionBufferX.LongLength + ProjectionBufferY.LongLength + CenteredSignalBuffer.LongLength
-            + AutocorrBuffer.LongLength) * sizeof(double)
-        + ScaledQueryPointsBuffer.LongLength * Unsafe.SizeOf<Point>()
-        + CandidateBuffer.LongLength * Unsafe.SizeOf<Vpsg3TranslationCandidate>();
-
-    private static T[] Allocate<T>(int count, string name) where T : struct
-    {
-        var resource = "VPSG3.SolverScratch." + name;
-        var request = IDVBuff.Core.Diagnostics.MemoryJournal.Request(resource, checked((long)count * Unsafe.SizeOf<T>()));
-        var buffer = new T[count];
-        IDVBuff.Core.Diagnostics.MemoryJournal.ObserveManagedArray(buffer, resource, request);
-        return buffer;
-    }
-
-    internal void EnsureTranslationCapacity(int count)
-    {
-        if (TranslationScores.Length < count) TranslationScores = Allocate<int>(count, "TranslationScores");
-    }
+    public byte[] EdgeMaskBuffer { get; private set; } = new byte[1024 * 1024];
 
     internal void EnsureScaleCapacity(int width, int height)
     {
         var pixels = checked(width * height);
-        if (EdgeMaskBuffer.Length < pixels) EdgeMaskBuffer = Allocate<byte>(pixels, "EdgeMask");
-        if (ProjectionBufferX.Length < width) ProjectionBufferX = Allocate<double>(width, "ProjectionX");
-        if (CenteredSignalBuffer.Length < width) CenteredSignalBuffer = Allocate<double>(width, "CenteredSignal");
-        if (AutocorrBuffer.Length < width / 2) AutocorrBuffer = Allocate<double>(width / 2, "Autocorrelation");
+        if (EdgeMaskBuffer.Length < pixels) EdgeMaskBuffer = new byte[pixels];
+        if (ProjectionBufferX.Length < width) ProjectionBufferX = new double[width];
+        if (CenteredSignalBuffer.Length < width) CenteredSignalBuffer = new double[width];
+        if (AutocorrBuffer.Length < width / 2) AutocorrBuffer = new double[width / 2];
     }
 }

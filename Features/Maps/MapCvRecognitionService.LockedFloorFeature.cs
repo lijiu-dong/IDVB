@@ -45,7 +45,6 @@ public sealed partial class MapCvRecognitionService
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(scaleSeed);
-        var alignmentStarted = Stopwatch.GetTimestamp();
         var diagnostics = MapCvRecognitionDiagnostics.CreateDiagnostics(
             ReadyMapCount,
             TotalMapCount);
@@ -123,26 +122,23 @@ public sealed partial class MapCvRecognitionService
                 floorKey,
                 structureTuning,
                 preprocessingProfile);
-            var residentReferenceLease = _structureCache.TryRentResident(
+            using var residentReferenceLease = _structureCache.TryRentResident(
                 map.Id,
                 map.UpdatedAt,
                 floorKey,
                 structureTuning.Generation,
                 referenceProfile);
+            MapStructureFeatures? ownedPreparedReference = null;
             Mat? decodedReference = null;
             var referenceLoadMilliseconds = 0d;
             if (residentReferenceLease is null)
             {
-                // The exact-key floor lease binds map, floor, generation and
-                // content. Full label comparison also rejects altered pixels.
-                using var preparedFloorLease = referenceProfile == MapStructurePreprocessingProfile.PrebuiltStructureLine
-                    && TryGetVpsg3FloorLease(map, floorKey, out var floorLease) ? floorLease : null;
                 var referencePath = GetAlignmentReferencePath(
                     map, floorKey, structureTuning);
                 var referenceLoadTimer = Stopwatch.StartNew();
                 decodedReference = Cv2.ImRead(
                     referencePath,
-                    ImreadModes.Unchanged);
+                    ImreadModes.Grayscale);
                 referenceLoadTimer.Stop();
                 referenceLoadMilliseconds =
                     referenceLoadTimer.Elapsed.TotalMilliseconds;
@@ -154,43 +150,36 @@ public sealed partial class MapCvRecognitionService
                         "The locked floor recognition image could not be read.");
                 }
 
-                using (decodedReference)
-                residentReferenceLease = _structureCache.RentOrCreate(
+                ownedPreparedReference = _structureCache.GetOrCreate(
                     map.Id,
                     map.UpdatedAt,
                     decodedReference,
                     profile.WholeImageIgnoreRegions,
                     floorKey,
                     structureTuning.Generation,
-                    referenceProfile,
-                    residentSemanticIndex: preparedFloorLease?.Floor.SemanticIndex);
+                    referenceProfile);
             }
-            using var referenceLeaseScope = residentReferenceLease;
-            var preparedReference = residentReferenceLease!.Features;
+            using var decodedReferenceScope = decodedReference;
+            using var ownedPreparedReferenceScope = ownedPreparedReference;
+            var preparedReference = residentReferenceLease?.Features
+                ?? ownedPreparedReference!;
             preparedReferenceWidth = preparedReference.Edges.Width;
             preparedReferenceHeight = preparedReference.Edges.Height;
             diagnostics.ReferenceImageLoadMilliseconds = referenceLoadMilliseconds;
             diagnostics.ReferenceDiskReadCount = decodedReference is null ? 0 : 1;
+            var preparedLive = frame.GetOrCreateDefaultLiveStructureFeatures(
+                _structurePreprocessor,
+                preprocessingProfile,
+                out liveFrameCacheHit,
+                out var originalLiveStructureExtractionMilliseconds,
+                out _,
+                generateVisibleMask: structureTuning.EnableVisibleMask,
+                generationTuning: structureTuning.Generation);
+            liveStructureExtractionMilliseconds = liveFrameCacheHit
+                ? 0d
+                : originalLiveStructureExtractionMilliseconds;
             var physicalPixelsPerComputationPixel =
                 Math.Max(0.0001d, frame.PhysicalPixelsPerComputationPixel);
-            // Scale and final acceptance must observe the same physical edges.
-            // Legacy resized/morphological edges bias narrow explored regions.
-            var native = referenceProfile == MapStructurePreprocessingProfile.PrebuiltStructureLine
-                && vpsgMode is VpsgScaleMode.Structure or VpsgScaleMode.Both
-                ? frame.GetOrCreateNativeObservedStructure() : null;
-            using var nativeStructure = native is null ? null
-                : MapStructurePreprocessor.UseNativeScaleStructure(
-                    native.ObservedEdges, native.ValidMask, native.SemanticLabels);
-            var originalLiveStructureExtractionMilliseconds = 0d;
-            var preparedLive = nativeStructure is not null && vpsgMode == VpsgScaleMode.Structure
-                ? nativeStructure
-                : frame.GetOrCreateDefaultLiveStructureFeatures(
-                    _structurePreprocessor, preprocessingProfile, out liveFrameCacheHit,
-                    out originalLiveStructureExtractionMilliseconds, out _,
-                    generateVisibleMask: structureTuning.EnableVisibleMask,
-                    generationTuning: structureTuning.Generation);
-            liveStructureExtractionMilliseconds = liveFrameCacheHit
-                ? 0d : originalLiveStructureExtractionMilliseconds;
             vpsgBootstrap = EstimateVpsgScales(
                 map,
                 floorKey,
@@ -200,9 +189,7 @@ public sealed partial class MapCvRecognitionService
                 structurePriorScale: scaleSeed.ScaleX
                     / physicalPixelsPerComputationPixel,
                 legacyPriorScale: scaleSeed.ScaleX
-                    / physicalPixelsPerComputationPixel,
-                nativeStructure: nativeStructure,
-                physicalPixelScale: physicalPixelsPerComputationPixel);
+                    / physicalPixelsPerComputationPixel);
             var vpsgFit = CreateVpsgFit(
                 vpsgBootstrap,
                 physicalPixelsPerComputationPixel);
@@ -357,7 +344,6 @@ public sealed partial class MapCvRecognitionService
             };
         }
 
-        attempt.Diagnostics.TotalMilliseconds = Stopwatch.GetElapsedTime(alignmentStarted).TotalMilliseconds;
         return attempt;
     }
 }

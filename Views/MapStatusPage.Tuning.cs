@@ -373,9 +373,6 @@ public sealed partial class MapStatusPage : UserControl
         _reverseAlternateDisplayToggle.IsEnabled = controlsEnabled
             && !_overlayStatusToggle.IsOn;
         _showRoutesToggle.IsOn = _runtime.Settings.ShowRoutes;
-        var routeTransparencyPercentage = (1d - _runtime.Settings.RouteOpacity) * 100d;
-        _routeOpacitySlider.Value = routeTransparencyPercentage;
-        _routeOpacityValue.Text = $"当前：{routeTransparencyPercentage:F0}%（越高越透明）";
         _hideMiniMapToggle.IsOn = _runtime.Settings.HideMiniMap;
         _routeLineThicknessSlider.Value = _runtime.Settings.RouteLineThickness;
         _routeLineThicknessValue.Text = $"当前：{RouteLineThicknessLabel(_runtime.Settings.RouteLineThickness)}";

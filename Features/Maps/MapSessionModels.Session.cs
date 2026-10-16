@@ -247,16 +247,6 @@ public sealed class MapOpenSession
         return BeginVariantChange(mapId, floor);
     }
 
-    public MapSessionSnapshot ConfirmDetectedFloor(Guid mapId, string floor)
-    {
-        if (Snapshot.MapId != mapId)
-            throw new InvalidOperationException("Floor evidence cannot change map identity.");
-        if (string.Equals(Snapshot.Floor, floor, StringComparison.Ordinal))
-            return Snapshot;
-        return LockMapIdentity(mapId, floor, Snapshot.Confidence,
-            "detected floor confirmed; alignment pending");
-    }
-
     public MapSessionSnapshot LockAlignedMap(
         Guid mapId,
         string floor,
@@ -291,8 +281,7 @@ public sealed class MapOpenSession
     public MapSessionSnapshot LockMapIdentity(
         Guid mapId,
         string floor,
-        double confidence,
-        string detail = "user-selected map identity locked; alignment pending")
+        double confidence)
     {
         if (mapId == Guid.Empty)
             throw new ArgumentOutOfRangeException(nameof(mapId));
@@ -311,7 +300,7 @@ public sealed class MapOpenSession
                 double.IsFinite(confidence) ? confidence : 0d,
                 0d,
                 1d),
-            Detail = detail
+            Detail = "user-selected map identity locked; alignment pending"
         };
         return Snapshot;
     }

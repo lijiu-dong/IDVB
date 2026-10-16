@@ -43,7 +43,9 @@ internal static partial class MapOverlayBitmapRenderer
                 showTextAnnotations,
                 showBoxAnnotations,
                 showLineAnnotations);
-            return CopyOwnedRaster(cached);
+            return cached.Clone(
+                new Rectangle(0, 0, cached.Width, cached.Height),
+                PixelFormat.Format32bppPArgb);
         }
     }
 
@@ -124,56 +126,20 @@ internal static partial class MapOverlayBitmapRenderer
         bool showAuxiliaryAnchors,
         bool showTextAnnotations,
         bool showBoxAnnotations,
-        bool showLineAnnotations, Rectangle? sourceRegion = null) =>
-        GetOrBuildMapLayer(map, width, height, dpiScale, mapOpacity, showGateMarkers,
-            showAuxiliaryAnchors, showTextAnnotations, showBoxAnnotations, showLineAnnotations,
-            sourceRegion, coverage: null, out _);
-
-    // coverage: the pixels the caller actually needs. A cached window of this
-    // layer that contains them is reused: every window is an integer crop of the
-    // same whole-raster rendering, so the covered pixels are identical. Reopening
-    // the game map shifts the visible region by tens of pixels; requiring an exact
-    // region re-rendered the whole windowed layer (vectors included) on each reopen.
-    private static Bitmap GetOrBuildMapLayer(
-        MapOverlayRenderMap map,
-        int width,
-        int height,
-        float dpiScale,
-        float mapOpacity,
-        bool showGateMarkers,
-        bool showAuxiliaryAnchors,
-        bool showTextAnnotations,
-        bool showBoxAnnotations,
-        bool showLineAnnotations, Rectangle? sourceRegion, Rectangle? coverage,
-        out Rectangle usedRegion)
+        bool showLineAnnotations)
     {
-        var fullRaster = new Rectangle(0, 0, width, height);
-        var raster = sourceRegion ?? fullRaster;
-        if (raster.Width <= 0 || raster.Height <= 0 || raster.X < 0 || raster.Y < 0
-            || raster.Right > width || raster.Bottom > height)
-            throw new ArgumentOutOfRangeException(nameof(sourceRegion));
-        if (raster == fullRaster) sourceRegion = null;
-        var key = $"{Path.GetFullPath(map.ImagePath)}|dpi={dpiScale:F2}|op={mapOpacity:F2}|gm={showGateMarkers}|aa={showAuxiliaryAnchors}|ta={showTextAnnotations}|ba={showBoxAnnotations}|la={showLineAnnotations}|anc={map.Anchors.Count}|lw={map.RouteLineThickness}|ro={map.RouteOpacity:R}|ann={System.Text.Json.JsonSerializer.Serialize(map.Annotations)}";
+        var key = $"{Path.GetFullPath(map.ImagePath)}|dpi={dpiScale:F2}|op={mapOpacity:F2}|gm={showGateMarkers}|aa={showAuxiliaryAnchors}|ta={showTextAnnotations}|ba={showBoxAnnotations}|la={showLineAnnotations}|anc={map.Anchors.Count}|lw={map.RouteLineThickness}|ann={System.Text.Json.JsonSerializer.Serialize(map.Annotations)}";
         lock (ImageCacheLock)
         {
-            EnsureImageCacheSourceVersionCore(map.ImagePath);
             if (MapLayerCache.TryGetValue(key, out var cached))
             {
-                if (cached.Width == width && cached.Height == height
-                    && (cached.SourceRegion == sourceRegion
-                        || coverage is { IsEmpty: false } needed
-                            && (cached.SourceRegion ?? fullRaster).Contains(needed)))
-                {
-                    usedRegion = cached.SourceRegion ?? fullRaster;
+                if (cached.Width == width && cached.Height == height)
                     return cached.Bitmap;
-                }
-                DisposeCachedBitmap(cached.Bitmap);
+                cached.Bitmap.Dispose();
                 MapLayerCache.Remove(key);
             }
 
-            var layerBitmap = CreateCachedBitmap(raster.Width, raster.Height, "Overlay.BakedMapLayer");
-            try
-            {
+            var layerBitmap = new Bitmap(width, height, PixelFormat.Format32bppPArgb);
             layerBitmap.SetResolution(dpiScale * DefaultDpi, dpiScale * DefaultDpi);
 
             using (var g = Graphics.FromImage(layerBitmap))
@@ -196,18 +162,13 @@ internal static partial class MapOverlayBitmapRenderer
                 attributes.SetColorMatrix(colorMatrix, ColorMatrixFlag.Default, ColorAdjustType.Bitmap);
                 g.DrawImage(
                     source,
-                    new Rectangle(0, 0, raster.Width, raster.Height),
-                    raster.X,
-                    raster.Y,
-                    raster.Width,
-                    raster.Height,
+                    new Rectangle(0, 0, width, height),
+                    0,
+                    0,
+                    source.Width,
+                    source.Height,
                     GraphicsUnit.Pixel,
                     attributes);
-
-                // Keep the existing whole-raster bicubic source. Cropping that
-                // earlier sampling stage changes GDI rounding. Only the final
-                // 1:1 opacity/annotation destination is windowed here.
-                g.TranslateTransform(-raster.X, -raster.Y);
 
                 // 标记与矢量注释切换为高品质抗锯齿渲染
                 g.CompositingQuality = CompositingQuality.HighQuality;
@@ -216,43 +177,37 @@ internal static partial class MapOverlayBitmapRenderer
                 g.PixelOffsetMode = PixelOffsetMode.Half;
                 g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
 
-                DrawRouteContent(g, map, dpiScale, routeGraphics =>
+                var strokeWidth = Math.Max(1f, 3f * dpiScale);
+                foreach (var anchor in map.Anchors)
                 {
-                    var strokeWidth = Math.Max(1f, 3f * dpiScale);
-                    foreach (var anchor in map.Anchors)
-                    {
-                        var isGate = anchor.Key is "main-entrance" or "side-entrance";
-                        if (isGate && !showGateMarkers)
-                            continue;
-                        if (!isGate && !showAuxiliaryAnchors)
-                            continue;
+                    var isGate = anchor.Key is "main-entrance" or "side-entrance";
+                    if (isGate && !showGateMarkers)
+                        continue;
+                    if (!isGate && !showAuxiliaryAnchors)
+                        continue;
 
-                        var bounds = anchor.Bounds;
-                        var rectangle = new RectangleF(
-                            (float)bounds.X * map.Width,
-                            (float)bounds.Y * map.Height,
-                            (float)bounds.Width * map.Width,
-                            (float)bounds.Height * map.Height);
-                        if (rectangle.Width <= 0 || rectangle.Height <= 0)
-                            continue;
+                    var bounds = anchor.Bounds;
+                    var rectangle = new RectangleF(
+                        (float)bounds.X * map.Width,
+                        (float)bounds.Y * map.Height,
+                        (float)bounds.Width * map.Width,
+                        (float)bounds.Height * map.Height);
+                    if (rectangle.Width <= 0 || rectangle.Height <= 0)
+                        continue;
 
-                        var color = AnchorColor(anchor.Key);
-                        using var pen = new Pen(color, strokeWidth);
-                        routeGraphics.DrawRectangle(pen, rectangle.X, rectangle.Y, rectangle.Width, rectangle.Height);
-                        DrawAnchorLabel(routeGraphics, anchor.DisplayName, color, rectangle, 0f, dpiScale);
-                    }
+                    var color = AnchorColor(anchor.Key);
+                    using var pen = new Pen(color, strokeWidth);
+                    g.DrawRectangle(pen, rectangle.X, rectangle.Y, rectangle.Width, rectangle.Height);
+                    DrawAnchorLabel(g, anchor.DisplayName, color, rectangle, 0f, dpiScale);
+                }
 
-                    DrawAnnotations(routeGraphics, map, dpiScale, showTextAnnotations,
-                        showBoxAnnotations, showLineAnnotations);
-                });
+                DrawAnnotations(g, map, dpiScale, showTextAnnotations,
+                    showBoxAnnotations, showLineAnnotations);
             }
 
             TrimCacheIfNecessary(MapLayerCache, MaxLayerCacheEntries - 1);
-            MapLayerCache[key] = new MapLayerCacheEntry(width, height, layerBitmap, sourceRegion);
-            usedRegion = raster;
+            MapLayerCache[key] = new MapLayerCacheEntry(width, height, layerBitmap);
             return layerBitmap;
-            }
-            catch { DisposeCachedBitmap(layerBitmap); throw; }
         }
     }
 
@@ -295,7 +250,7 @@ internal static partial class MapOverlayBitmapRenderer
         bool showTextAnnotations, bool showBoxAnnotations, bool showLineAnnotations,
         float originX = 0f, float originY = 0f)
     {
-        foreach (var annotation in (map.Annotations ?? []).OrderBy(a => a.IsMarker))
+        foreach (var annotation in map.Annotations ?? [])
         {
             var region = annotation.SourceRegion is { IsValid: true } crop
                 ? crop : new NormalizedRectangle { Width = 1, Height = 1 };
@@ -344,19 +299,6 @@ internal static partial class MapOverlayBitmapRenderer
         foreach (var annotation in map.Annotations)
         {
             var color = AnnotationColor(annotation.ColorHex, annotation.ColorIndex);
-            if (annotation.Type == MapAnnotationType.Route)
-            {
-                if (!showLineAnnotations || annotation.RoutePoints is not { Count: >= 2 } points) continue;
-                using var routePen = new Pen(color, strokeWidth * RouteLineThicknessMultiplier(map.RouteLineThickness))
-                { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
-                var routePoints = points.Select(point => new PointF(
-                    originX + (float)point.X * map.Width, originY + (float)point.Y * map.Height)).ToArray();
-                using var halo = new Pen(Color.FromArgb(240, 10, 15, 22), routePen.Width + 2 * dpiScale)
-                { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
-                if (annotation.Text?.StartsWith("阶段 ", StringComparison.Ordinal) is true) graphics.DrawLines(halo, routePoints);
-                graphics.DrawLines(routePen, routePoints);
-                continue;
-            }
             if (annotation.Type == MapAnnotationType.Line)
             {
                 if (!showLineAnnotations
@@ -396,8 +338,7 @@ internal static partial class MapOverlayBitmapRenderer
                 {
                     DashStyle = System.Drawing.Drawing2D.DashStyle.Dash
                 };
-                if (!annotation.IsMarker && annotation.Text?.StartsWith("阶段 ", StringComparison.Ordinal) is not true)
-                    graphics.DrawRectangle(pen, rect.X, rect.Y, rect.Width, rect.Height);
+                graphics.DrawRectangle(pen, rect.X, rect.Y, rect.Width, rect.Height);
                 if (!string.IsNullOrWhiteSpace(annotation.Text))
                     DrawAnnotationText(graphics, annotation, color, rect, dpiScale, map.Width);
             }
@@ -460,7 +401,7 @@ internal static partial class MapOverlayBitmapRenderer
             if (measured.Width <= bounds.Width && measured.Height <= bounds.Height)
             {
                 using var brush = new SolidBrush(color);
-                DrawAnnotationLabel(graphics, text, font, brush, bounds, format, annotation.IsMarker);
+                graphics.DrawString(text, font, brush, bounds, format);
                 return;
             }
 
@@ -472,7 +413,7 @@ internal static partial class MapOverlayBitmapRenderer
                 fontSize = 8f * dpiScale;
                 using var fontMin = CreateAnnotationFont(annotation.FontFamily, fontSize, fontStyle);
                 using var brush = new SolidBrush(color);
-                DrawAnnotationLabel(graphics, text, fontMin, brush, bounds, format, annotation.IsMarker);
+                graphics.DrawString(text, fontMin, brush, bounds, format);
                 return;
             }
         }
@@ -481,23 +422,8 @@ internal static partial class MapOverlayBitmapRenderer
         using (var fontFallback = CreateAnnotationFont(annotation.FontFamily, fontSize, fontStyle))
         using (var brushFallback = new SolidBrush(color))
         {
-            DrawAnnotationLabel(graphics, text, fontFallback, brushFallback, bounds, format, annotation.IsMarker);
+            graphics.DrawString(text, fontFallback, brushFallback, bounds, format);
         }
-    }
-
-    private static void DrawAnnotationLabel(Graphics graphics, string text, Font font, Brush brush,
-        RectangleF bounds, StringFormat format, bool marker)
-    {
-        if (marker)
-        {
-            using var halo = new SolidBrush(Color.FromArgb(255, 10, 15, 22));
-            var offset = Math.Max(1f, font.Size * .07f);
-            foreach (var x in new[] { -offset, 0, offset })
-            foreach (var y in new[] { -offset, 0, offset })
-                if (x != 0 || y != 0) graphics.DrawString(text, font, halo,
-                    new RectangleF(bounds.X + x, bounds.Y + y, bounds.Width, bounds.Height), format);
-        }
-        graphics.DrawString(text, font, brush, bounds, format);
     }
 
     private static Font CreateAnnotationFont(string? familyName, float pixelSize, FontStyle style)

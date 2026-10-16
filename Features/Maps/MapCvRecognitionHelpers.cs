@@ -331,127 +331,62 @@ internal static class MapCvRecognitionHelpers
     /// Other floors can participate in post-lock alignment, but never in the
     /// initial identity scan and therefore must not retain a full distance index.
     /// </summary>
-    internal static Dictionary<(Guid, string), ScanStructureIndex> BuildSideEntranceFeatureCache(
+    internal static Dictionary<(Guid, string), Mat> BuildSideEntranceFeatureCache(
         MapRepository repository,
-        IReadOnlyList<MapRecord> maps, bool deterministicScanStorage = false, bool deterministicSemanticStorage = false)
+        IReadOnlyList<MapRecord> maps)
     {
-        var cache = new Dictionary<(Guid, string), ScanStructureIndex>();
-        var transferred = false;
-        try
+        var cache = new Dictionary<(Guid, string), Mat>();
+        foreach (var map in maps)
         {
-            var processedMaps = 0;
-            foreach (var map in maps)
+            var scanFloorKey = MapScanFloorRules.ResolveScanFloorKey(map);
+            foreach (var floorDef in MapFloorRules.GetOrderedFloors(map))
             {
-                MapOperationProgress.Report((double)processedMaps++ / Math.Max(1, maps.Count),
-                    $"正在加载识别轮廓：{map.DisplayName}……");
-                var scanFloorKey = MapScanFloorRules.ResolveScanFloorKey(map);
-                foreach (var floorDef in MapFloorRules.GetOrderedFloors(map))
+                if (!string.Equals(
+                        MapScanFloorRules.NormalizeFloorIdentity(floorDef.Key),
+                        MapScanFloorRules.NormalizeFloorIdentity(scanFloorKey),
+                        StringComparison.Ordinal))
+                    continue;
+
+                var profile = MapFloorRules.GetFloorProfile(map, floorDef.Key);
+                if (profile is null
+                    || !repository.TryGetValidSideEntranceFeaturePath(
+                        map,
+                        floorDef.Key,
+                        out var path,
+                        out _))
+                    continue;
+
+                try
                 {
-                    if (!string.Equals(
-                            MapScanFloorRules.NormalizeFloorIdentity(floorDef.Key),
-                            MapScanFloorRules.NormalizeFloorIdentity(scanFloorKey),
-                            StringComparison.Ordinal))
+                    // Retain the derived-feature integrity gate, but search the entire authored floor.
+                    path = repository.GetPrebuiltStructureLinePath(map, floorDef.Key);
+                    var mat = Cv2.ImRead(path, ImreadModes.Grayscale);
+                    if (mat.Empty())
+                    {
+                        mat.Dispose();
                         continue;
-    
-                    var profile = MapFloorRules.GetFloorProfile(map, floorDef.Key);
-                    if (profile is null
-                        || !repository.TryGetValidSideEntranceFeaturePath(
-                            map,
-                            floorDef.Key,
-                            out var path,
-                            out _))
-                        continue;
-    
-                    ScanStructureIndex? unpublishedIndex = null;
-                    Mat? loaded = null;
-                    Mat? labels = null;
-                    long memoryRequest = 0;
-                    try
-                    {
-                        using var memoryOperation = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation(
-                            "Scan.PrepareFloor", $"map={map.Id:N};floor={floorDef.Key}");
-                        // Retain the derived-feature integrity gate, but search the entire authored floor.
-                        path = repository.GetPrebuiltStructureLinePath(map, floorDef.Key);
-                        if (!IDVBuff.Core.Imaging.PrebuiltContourLabels.TryRead(path, out labels, out var semantic,
-                            $"ScanLabels/{map.Id:N}/{floorDef.Key}"))
-                        {
-                            // Unsupported PNG encodings retain the original decoder
-                            // and palette gate, without accepting a gray downgrade.
-                            memoryRequest = IDVBuff.Core.Diagnostics.MemoryJournal.Request(
-                                $"ScanContour/{map.Id:N}/{floorDef.Key}", nativeModule: "OpenCvSharpExtern.dll");
-                            var mat = loaded = Cv2.ImRead(path, ImreadModes.Unchanged);
-                            if (mat.Empty()) continue;
-                            IDVBuff.Core.Diagnostics.MemoryJournal.TrackResource(mat,
-                                $"ScanContour/{map.Id:N}/{floorDef.Key}", mat.Total() * mat.ElemSize(),
-                                "OpenCvSharpExtern.dll", memoryRequest);
-                            semantic = mat.Channels() == 3;
-                            labels = SemanticStructureContours.Decode(mat);
-                            IDVBuff.Core.Diagnostics.MemoryJournal.TrackResource(labels,
-                                $"ScanLabels/{map.Id:N}/{floorDef.Key}", labels.Total() * labels.ElemSize(),
-                                "OpenCvSharpExtern.dll");
-                            mat.Dispose();
-                            IDVBuff.Core.Diagnostics.MemoryJournal.ReleaseResource(mat);
-                            loaded = null;
-                        }
-                        // Both decoders validate every original pixel before the
-                        // anchor is erased. The direct path never owns an RGB Mat.
-                        var anchor = MapScanFloorRules.GetScanFeatureAnchor(map, floorDef.Key);
-                        if (anchor?.Bounds?.IsValid is true)
-                        {
-                            var rect = new Rect((int)Math.Floor(anchor.Bounds.X * labels.Width),
-                                (int)Math.Floor(anchor.Bounds.Y * labels.Height),
-                                (int)Math.Ceiling(anchor.Bounds.Width * labels.Width),
-                                (int)Math.Ceiling(anchor.Bounds.Height * labels.Height))
-                                .Intersect(new Rect(0, 0, labels.Width, labels.Height));
-                            if (rect.Width > 0 && rect.Height > 0) Cv2.Rectangle(labels, rect, Scalar.Black, -1);
-                        }
-                        var index = unpublishedIndex = ScanStructureIndex.FromPreparedLabels(labels, semantic, deterministicScanStorage, deterministicSemanticStorage);
-                        try { index.PrepareLocalGeometryFromLabels(labels); }
-                        catch (Exception ex)
-                        {
-                            MapLogCollector.Instance.Append(MapLogCategory.ScanLifecycle, MapLogLevel.Warning,
-                                "DeepScan 局部索引预热失败，其他扫描模式仍可使用。",
-                                details: new() { ["exception"] = ex.ToString() });
-                        }
-                        IDVBuff.Core.Diagnostics.MemoryJournal.TrackResource(index,
-                            $"ScanIndex/{map.Id:N}/{floorDef.Key}", index.RetainedMemoryBytes);
-                        cache.TryGetValue((map.Id, floorDef.Key), out var replaced);
-                        cache[(map.Id, floorDef.Key)] = index;
-                        unpublishedIndex = null;
-                        if (replaced is not null) ScanIndexCache.RetireUnpublished([replaced]);
-                        // Both indices own immutable storage. Labels end in finally,
-                        // including failure paths, and are never weak-table cache keys.
                     }
-                    catch (Exception ex)
+                    Cv2.Threshold(mat, mat, 128, 255, ThresholdTypes.Binary);
+                    var anchor = MapScanFloorRules.GetScanFeatureAnchor(map, floorDef.Key);
+                    if (anchor?.Bounds?.IsValid is true)
                     {
-                        IDVBuff.Core.Diagnostics.MemoryJournal.Current?.Record("resource-request-failed",
-                            new { id = memoryRequest, map.Id, floor = floorDef.Key, error = ex.ToString() });
-                        // 单张地图加载失败不影响其他地图
+                        var rect = new Rect((int)Math.Floor(anchor.Bounds.X * mat.Width),
+                            (int)Math.Floor(anchor.Bounds.Y * mat.Height),
+                            (int)Math.Ceiling(anchor.Bounds.Width * mat.Width),
+                            (int)Math.Ceiling(anchor.Bounds.Height * mat.Height))
+                            .Intersect(new Rect(0, 0, mat.Width, mat.Height));
+                        if (rect.Width > 0 && rect.Height > 0) Cv2.Rectangle(mat, rect, Scalar.Black, -1);
                     }
-                    finally
-                    {
-                        try { if (unpublishedIndex is not null) ScanIndexCache.RetireUnpublished([unpublishedIndex]); }
-                        finally
-                        {
-                            if (labels is not null)
-                            {
-                                labels.Dispose();
-                                IDVBuff.Core.Diagnostics.MemoryJournal.ReleaseResource(labels);
-                            }
-                            if (loaded is not null)
-                            {
-                                loaded.Dispose();
-                                IDVBuff.Core.Diagnostics.MemoryJournal.ReleaseResource(loaded);
-                            }
-                        }
-                    }
+                    _ = ScanStructureIndex.Get(mat); // Prewarm off the scan critical path.
+                    cache[(map.Id, floorDef.Key)] = mat;
+                }
+                catch
+                {
+                    // 单张地图加载失败不影响其他地图
                 }
             }
-            MapOperationProgress.Report(1, "识别轮廓加载完成");
-            transferred = true;
-            return cache;
         }
-        finally { if (!transferred) ScanIndexCache.RetireUnpublished(cache.Values); }
+        return cache;
     }
 }
 /*

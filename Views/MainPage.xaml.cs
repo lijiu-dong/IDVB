@@ -25,7 +25,6 @@ public sealed partial class MainPage : Page
     private const double CompactNavigationWidth = 68d;
 
     private readonly ModuleCatalog _catalog = ModuleRegistration.CreateCatalog();
-    private ScanModeBloomTextureCache _bloomTextureCache = new();
     private readonly IReadOnlyList<NavigationNode> _navigationNodes = ModuleRegistration.CreateNavigation();
     private NavigationEntry? _selectedNavigationEntry;
     private NavigationEntry? _pendingSelectionTarget;
@@ -60,27 +59,15 @@ public sealed partial class MainPage : Page
         TutorialNavigationItem = CreateFooterNavigationEntry("教程", Symbol.Help, "help");
         MainSettingsNavigationItem = CreateFooterNavigationEntry("主设置", Symbol.Setting, "main-settings");
         AccountNavigationItem = CreateFooterNavigationEntry("账户", Symbol.Contact, "account");
+        AccountSession.Changed += AccountSession_Changed;
         UpdateAccountNavigation();
         _navigationCompactPreference = _layoutMemory.NavigationCompact;
         ApplyInitialNavigationCompactPreference();
         Loaded += MainPage_Loaded;
-        Loaded += (_, _) =>
-        {
-            if (_bloomTextureCache.IsDisposed) _bloomTextureCache = new();
-            if (ModuleContentHost.Content is HomePage home) home.UseBloomTextureCache(_bloomTextureCache);
-            AccountSession.Changed += AccountSession_Changed;
-            UpdateAccountNavigation();
-            InitializeNotifications();
-            _ = SupportMotion;
-        };
+        Loaded += (_, _) => { InitializeNotifications(); _ = SupportMotion; };
         Unloaded += (_, _) =>
         {
-            _bloomTextureCache.Dispose();
             ++_navigationRevision;
-            _displayedModuleId = null;
-            AccountSession.Changed -= AccountSession_Changed;
-            _feedbackDialog?.Hide();
-            if (!_feedbackOpen) ReleaseFeedbackDialog();
             CleanupNotifications();
         };
     }

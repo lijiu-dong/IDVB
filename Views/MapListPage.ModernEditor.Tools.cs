@@ -16,8 +16,6 @@ public sealed partial class MapListPage : UserControl
 {
     private void SelectModernTool(MapEditorTool tool, Button? placementTarget = null)
     {
-        if (!_modernToolState.CanUse(tool)) return;
-        ResetModernAutomaticRoute();
         if (_modernToolState.ActiveTool == tool
             && tool is MapEditorTool.Text or MapEditorTool.Line or MapEditorTool.Conceal)
         {
@@ -105,7 +103,7 @@ public sealed partial class MapListPage : UserControl
         {
             Text = "最近使用",
             FontSize = 12,
-            Foreground = EditorMuted
+            Foreground = new SolidColorBrush(EditorMuted)
         });
         var recents = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 7, MinHeight = 34 };
         foreach (var recent in _recentAnnotationColors.Colors)
@@ -117,7 +115,7 @@ public sealed partial class MapListPage : UserControl
                 Height = 31,
                 Padding = new Thickness(0),
                 Background = new SolidColorBrush(ParseEditorColor(recent)),
-                BorderBrush = EditorText,
+                BorderBrush = new SolidColorBrush(EditorText),
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(16)
             };

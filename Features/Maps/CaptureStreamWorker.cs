@@ -14,14 +14,14 @@ internal static class CaptureStreamWorker
 
     private sealed class Worker
     {
-        private readonly BlockingCollection<WorkItem> _work = new();
+        private readonly BlockingCollection<Action> _work = new();
         private readonly Thread _thread;
 
         internal Worker()
         {
             _thread = new Thread(() =>
             {
-                foreach (var item in _work.GetConsumingEnumerable()) item.Execute();
+                foreach (var action in _work.GetConsumingEnumerable()) action();
             }) { IsBackground = true, Name = "IDVB WGC resources" };
             _thread.SetApartmentState(ApartmentState.MTA);
             // A long-lived capture owner must not inherit the first scan's
@@ -38,27 +38,13 @@ internal static class CaptureStreamWorker
 
         internal Task Enqueue(Action action)
         {
-            ArgumentNullException.ThrowIfNull(action);
             var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            _work.Add(new WorkItem(action, completion));
+            _work.Add(() =>
+            {
+                try { action(); completion.TrySetResult(); }
+                catch (Exception exception) { completion.TrySetException(exception); }
+            });
             return completion.Task;
-        }
-    }
-
-    private sealed class WorkItem(Action action, TaskCompletionSource completion)
-    {
-        private Action? _action = action;
-        private TaskCompletionSource? _completion = completion;
-
-        internal void Execute()
-        {
-            // The consuming iterator/idle worker stack can retain its last item.
-            // Keep that item empty after execution so a completed retirement
-            // cannot keep the closed WGC stream and its WinRT wrappers alive.
-            var callback = Interlocked.Exchange(ref _action, null)!;
-            var completed = Interlocked.Exchange(ref _completion, null)!;
-            try { callback(); completed.TrySetResult(); }
-            catch (Exception exception) { completed.TrySetException(exception); }
         }
     }
 }
