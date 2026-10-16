@@ -330,12 +330,7 @@ public sealed partial class MainPage : Page
             // Keep the main content entrance motion consistent across all modules.
             animateMainContent = true;
             if (view is MapListPage mapListPage)
-            {
-                mapListPage.ParentScrollViewer = MainContentHost;
-                mapListPage.NavigationCompactStateChanged = SetEditorNavigationCompact;
-                mapListPage.LocalTemplateClassAdded = className => NavigateToLocalTemplateClassAsync(mapListPage, className);
-                mapListPage.CommunityMapsRequested = NavigateToCoCreationCommunityAsync;
-            }
+                ConnectMapListNavigation(mapListPage);
         }
         catch (Exception exception)
         {

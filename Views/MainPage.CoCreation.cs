@@ -4,6 +4,14 @@ namespace IDVBuff.Views;
 
 public sealed partial class MainPage
 {
+    private void ConnectMapListNavigation(MapListPage page)
+    {
+        page.ParentScrollViewer = MainContentHost;
+        page.NavigationCompactStateChanged = SetEditorNavigationCompact;
+        page.LocalTemplateClassAdded = className => NavigateToLocalTemplateClassAsync(page, className);
+        page.CommunityMapsRequested = NavigateToCoCreationCommunityAsync;
+    }
+
     private async Task NavigateToLocalTemplateClassAsync(MapListPage source, string className)
     {
         if (!source.IsLoaded || !ReferenceEquals(ModuleContentHost.Content, source)) return;
