@@ -86,10 +86,9 @@ public sealed partial class MapListPage
                 if (running) return;
                 var from = (MapRouteGateEndpoint)controls.Entrance.SelectedItem;
                 var to = (MapRouteGateEndpoint)controls.Exit.SelectedItem;
-                if (from.Id == to.Id || !controls.Floors.Where(f => f.IsChecked is true).Select(f => (string)f.Tag).Contains(from.FloorKey)
-                    || !controls.Floors.Where(f => f.IsChecked is true).Select(f => (string)f.Tag).Contains(to.FloorKey))
+                if (from.Id == to.Id)
                 {
-                    controls.Status.Text = "请选择不同的入口和出口，并允许对应楼层。";
+                    controls.Status.Text = "请选择不同的入口和出口。";
                     return;
                 }
                 running = true; dialog.IsPrimaryButtonEnabled = false; operationProgress.Visibility = Visibility.Visible;

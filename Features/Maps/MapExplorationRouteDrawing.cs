@@ -68,7 +68,8 @@ public static class MapExplorationRouteDrawing
                 MapFloorTraversalKind.Drop => "↓",
                 _ => "⇅"
             };
-            var label = MapMarkerTool.RoomLabel(room.CanChangeFloors, room.IsHighValue || room.FloorKey == "b1f", visit.Number, transferSymbol);
+            var explored = route.ExplorationFloors is null || route.ExplorationFloors.Contains(room.FloorKey);
+            var label = MapMarkerTool.RoomLabel(room.CanChangeFloors, explored && (room.IsHighValue || room.FloorKey == "b1f"), visit.Number, transferSymbol);
             var center = topology.Nodes.Single(n => n.Id == room.CenterNodeId).Point;
             result[room.FloorKey].Add(MapMarkerTool.Create(label, center, floor.ImageWidth, floor.ImageHeight));
         }

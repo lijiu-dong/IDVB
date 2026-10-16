@@ -18,14 +18,18 @@ public static class MapAutomaticRoutePlanner
         var modules = topology.Modules.ToDictionary(m => m.Id, StringComparer.Ordinal);
         if (!modules.TryGetValue(fromModuleId, out var from) || !modules.TryGetValue(toModuleId, out var to))
             throw new InvalidOperationException("请选择有效的起点和终点模块。");
+        if (from.IsExcludedFromAutomaticRoutes || to.IsExcludedFromAutomaticRoutes)
+            throw new InvalidOperationException("监狱不参与自动路线，请选择其他起点和终点。");
         if (from.Id == to.Id) throw new InvalidOperationException("起点和终点需要选择不同模块。");
         var nodes = topology.Nodes.ToDictionary(n => n.Id, StringComparer.Ordinal);
         var blocked = topology.Doors.Where(d => !d.Enabled).Select(d => d.NodeId).ToHashSet(StringComparer.Ordinal);
+        blocked.UnionWith(modules.Values.Where(m => m.IsExcludedFromAutomaticRoutes).Select(m => m.CenterNodeId));
         var adjacent = nodes.Keys.ToDictionary(id => id, _ => new List<Edge>(), StringComparer.Ordinal);
         foreach (var link in topology.Links)
         {
             if (blocked.Contains(link.FromNodeId) || blocked.Contains(link.ToNodeId)) continue;
             var owner = modules[link.ModuleId];
+            if (owner.IsExcludedFromAutomaticRoutes) continue;
             if (owner.IsDeadEnd)
             {
                 if (owner.Id == from.Id && link.FromNodeId == from.CenterNodeId)

@@ -37,9 +37,8 @@ public sealed partial class MapListPage
             if (entrance.Id == exit.Id) throw new InvalidOperationException("请选择不同的入口和出口门标志。");
             var allowed = Floors.Where(f => f.IsChecked is true).Select(f => (string)f.Tag)
                 .Intersect(navigation.Floors.Select(f => f.FloorKey)).ToHashSet();
-            if (!allowed.Contains(entrance.FloorKey) || !allowed.Contains(exit.FloorKey))
-                throw new InvalidOperationException("允许的楼层必须包含入口和出口。");
-            if (SpecialTeleports.IsChecked is true) MapSpecialRoomTeleports.ValidateSelection(navigation, allowed);
+            if (SpecialTeleports.IsChecked is true)
+                MapSpecialRoomTeleports.ValidateSelection(navigation, navigation.Floors.Select(f => f.FloorKey).ToHashSet());
             return new(entrance.Id, exit.Id, allowed,
                 (MapRoomCoverage)Coverage.SelectedIndex, (MapRoutePreference)Preference.SelectedIndex,
                 navigation.Modules.Where(m => m.IsHighValue).Select(m => m.Id).ToHashSet(), gates,
@@ -60,32 +59,19 @@ public sealed partial class MapListPage
         var coverage = new ComboBox { Header = "经过房间数量", ItemsSource = new[] { "高价值房间优先", "两者之间", "全房间优先" },
             SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
         content.Children.Add(coverage);
-        content.Children.Add(new TextBlock { Text = "两者之间：优先高价值房间，再增加约一半普通房间。", TextWrapping = TextWrapping.Wrap });
+        content.Children.Add(new TextBlock { Text = "两者之间：优先高价值房间，再增加约一半普通房间。已确认没有宝箱候选点的房间不计入搜箱目标；必要通行和跨层仍可经过。监狱不参与任何自动路线。", TextWrapping = TextWrapping.Wrap });
         var floorPanel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 14 };
         var floors = floorKeys.Select(f => new CheckBox { Content = f.ToUpperInvariant(), Tag = f,
             MinWidth = 0, IsChecked = true }).ToArray();
-        content.Children.Add(new TextBlock { Text = "允许的楼层" });
+        content.Children.Add(new TextBlock { Text = "搜房楼层" });
         foreach (var floor in floors) floorPanel.Children.Add(floor);
         content.Children.Add(floorPanel);
+        content.Children.Add(new TextBlock { Text = "仅勾选要搜房的楼层。未勾选楼层仍可必要通行、跨层和到达出口，不额外探索房间。", TextWrapping = TextWrapping.Wrap });
         var specialTeleports = new CheckBox { Content = "通过特殊房间传送（打夜莺）", IsChecked = false,
             Tag = "special-room-teleports", Visibility = specialTeleportFloors is { Count: > 0 } ? Visibility.Visible : Visibility.Collapsed };
-        var teleportHint = new TextBlock { TextWrapping = TextWrapping.Wrap, Visibility = specialTeleports.Visibility };
-        void UpdateSpecialTeleports()
-        {
-            var allowed = floors.Where(f => f.IsChecked is true).Select(f => (string)f.Tag).ToHashSet();
-            var missing = specialTeleportFloors?.Except(allowed).Order().ToArray() ?? [];
-            specialTeleports.IsEnabled = specialTeleportFloors is { Count: > 0 } && missing.Length == 0;
-            if (!specialTeleports.IsEnabled) specialTeleports.IsChecked = false;
-            teleportHint.Text = missing.Length > 0
-                ? $"需先勾选传送对应楼层：{string.Join("、", missing.Select(f => f.ToUpperInvariant()))}。"
-                : "勾选后主路线优先以最短路径到达特殊传送起点，沿途允许短支路探索附近房间，原路返回后继续传送，并经过全部单向传送通道。若最短前段阻断出口，则按距离尝试更长的可完成前段。";
-        }
-        foreach (var floor in floors)
-        {
-            floor.Checked += (_, _) => UpdateSpecialTeleports();
-            floor.Unchecked += (_, _) => UpdateSpecialTeleports();
-        }
-        UpdateSpecialTeleports();
+        specialTeleports.IsEnabled = specialTeleportFloors is { Count: > 0 };
+        var teleportHint = new TextBlock { TextWrapping = TextWrapping.Wrap, Visibility = specialTeleports.Visibility,
+            Text = "勾选后主路线优先以最短路径到达特殊传送起点，仅在勾选的搜房楼层增加附近房间支路，原路返回后继续传送，并经过全部单向传送通道。传送不受搜房楼层勾选限制。若最短前段阻断出口，则按距离尝试更长的可完成前段。" };
         content.Children.Add(specialTeleports); content.Children.Add(teleportHint);
         var preference = new ComboBox { Header = "路线偏好", ItemsSource = new[] { "最短优先", "最简优先（更少的转弯、掉头）" },
             SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch };

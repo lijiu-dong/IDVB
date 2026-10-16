@@ -10,32 +10,40 @@ public static class MapExplorationRouteTree
     public static MapExplorationRoute Complete(MapNavigationTopology topology, MapExplorationRoute trunk,
         MapExplorationOptions options, CancellationToken token)
     {
+        trunk = trunk with { ExplorationFloors = options.AllowedFloors.ToHashSet() };
         var modules = topology.Modules.ToDictionary(m => m.Id);
         var nodes = topology.Nodes.ToDictionary(n => n.Id);
-        var initialVisits = MapExplorationRoomVisits.Create(topology, trunk);
+        // Physical ownership also includes empty landings crossed by the trunk.
+        var initialVisits = MapExplorationRoomVisits.Create(topology, trunk, includeEmptyPassages: true);
         var owners = initialVisits.GroupBy(v => MapExplorationRoutePlanner.RoomKey(modules[v.ModuleId]))
             .ToDictionary(g => g.Key, g => modules[g.First().ModuleId]);
-        var visited = owners.Keys.ToHashSet();
-        var high = modules.Values.Where(m => options.HighValueRoomIds.Contains(m.Id) || m.FloorKey == "b1f")
-            .Select(MapExplorationRoutePlanner.RoomKey).ToHashSet();
-        var targets = modules.Values.Where(m => MapExplorationRoutePlanner.IsRoom(m) && options.AllowedFloors.Contains(m.FloorKey))
+        var visited = MapExplorationRoomVisits.Create(topology, trunk).Where(v => options.AllowedFloors.Contains(modules[v.ModuleId].FloorKey)
+                && MapExplorationRoutePlanner.IsLootTarget(topology, modules[v.ModuleId]))
+            .Select(v => MapExplorationRoutePlanner.RoomKey(modules[v.ModuleId])).ToHashSet();
+        var targets = modules.Values.Where(m => MapExplorationRoutePlanner.IsLootTarget(topology, m) && options.AllowedFloors.Contains(m.FloorKey))
             .GroupBy(MapExplorationRoutePlanner.RoomKey).ToArray();
+        var targetKeys = targets.Select(g => g.Key).ToHashSet();
+        var high = targets.Where(g => g.Any(m => options.HighValueRoomIds.Contains(m.Id) || m.FloorKey == "b1f"))
+            .Select(g => g.Key).ToHashSet();
         var ordinaryTarget = (targets.Count(g => !high.Contains(g.Key)) + 1) / 2;
-        bool Desired(string key) => options.Coverage == MapRoomCoverage.AllRooms || high.Contains(key)
-            || options.Coverage == MapRoomCoverage.Balanced && visited.Count(id => !high.Contains(id)) < ordinaryTarget;
+        bool Desired(string key) => targetKeys.Contains(key) && (options.Coverage == MapRoomCoverage.AllRooms || high.Contains(key)
+            || options.Coverage == MapRoomCoverage.Balanced && visited.Count(id => targetKeys.Contains(id) && !high.Contains(id)) < ordinaryTarget);
         bool Corridor(MapNavigationModule m) => !MapExplorationRoutePlanner.IsRoom(m)
             || m.CanChangeFloors && owners.TryGetValue(MapExplorationRoutePlanner.RoomKey(m), out var owner) && owner.FloorKey != m.FloorKey;
         var blocked = topology.Doors.Where(d => !d.Enabled).Select(d => d.NodeId).ToHashSet();
+        blocked.UnionWith(modules.Values.Where(m => m.IsExcludedFromAutomaticRoutes).Select(m => m.CenterNodeId));
         var adjacent = nodes.Keys.ToDictionary(id => id, _ => new List<Leg>());
         foreach (var link in topology.Links)
         {
-            if (blocked.Contains(link.FromNodeId) || blocked.Contains(link.ToNodeId) || !MapExplorationRouteGeometry.IsSimple(link.Points)) continue;
+            if (modules[link.ModuleId].IsExcludedFromAutomaticRoutes || blocked.Contains(link.FromNodeId) || blocked.Contains(link.ToNodeId)
+                || !MapExplorationRouteGeometry.IsSimple(link.Points)) continue;
             adjacent[link.FromNodeId].Add(new(link.FromNodeId, link.ToNodeId, link, link.Points));
             adjacent[link.ToNodeId].Add(new(link.ToNodeId, link.FromNodeId, link, link.Points.AsEnumerable().Reverse().ToArray()));
         }
         var proposed = new List<MapExplorationBranch>();
         foreach (var stage in trunk.Stages)
         {
+            if (!options.AllowedFloors.Contains(stage.FloorKey)) continue;
             var stageModules = stage.Steps.Select(s => modules[s.ModuleId!]).Where(Corridor).DistinctBy(m => m.Id).ToArray();
             var roots = stageModules.SelectMany(m => topology.Doors.Where(d => d.Enabled && (d.ModuleAId == m.Id || d.ModuleBId == m.Id))
                     .Select(d => d.NodeId).Append(m.CenterNodeId)).Distinct()
@@ -148,7 +156,8 @@ public static class MapExplorationRouteTree
         var stage = trunk.Stages.Single(s => s.Number == branch.StageNumber);
         var points = Points(branch.Steps);
         if (points.Count < 2 || branch.AttachmentStepIndex < 0 || branch.AttachmentStepIndex >= stage.Steps.Count
-            || !modules.TryGetValue(branch.TargetRoomId, out var target) || !MapExplorationRoutePlanner.IsRoom(target)
+            || !modules.TryGetValue(branch.TargetRoomId, out var target) || !MapExplorationRoutePlanner.IsLootTarget(topology, target)
+            || trunk.ExplorationFloors is { } floors && !floors.Contains(target.FloorKey)
             || branch.Steps[^1].ModuleId != target.Id
             || !MapNavigationRules.Same(points[^1], topology.Nodes.Single(n => n.Id == target.CenterNodeId).Point)
             || branch.Steps.Zip(branch.Steps.Skip(1)).Any(p => !MapNavigationRules.Same(p.First.Points[^1], p.Second.Points[0]))

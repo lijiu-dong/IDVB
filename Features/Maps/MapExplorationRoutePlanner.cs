@@ -4,6 +4,8 @@ namespace IDVBuff.Features.Maps;
 
 public enum MapRoomCoverage { HighValue, Balanced, AllRooms }
 public enum MapRoutePreference { Shortest, Simplest }
+// AllowedFloors retains its API name, but selects loot exploration only.
+// All topology floors remain available for transit to targets and the exit.
 public sealed record MapExplorationOptions(string EntranceId, string ExitId,
     IReadOnlySet<string> AllowedFloors, MapRoomCoverage Coverage, MapRoutePreference Preference,
     IReadOnlySet<string> HighValueRoomIds, IReadOnlyList<MapRouteGateEndpoint> Gates,
@@ -18,6 +20,7 @@ public sealed record MapExplorationRoute(IReadOnlyList<MapExplorationStage> Stag
 {
     public IReadOnlyList<MapExplorationBranch> Branches { get; init; } = [];
     public IReadOnlyList<MapExplorationRoomVisit> RoomVisits { get; init; } = [];
+    public IReadOnlySet<string>? ExplorationFloors { get; init; }
 }
 
 /// <summary>Coverage uses bounded beam search over simple paths. This is a
@@ -30,6 +33,10 @@ public static class MapExplorationRoutePlanner
     public static string RoomKey(MapNavigationModule module) => module.CanChangeFloors && module.SourceRoomId is { Length: > 0 }
         ? "source-room:" + module.SourceRoomId : module.Id;
     public static bool IsRoom(MapNavigationModule module) => module.Kind != "corridor";
+    // Missing loot metadata means unknown, not an empty room. Keep physical
+    // room identity separate: empty rooms can still provide required passages.
+    public static bool IsLootTarget(MapNavigationTopology topology, MapNavigationModule module) => IsRoom(module) && !module.IsExcludedFromAutomaticRoutes
+        && (string.IsNullOrWhiteSpace(topology.LootEvidence) || module.ChestCandidateCount > 0);
     private sealed record Edge(string From, string To, string? ModuleId,
         IReadOnlyList<NormalizedPoint> Points, double Length, int Turns, int First, int Last, ulong TransferRooms,
         BigInteger Occupied, BigInteger Conflicts, bool SpecialTeleport);
@@ -41,7 +48,7 @@ public static class MapExplorationRoutePlanner
         CancellationToken token = default, IProgress<double>? progress = null)
     {
         MapNavigationRules.ValidateForRouting(topology);
-        if (options.UseSpecialRoomTeleports) MapSpecialRoomTeleports.ValidateSelection(topology, options.AllowedFloors);
+        if (options.UseSpecialRoomTeleports) MapSpecialRoomTeleports.ValidateSelection(topology, topology.Floors.Select(f => f.FloorKey).ToHashSet());
         if (!Enum.IsDefined(options.Coverage) || !Enum.IsDefined(options.Preference))
             throw new InvalidOperationException("路线偏好无效。");
         var modules = topology.Modules.ToDictionary(m => m.Id);
@@ -56,7 +63,7 @@ public static class MapExplorationRoutePlanner
         foreach (var gate in new[] { entrance, exit })
         {
             if (!MapRouteGateEndpoint.IsAllowed(gate.FloorKey, gate.AnchorKey) || !gate.Point.IsValid
-                || !modules.TryGetValue(gate.ModuleId, out var owner) || owner.FloorKey != gate.FloorKey
+                || !modules.TryGetValue(gate.ModuleId, out var owner) || owner.IsExcludedFromAutomaticRoutes || owner.FloorKey != gate.FloorKey
                 || !owner.Cells.Any(c => c.Contains(gate.Point)) || nodes.ContainsKey(gate.Id))
                 throw new InvalidOperationException("入口或出口不是有效的 1F 大门、侧门或 2F 单门。");
             nodes.Add(gate.Id, new() { Id = gate.Id, FloorKey = gate.FloorKey, Point = gate.Point });
@@ -110,11 +117,11 @@ public static class MapExplorationRoutePlanner
             }
             return bit;
         }
-        if (options.AllowedFloors.Count == 0 || options.AllowedFloors.Except(topology.Floors.Select(f => f.FloorKey)).Any()
-            || !options.AllowedFloors.Contains(entrance.FloorKey) || !options.AllowedFloors.Contains(exit.FloorKey))
-            throw new InvalidOperationException("允许的楼层必须包含入口和出口。");
+        if (options.AllowedFloors.Except(topology.Floors.Select(f => f.FloorKey)).Any())
+            throw new InvalidOperationException("搜房楼层包含地图中不存在的楼层。");
         var blocked = topology.Doors.Where(d => !d.Enabled).Select(d => d.NodeId).ToHashSet();
-        var adjacent = nodes.Values.Where(n => options.AllowedFloors.Contains(n.FloorKey) && !blocked.Contains(n.Id))
+        blocked.UnionWith(modules.Values.Where(m => m.IsExcludedFromAutomaticRoutes).Select(m => m.CenterNodeId));
+        var adjacent = nodes.Values.Where(n => !blocked.Contains(n.Id))
             .ToDictionary(n => n.Id, _ => new List<Edge>());
         void Add(string from, string to, string? module, IReadOnlyList<NormalizedPoint> points, double length, ulong transferRooms = 0, string? linkId = null, bool specialTeleport = false)
         {
@@ -129,7 +136,7 @@ public static class MapExplorationRoutePlanner
         {
             // Entering a terminal room requires returning along the same path,
             // which this single-direction exploration route cannot do.
-            if (modules[link.ModuleId].IsDeadEnd) continue;
+            if (modules[link.ModuleId].IsDeadEnd || modules[link.ModuleId].IsExcludedFromAutomaticRoutes) continue;
             if (link.Length > 1e-9 && !MapExplorationRouteGeometry.IsSimple(link.Points)) continue;
             if (link.FromNodeId == exit.Id)
             {
@@ -170,7 +177,7 @@ public static class MapExplorationRoutePlanner
         if (!reachable.Contains(exit.Id)) throw new InvalidOperationException("入口与出口不连通，请检查关闭的门和跨楼层连接。");
         foreach (var floor in options.AllowedFloors)
             if (!modules.Values.Any(m => m.FloorKey == floor && reachable.Contains(m.CenterNodeId)))
-                throw new InvalidOperationException($"{floor.ToUpperInvariant()} 无法经所选楼层连通入口和出口；请包含中间楼层或补充已确认的楼梯连接。");
+                throw new InvalidOperationException($"搜房楼层 {floor.ToUpperInvariant()} 无法连通入口和出口；请检查关闭的门或已确认的楼梯连接。");
 
         (double, double) Score(double length, int turns) => options.Preference == MapRoutePreference.Simplest
             ? (turns, length) : (length, turns);
@@ -292,18 +299,18 @@ public static class MapExplorationRoutePlanner
             }
             return new(edges, length, turns);
         }
-        var candidates = modules.Values.Where(m => IsRoom(m) && options.AllowedFloors.Contains(m.FloorKey))
+        bool IsTarget(MapNavigationModule module) => options.AllowedFloors.Contains(module.FloorKey) && IsLootTarget(topology, module);
+        var candidates = modules.Values.Where(IsTarget)
             .GroupBy(RoomKey).OrderBy(g => g.Key, StringComparer.Ordinal).ToList();
         var stops = new List<string> { prefixNode, exit.Id };
         var currentRoute = Evaluate(stops);
         HashSet<string> Visited(PathResult path) => path.Edges.Where(e => e.ModuleId is not null)
-            .Select(e => RoomKey(modules[e.ModuleId!]))
-            .Concat(path.Edges.SelectMany(e => new[] { e.From, e.To }).Where(centerRooms.ContainsKey).Select(id => RoomKey(modules[centerRooms[id]])))
-            .Append(RoomKey(modules[entrance.ModuleId])).Append(RoomKey(modules[exit.ModuleId])).ToHashSet();
-        var highValueRooms = options.HighValueRoomIds.Concat(candidates.SelectMany(g => g)
-            .Where(m => m.FloorKey == "b1f").Select(m => m.Id)).Where(modules.ContainsKey).Select(id => RoomKey(modules[id])).ToHashSet();
-        var required = candidates.Where(g => options.Coverage == MapRoomCoverage.AllRooms
-            || highValueRooms.Contains(g.Key)).ToList();
+            .Select(e => modules[e.ModuleId!])
+            .Concat(path.Edges.SelectMany(e => new[] { e.From, e.To }).Where(centerRooms.ContainsKey).Select(id => modules[centerRooms[id]]))
+            .Append(modules[entrance.ModuleId]).Append(modules[exit.ModuleId])
+            .Where(IsTarget).Select(RoomKey).ToHashSet();
+        var highValueRooms = candidates.Where(g => g.Any(m => options.HighValueRoomIds.Contains(m.Id) || m.FloorKey == "b1f"))
+            .Select(g => g.Key).ToHashSet();
         var roomBits = candidates.Select((group, index) => (group.Key, Bit: BigInteger.One << index)).ToDictionary(r => r.Key, r => r.Bit);
         BigInteger Mask(IEnumerable<string> ids) => ids.Aggregate(BigInteger.Zero, (mask, id) => mask | roomBits.GetValueOrDefault(id));
         var highMask = Mask(highValueRooms); var allMask = Mask(roomBits.Keys);
@@ -317,12 +324,13 @@ public static class MapExplorationRoutePlanner
                 : (-high, options.Coverage == MapRoomCoverage.Balanced ? -Math.Min(ordinaryTarget, ordinary) : 0, score.Item1, score.Item2);
         }
         BigInteger RoomsFor(Edge edge) => Mask(new[] { edge.ModuleId, centerRooms.GetValueOrDefault(edge.From), centerRooms.GetValueOrDefault(edge.To) }
-            .Where(id => id is not null).Select(id => RoomKey(modules[id!])));
+            .Where(id => id is not null).Select(id => modules[id!]).Where(IsTarget).Select(RoomKey));
         var roomMasks = adjacent.Values.SelectMany(edges => edges).ToDictionary(edge => edge, RoomsFor);
         var bestQuality = currentRoute is null ? (int.MaxValue, int.MaxValue, double.MaxValue, double.MaxValue)
             : Quality(Mask(Visited(currentRoute)), currentRoute.Length, currentRoute.Turns);
         var seed = new SearchLabel(new(entrance.Id, 0, 0, floorBits[entrance.FloorKey]), 0, 0,
-            nodeBits[entrance.Id], null, null, Mask(new[] { RoomKey(modules[entrance.ModuleId]) }));
+            nodeBits[entrance.Id], null, null, IsTarget(modules[entrance.ModuleId])
+                ? Mask(new[] { RoomKey(modules[entrance.ModuleId]) }) : BigInteger.Zero);
         foreach (var edge in prefix)
             seed = new(new(edge.To, edge.Last, seed.State.TransferRooms | edge.TransferRooms,
                 seed.State.Floors | floorBits[nodes[edge.To].FloorKey]), seed.Length + edge.Length,

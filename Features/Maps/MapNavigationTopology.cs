@@ -72,6 +72,10 @@ public sealed class MapNavigationModule
         || FloorTraversalKind == MapFloorTraversalKind.Drop && SourceRoomConfigId == 10623);
     // A terminal room may be an endpoint, but never a shortcut between doors.
     public bool IsDeadEnd { get; set; }
+    // The audited prison configuration is forbidden even as an endpoint.
+    // Keep this independent of the editable terminal-room routing flag.
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool IsExcludedFromAutomaticRoutes => SourceRoomConfigId == 10320;
     public int ChestCandidateCount { get; set; }
     public int HighTierCandidateCount { get; set; }
     public double ChestPreferenceWeight2 { get; set; }
@@ -216,10 +220,10 @@ public static class MapSpecialRoomTeleports
         return topology.Nodes.Where(n => endpoints.Contains(n.Id)).Select(n => n.FloorKey).ToHashSet();
     }
 
-    public static void ValidateSelection(MapNavigationTopology topology, IReadOnlySet<string> allowedFloors)
+    public static void ValidateSelection(MapNavigationTopology topology, IReadOnlySet<string> availableFloors)
     {
-        var missing = RequiredFloors(topology).Except(allowedFloors).Order().ToArray();
+        var missing = RequiredFloors(topology).Except(availableFloors).Order().ToArray();
         if (missing.Length > 0)
-            throw new InvalidOperationException($"通过特殊房间传送需要勾选对应楼层：{string.Join("、", missing.Select(f => f.ToUpperInvariant()))}。");
+            throw new InvalidOperationException($"地图缺少特殊传送所需楼层：{string.Join("、", missing.Select(f => f.ToUpperInvariant()))}。");
     }
 }

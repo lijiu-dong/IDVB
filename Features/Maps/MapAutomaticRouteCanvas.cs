@@ -3,16 +3,17 @@ namespace IDVBuff.Features.Maps;
 public static class MapAutomaticRouteCanvas
 {
     public static bool Supports(MapDraft draft, string floorKey) => draft.Navigation is { } navigation
-        && navigation.Links.Any(link => navigation.Modules.Any(module => module.Id == link.ModuleId && module.FloorKey == floorKey));
+        && navigation.Links.Any(link => navigation.Modules.Any(module => module.Id == link.ModuleId && module.FloorKey == floorKey && !module.IsExcludedFromAutomaticRoutes));
 
     public static bool CanPlaceEndpoint(MapNavigationTopology topology, string floorKey, NormalizedPoint point) =>
-        point.IsValid && topology.Modules.Any(module => module.FloorKey == floorKey && module.Cells.Any(cell => cell.Contains(point)));
+        point.IsValid && topology.Modules.Any(module => module.FloorKey == floorKey && !module.IsExcludedFromAutomaticRoutes && module.Cells.Any(cell => cell.Contains(point)));
 
     public static IEnumerable<MapNavigationLink> PreviewLinks(MapNavigationTopology topology, string floorKey)
     {
         var modules = topology.Modules.Where(module => module.FloorKey == floorKey).ToDictionary(module => module.Id);
         var blocked = topology.Doors.Where(door => !door.Enabled).Select(door => door.NodeId).ToHashSet();
         return topology.Links.Where(link => modules.TryGetValue(link.ModuleId, out var owner)
+            && !owner.IsExcludedFromAutomaticRoutes
             && (!owner.IsDeadEnd || link.FromNodeId == owner.CenterNodeId || link.ToNodeId == owner.CenterNodeId)
             && !blocked.Contains(link.FromNodeId) && !blocked.Contains(link.ToNodeId));
     }
@@ -73,7 +74,7 @@ public static class MapAutomaticRouteCanvas
             throw new InvalidOperationException("请选择当前楼层可通行区域内的起点和终点。");
         if (MapNavigationRules.Same(start, end)) throw new InvalidOperationException("起点和终点不能重合。");
         var floor = topology.Floors.Single(floor => floor.FloorKey == floorKey);
-        var modules = topology.Modules.Where(module => module.FloorKey == floorKey).ToDictionary(module => module.Id);
+        var modules = topology.Modules.Where(module => module.FloorKey == floorKey && !module.IsExcludedFromAutomaticRoutes).ToDictionary(module => module.Id);
         var nodes = topology.Nodes.ToDictionary(node => node.Id);
         var ports = modules.Values.ToDictionary(module => module.Id, module => topology.Doors
             .Where(door => door.Enabled && (door.ModuleAId == module.Id || door.ModuleBId == module.Id))

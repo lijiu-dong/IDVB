@@ -6,7 +6,8 @@ public sealed record MapExplorationRoomVisit(int Number, string ModuleId, int St
 
 public static class MapExplorationRoomVisits
 {
-    public static IReadOnlyList<MapExplorationRoomVisit> Create(MapNavigationTopology topology, MapExplorationRoute route)
+    public static IReadOnlyList<MapExplorationRoomVisit> Create(MapNavigationTopology topology, MapExplorationRoute route,
+        bool includeEmptyPassages = false)
     {
         var modules = topology.Modules.ToDictionary(m => m.Id);
         var numbers = new Dictionary<string, int>(); var marked = new HashSet<string>();
@@ -15,7 +16,11 @@ public static class MapExplorationRoomVisits
         var result = new List<MapExplorationRoomVisit>();
         void Visit(string? id, int stage, bool branch)
         {
-            if (id is null || !modules.TryGetValue(id, out var module) || !MapExplorationRoutePlanner.IsRoom(module)) return;
+            if (id is null || !modules.TryGetValue(id, out var module) || module.IsExcludedFromAutomaticRoutes || !MapExplorationRoutePlanner.IsRoom(module)) return;
+            // Number loot stops and real stage transfers, not empty rooms
+            // merely crossed on the way to a useful destination.
+            if (!includeEmptyPassages && (!MapExplorationRoutePlanner.IsLootTarget(topology, module)
+                || route.ExplorationFloors is { } floors && !floors.Contains(module.FloorKey)) && !endpoints.Contains(id)) return;
             var key = MapExplorationRoutePlanner.RoomKey(module);
             var first = !numbers.TryGetValue(key, out var number);
             if (first) numbers[key] = number = numbers.Count + 1;
