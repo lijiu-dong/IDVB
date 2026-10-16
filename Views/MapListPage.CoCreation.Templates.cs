@@ -9,6 +9,7 @@ public sealed partial class MapListPage
     private readonly TaskCompletionSource _initialListReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
     internal Task InitialListReady => _initialListReady.Task;
     internal Func<string, Task>? LocalTemplateClassAdded { get; set; }
+    internal Func<Task>? CommunityMapsRequested { get; set; }
 
     internal void SelectInitialClass(string className)
     {

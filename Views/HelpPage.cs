@@ -186,7 +186,7 @@ public sealed class HelpPage : Page
     }
 
     private Border CreateCompactTutorialCard(Button button) =>
-        CreateCompactTutorialCard(button, "订阅地图", "从地图社区选择地图包，并在 IDVB 中添加订阅。", Symbol.Download);
+        CreateCompactTutorialCard(button, "获取社区地图", "在共创地图的社区页面获取地图；有新版本时直接点击地图卡片更新。", Symbol.Download);
 
     private Border CreateCompactTutorialCard(Button button, string title, string description, Symbol icon)
     {

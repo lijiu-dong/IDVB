@@ -32,7 +32,7 @@ public sealed partial class MapListPage
     };
 
     private Button CreateCoCreationCard(string title, string subtitle, string? previewPath, Func<Task> open, bool opensClass = false,
-        string? actionLabel = null, string errorTitle = "无法打开地图", string? badgeText = null)
+        string? actionLabel = null, string errorTitle = "无法打开地图", string? badgeText = null, bool updateAvailable = false)
     {
         var content = new StackPanel { Spacing = 10 };
         var preview = new Image { Stretch = Stretch.Fill };
@@ -69,6 +69,18 @@ public sealed partial class MapListPage
             BorderBrush = FluentTheme.Brush(this, ThemeToken.TextMuted), Visibility = Visibility.Collapsed,
             IsHitTestVisible = false };
         cover.Children.Add(focusOutline);
+        if (updateAvailable)
+        {
+            var updateBadge = new Border
+            {
+                Width = 28, Height = 28, CornerRadius = new CornerRadius(14), Margin = new Thickness(10),
+                HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top,
+                Background = FluentTheme.Brush(this, ThemeToken.Accent), IsHitTestVisible = false,
+                Child = new FontIcon { Glyph = "", FontSize = 14, Foreground = FluentTheme.Brush(this, ThemeToken.OnAccent) }
+            };
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(updateBadge, "有可用更新");
+            cover.Children.Add(updateBadge);
+        }
         ClipCoCreationCover(cover);
         content.Children.Add(cover);
         var metadata = new StackPanel { Spacing = 5 };
@@ -129,8 +141,9 @@ public sealed partial class MapListPage
             preview.Opacity = 1;
         };
         var label = actionLabel ?? (opensClass ? $"查看{title}中的地图" : $"打开{title}的地图编辑器");
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(button, $"{label}，{subtitle} {badgeText}".Trim());
-        ToolTipService.SetToolTip(button, $"{title}\n{subtitle}" + (badgeText is null ? string.Empty : $" · {badgeText}"));
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(button, $"{label}，{subtitle} {badgeText}{(updateAvailable ? " 有可用更新" : string.Empty)}".Trim());
+        ToolTipService.SetToolTip(button, $"{title}\n{subtitle}" + (badgeText is null ? string.Empty : $" · {badgeText}")
+            + (updateAvailable ? "\n有可用更新" : string.Empty));
         button.Click += async (_, _) =>
         {
             if (_coCreationOpening) return;

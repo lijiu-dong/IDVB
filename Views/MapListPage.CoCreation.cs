@@ -18,6 +18,12 @@ public sealed partial class MapListPage
     private int _coCreationViewRevision;
     private CoCreationClassSelection? _coCreationSelectedClass;
     private MapDraft? _coCreationSourceDraft;
+    private StackPanel? _coCreationCommunityGallery;
+
+    /// <summary>The community gallery while it is the visible co-creation section.</summary>
+    internal FrameworkElement? GetCoCreationCommunityControl() =>
+        _coCreationSection == CoCreationSection.Community && _coCreationCommunityGallery is { IsLoaded: true } gallery
+            ? gallery : null;
 
     private async Task ShowCoCreationAsync()
     {
@@ -85,6 +91,7 @@ public sealed partial class MapListPage
         content.Children.Add(gallery);
         if (_coCreationSection == CoCreationSection.Community)
         {
+            _coCreationCommunityGallery = gallery;
             await LoadCoCreationCommunityAsync(gallery, false, token);
             return;
         }

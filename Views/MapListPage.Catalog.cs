@@ -99,7 +99,7 @@ public sealed partial class MapListPage : UserControl
         var tip = CreatePackageActionTeachingTip(
             importButton,
             "请选择导入方式",
-            "创建新地图、导入 IDVM 数据包，或管理地图更新订阅。",
+            "创建新地图、导入 IDVM 数据包，或前往共创地图社区获取和更新地图。",
             choices);
         createMap.Click += async (_, _) =>
         {
@@ -122,7 +122,8 @@ public sealed partial class MapListPage : UserControl
         updateSubscriptions.Click += async (_, _) =>
         {
             tip.IsOpen = false;
-            await ShowMapSubscriptionsDialogAsync(importButton, exportButton);
+            if (CommunityMapsRequested is { } openCommunity)
+                await openCommunity();
         };
         return tip;
     }

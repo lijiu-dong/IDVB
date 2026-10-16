@@ -43,6 +43,7 @@ public sealed partial class MapListPage : UserControl
         IDVBuff.Features.Accounts.AccountSession.Changed -= CoCreationAccountChanged;
         _initialListReady.TrySetCanceled();
         LocalTemplateClassAdded = null;
+        CommunityMapsRequested = null;
         CloseHoldPreviewImmediately();
         ResetMarkerEditorSession();
         ResetBatchImport();

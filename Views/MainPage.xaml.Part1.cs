@@ -334,6 +334,7 @@ public sealed partial class MainPage : Page
                 mapListPage.ParentScrollViewer = MainContentHost;
                 mapListPage.NavigationCompactStateChanged = SetEditorNavigationCompact;
                 mapListPage.LocalTemplateClassAdded = className => NavigateToLocalTemplateClassAsync(mapListPage, className);
+                mapListPage.CommunityMapsRequested = NavigateToCoCreationCommunityAsync;
             }
         }
         catch (Exception exception)
