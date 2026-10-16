@@ -122,9 +122,17 @@ public sealed partial class MapControlPanelWindow : IDisposable
         if (_disposed)
             return;
         _disposed = true;
+        DisposeTransition();
+        ClearVariantButtons();
         MapClassDiagnosticCoordinator.Instance.SnapshotChanged -= OnDiagnosticSnapshotChanged;
+        _beginButton.Click -= BeginButton_Click;
+        _endButton.Click -= EndButton_Click;
+        _correctMapButton.Click -= CorrectMapButton_Click;
+        _surveyModeToggle.Toggled -= SurveyModeToggle_Toggled;
         _classComboBox.SelectionChanged -= ClassComboBox_SelectionChanged;
         ThemeService.For(_classComboBox).Changed -= OnClassThemeChanged;
+        _classComboBox.Items.Clear();
+        _renderedMapClassDiagnostics = [];
         _captureProtectionRegistration?.Dispose();
         _captureProtectionRegistration = null;
         _isVisible = false;

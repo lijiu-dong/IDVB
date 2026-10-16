@@ -82,6 +82,7 @@ public sealed partial class MapControlPanelWindow : IDisposable
         Visibility = Visibility.Collapsed
     };
     private XamlWindow? _window;
+    private Border? _rootBorder;
     private UIElement? _content;
     private ThemeScope? _themeScope;
     private string? _pendingClass;
@@ -89,6 +90,7 @@ public sealed partial class MapControlPanelWindow : IDisposable
     private IReadOnlyList<string> _mapClasses = [];
     private IReadOnlyList<MapClassDiagnostic> _mapClassDiagnostics = [];
     private IReadOnlyList<MapClassDiagnostic> _renderedMapClassDiagnostics = [];
+    private IReadOnlyList<MapVariantOption> _renderedVariantOptions = [];
     private MapMatchSnapshot _snapshot;
 
     private bool _isVisible;
@@ -200,9 +202,7 @@ public sealed partial class MapControlPanelWindow : IDisposable
             (int)Math.Round(gameBounds.Y) + margin,
             width,
             height));
-        GameInputPreservingWindow.Show(WindowNative.GetWindowHandle(_window));
-        RegisterCaptureProtection();
-        _isVisible = true;
+        BeginEnterTransition();
     }
 
     public void Refresh(MapMatchSnapshot snapshot)
@@ -275,12 +275,7 @@ public sealed partial class MapControlPanelWindow : IDisposable
         Refresh(snapshot);
     }
 
-    public void Hide()
-    {
-        if (_window is not null)
-            GameInputPreservingWindow.Hide(WindowNative.GetWindowHandle(_window));
-        _isVisible = false;
-    }
+    public void Hide() => BeginExitTransition();
 
     private void EnsureWindow()
     {
@@ -294,25 +289,32 @@ public sealed partial class MapControlPanelWindow : IDisposable
             Padding = new Thickness(16),
             Child = _content ??= BuildContent()
         };
+        Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.SetIsTranslationEnabled(root, true);
+        Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.SetIsTranslationEnabled(_content, true);
+        _rootBorder = root;
         var window = new XamlWindow { Content = root, ExtendsContentIntoTitleBar = false };
         var scope = ThemeService.AttachWindow(window, root, ThemeProfile.Application);
         _window = window;
         _themeScope = scope;
         root.Background = scope.WindowBrush;
         root.BorderBrush = scope.Resources[ThemeToken.SurfaceBorder];
-        window.Closed += (_, _) =>
+        void OnWindowClosed(object sender, WindowEventArgs args)
         {
+            window.Closed -= OnWindowClosed;
             scope.Dispose();
             // Retain the controls without retaining their closed window parent.
             // Reopening must not rebuild content or subscribe selection twice.
             root.Child = null;
             if (!ReferenceEquals(_window, window)) return;
+            StopAndResetTransition();
+            _rootBorder = null;
             _themeScope = null;
             _captureProtectionRegistration?.Dispose();
             _captureProtectionRegistration = null;
             _window = null;
             _isVisible = false;
-        };
+        }
+        window.Closed += OnWindowClosed;
         if (_window.AppWindow.Presenter is OverlappedPresenter presenter)
         {
             presenter.SetBorderAndTitleBar(false, false);
@@ -325,20 +327,32 @@ public sealed partial class MapControlPanelWindow : IDisposable
         var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(_window);
         BorderlessWindowHelper.Apply(hwnd);
         GameInputPreservingWindow.Apply(hwnd);
+        GameInputPreservingWindow.ApplyLayered(hwnd);
     }
 
     private void RefreshVariantOptions(MapMatchSnapshot snapshot)
     {
-        _variantButtons.Children.Clear();
         var visible = snapshot.IsStarted
             && snapshot.Mode == MapRunMode.Normal
             && _variantContext is { Options.Count: > 1 };
         _variantHeading.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
         _variantScroller.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
         if (!visible || _variantContext is null)
+        {
+            if (_variantButtons.Children.Count > 0)
+                ClearVariantButtons();
             return;
+        }
 
-        foreach (var option in _variantContext.Options.OrderBy(item => item.SequenceNumber))
+        var ordered = _variantContext.Options.OrderBy(item => item.SequenceNumber).ToArray();
+        if (_renderedVariantOptions.SequenceEqual(ordered)
+            && _variantButtons.Children.Count == ordered.Length)
+        {
+            return;
+        }
+
+        ClearVariantButtons();
+        foreach (var option in ordered)
         {
             var title = option.IsPending
                 ? $"变体 {option.VariantNumber} · 待对齐"
@@ -376,6 +390,7 @@ public sealed partial class MapControlPanelWindow : IDisposable
             button.Click += VariantButton_Click;
             _variantButtons.Children.Add(button);
         }
+        _renderedVariantOptions = ordered;
     }
 
     private void RegisterCaptureProtection()

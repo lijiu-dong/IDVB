@@ -16,6 +16,41 @@ internal static class GameInputPreservingWindow
             throw new Win32Exception(Marshal.GetLastWin32Error());
     }
 
+    internal static void ApplyLayered(IntPtr window)
+    {
+        if (window == IntPtr.Zero)
+            return;
+        _ = SetWindowLong(window, -20, GetWindowLong(window, -20) | 0x00080000);
+        _ = SetLayeredWindowAttributes(window, 0, 255, 0x00000002);
+    }
+
+    internal static void SetOpacity(IntPtr window, byte alpha)
+    {
+        if (window != IntPtr.Zero)
+            _ = SetLayeredWindowAttributes(window, 0, alpha, 0x00000002);
+    }
+
+    internal static bool TryGetOpacity(IntPtr window, out byte alpha)
+    {
+        alpha = 0;
+        return window != IntPtr.Zero
+            && GetLayeredWindowAttributes(window, out _, out alpha, out var flags)
+            && (flags & 0x00000002) != 0;
+    }
+
+    internal static void SetClickThrough(IntPtr window, bool clickThrough)
+    {
+        if (window == IntPtr.Zero)
+            return;
+        var style = GetWindowLong(window, -20);
+        var updated = clickThrough ? (style | 0x00000020) : (style & ~0x00000020);
+        if (updated != style)
+            _ = SetWindowLong(window, -20, updated);
+    }
+
+    internal static bool IsVisible(IntPtr window) =>
+        window != IntPtr.Zero && IsWindowVisible(window);
+
     internal static void Show(IntPtr window) => SetVisibility(window, true);
     internal static void Hide(IntPtr window) => SetVisibility(window, false);
 
@@ -42,6 +77,11 @@ internal static class GameInputPreservingWindow
 
     [DllImport("user32.dll")] private static extern int GetWindowLong(IntPtr window, int index);
     [DllImport("user32.dll")] private static extern int SetWindowLong(IntPtr window, int index, int value);
+    [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool SetLayeredWindowAttributes(IntPtr window, uint colorKey, byte alpha, uint flags);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool GetLayeredWindowAttributes(IntPtr window, out uint colorKey, out byte alpha, out uint flags);
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags);
     [DllImport("comctl32.dll", SetLastError = true)]
