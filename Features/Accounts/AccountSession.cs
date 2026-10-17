@@ -30,6 +30,14 @@ internal static class AccountSession
         Timeout = TimeSpan.FromSeconds(60),
     };
     private static string? _publishToken;
+    private static readonly HttpClient PublicationHttp = new(new SocketsHttpHandler
+    {
+        ConnectTimeout = TimeSpan.FromSeconds(5),
+    })
+    {
+        BaseAddress = Http.BaseAddress,
+        Timeout = TimeSpan.FromMinutes(10),
+    };
     public static string? PublishToken => _publishToken;
     public static AccountIdentity? Identity { get; private set; }
     public static event EventHandler? Changed;
@@ -192,7 +200,10 @@ internal static class AccountSession
         MapPublicationResult publication,
         CancellationToken cancellationToken = default)
     {
-        _ = await RequirePublishAccessAsync(cancellationToken);
+        var accountToken = _publishToken;
+        var identity = await RequirePublishAccessAsync(cancellationToken);
+        if (!string.Equals(identity.PublisherHandle, publication.PublisherHandle, StringComparison.OrdinalIgnoreCase))
+            throw new UnauthorizedAccessException("发布期间账户已切换，请重新发布。");
         var link = MapSubscriptionLink.Parse(publication.SubscriptionLink);
         var feedPath = Path.Combine(publication.OutputDirectory, "feed.json");
         var packagePath = publication.PackagePath;
@@ -202,27 +213,43 @@ internal static class AccountSession
                 $"地图发布包为 {packageLength / 1024d / 1024d:F1} MB，超过官网 90 MB 限制。请改为发布当前地图类，或减少地图内容后重试。");
         await using var package = File.OpenRead(packagePath);
         using var form = new MultipartFormDataContent();
-        AddFormPart(form, new ByteArrayContent(
-            await File.ReadAllBytesAsync(feedPath, cancellationToken)), "feed", "feed.json");
+        var feedBytes = await File.ReadAllBytesAsync(feedPath, cancellationToken);
+        AddFormPart(form, new ByteArrayContent(feedBytes), "feed", "feed.json");
         AddFormPart(form, new MapPublicationUploadContent(package), "package", Path.GetFileName(packagePath));
         AddFormPart(form, new StringContent(Base64Url(link.ContentKey)), "contentKey");
         AddFormPart(form, new StringContent(publication.PackageName), "name");
+        if (new FileInfo(publication.CoverPath).Length > 5L * 1024 * 1024)
+            throw new InvalidOperationException("封面超过官网 5 MB 限制，请选择较小的 PNG 或 JPEG 图片。");
         var cover = new StreamContent(File.OpenRead(publication.CoverPath));
         cover.Headers.ContentType = new MediaTypeHeaderValue(
             Path.GetExtension(publication.CoverPath).Equals(".png", StringComparison.OrdinalIgnoreCase)
                 ? "image/png" : "image/jpeg");
         AddFormPart(form, cover, "cover", Path.GetFileName(publication.CoverPath));
         using var request = new HttpRequestMessage(HttpMethod.Post, "api/maps/publish") { Content = form };
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _publishToken);
-        using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        if (!string.Equals(_publishToken, accountToken, StringComparison.Ordinal))
+            throw new UnauthorizedAccessException("发布期间账户已切换，请重新发布。");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accountToken);
+        using var response = await PublicationHttp.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         var json = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!json.TrimStart().StartsWith('{'))
+            throw new HttpRequestException($"官网发布接口返回 HTTP {(int)response.StatusCode}，未返回有效发布结果。请保留本地发布目录后重试。");
         using var document = JsonDocument.Parse(json);
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException(document.RootElement.TryGetProperty("message", out var message)
                 ? message.GetString() ?? "官网拒绝了地图发布。"
                 : "官网拒绝了地图发布。");
-        return document.RootElement.GetProperty("subscriptionLink").GetString()
+        var returnedLink = document.RootElement.GetProperty("subscriptionLink").GetString()
             ?? throw new InvalidDataException("官网没有返回更新订阅链接。");
+        var remote = MapSubscriptionLink.Parse(returnedLink);
+        if (remote.FeedUri != new Uri(Http.BaseAddress!, $"api/maps/subscriptions/{publication.PublicationId:D}/feed.json")
+            || remote.PublisherKeyId != link.PublisherKeyId
+            || !CryptographicOperations.FixedTimeEquals(remote.ContentKey, link.ContentKey))
+            throw new InvalidDataException("官网返回的订阅链接与本次发布身份或密钥不一致。");
+        using var readback = await PublicationHttp.GetAsync(remote.FeedUri, cancellationToken);
+        readback.EnsureSuccessStatusCode();
+        if (!(await readback.Content.ReadAsByteArrayAsync(cancellationToken)).AsSpan().SequenceEqual(feedBytes))
+            throw new InvalidDataException("地图已上传，但公开订阅清单与本次发布不一致，尚不能确认发布成功。请保留本地发布目录。");
+        return returnedLink;
     }
 
     private static void AddFormPart(

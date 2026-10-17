@@ -15,7 +15,8 @@ public sealed record MapPublicationResult(
     string SubscriptionLink,
     string PackageName,
     string CoverPath,
-    string PackagePath);
+    string PackagePath,
+    IReadOnlyList<MapRecord> ExportedMaps);
 
 public sealed class MapPublicationService
 {
@@ -45,9 +46,9 @@ public sealed class MapPublicationService
         byte[]? existingContentKey = null,
         CancellationToken cancellationToken = default)
     {
-        var snapshot = await _packages.GetExportMapsAsync(scope, className, cancellationToken);
+        var snapshot = await _packages.GetExportSnapshotAsync(scope, className, cancellationToken);
         using var protection = AppDataPaths.ProtectCachePath(outputParentDirectory);
-        if (snapshot.Any(map => map.AcquisitionKind == MapAcquisitionKind.Subscription
+        if (snapshot.Maps.Any(map => map.AcquisitionKind == MapAcquisitionKind.Subscription
             && (publicationId is null || map.SubscriptionId != publicationId)))
             throw new InvalidOperationException("只有发布者自己的已发布地图类可以更新。");
 
@@ -73,7 +74,15 @@ public sealed class MapPublicationService
         var plaintextPath = Path.Combine(staging, "payload.idvm");
         try
         {
-            await MapOperationProgress.RunAsync(0, .85, () => _packages.ExportAsync(scope, className, plaintextPath, cancellationToken));
+            await MapOperationProgress.RunAsync(0, .75, () => _packages.ExportSnapshotAsync(snapshot, scope, className, plaintextPath, cancellationToken));
+            // Use the subscriber's reader before signing/uploading. A successful
+            // archive write alone does not prove that the package is usable.
+            await using (var inspection = await MapOperationProgress.RunAsync(.75, .85,
+                () => _packages.InspectAsync(plaintextPath, cancellationToken)))
+            {
+                if (inspection.MapCount != snapshot.Maps.Count)
+                    throw new InvalidDataException("发布准备期间地图范围发生变化，请刷新后重试。");
+            }
             MapOperationProgress.Report(.85, "正在加密地图包……");
             var plaintext = await File.ReadAllBytesAsync(plaintextPath, cancellationToken);
             var plainHash = Convert.ToHexString(SHA256.HashData(plaintext));
@@ -82,7 +91,9 @@ public sealed class MapPublicationService
             var encrypted = MapSubscriptionCrypto.EncryptIdvm(plaintext, contentKey, publicationId.Value);
             var encryptedHash = Convert.ToHexString(SHA256.HashData(encrypted));
             var publishedAt = DateTimeOffset.UtcNow;
-            var version = $"{publishedAt:yyyyMMddHHmmss}-{plainHash[..12]}";
+            // AES-GCM uses a fresh nonce even for identical plaintext. Every
+            // encrypted asset needs a distinct immutable URL, including retries.
+            var version = $"{publishedAt:yyyyMMddHHmmssfffffff}-{encryptedHash[..12]}";
             var output = Path.Combine(outputParentDirectory, $"IDVB-Map-{publicationId:N}");
             Directory.CreateDirectory(output);
             var securePackageName = $"maps-{version}.idvm.secure";
@@ -123,7 +134,7 @@ public sealed class MapPublicationService
                 new Uri(feedPath), contentKey, credential.KeyId).ToUriString();
             return new MapPublicationResult(
                 publicationId.Value, version, handle, publisherDisplayName.Trim(), isOfficialPublisher, isBuilderPublisher, output, link,
-                packageName.Trim(), coverPath, packagePath);
+                packageName.Trim(), coverPath, packagePath, snapshot.Maps);
         }
         finally
         {

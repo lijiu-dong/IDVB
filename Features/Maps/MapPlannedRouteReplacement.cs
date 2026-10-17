@@ -11,6 +11,11 @@ public static class MapPlannedRouteReplacement
         var ids = floors.Values.SelectMany(a => a).Where(a => a.RoutePlanId.HasValue).Select(a => a.Id).ToHashSet();
         if (navigation.SourceLevelId is null) return ids;
         var stages = floors.Values.SelectMany(a => a).Where(IsLegacyStage).ToArray();
+        // A previous migration may already have replaced the main route while
+        // leaving an unanchored, empty legacy branch. Such a branch can never
+        // satisfy the old "阶段 1 + frames + numbered markers" whole-plan test.
+        AddMissingBranches(floors.Values.SelectMany(a => a)
+            .Where(a => a.RoutePlanId.HasValue && a.Type == MapAnnotationType.Route && a.IsValid));
         if (!stages.Any(a => a.Text == "阶段 1")) return ids;
         var frames = new List<MapAnnotation>();
         var markers = new List<(MapAnnotation Annotation, int Number)>();
@@ -49,9 +54,28 @@ public static class MapPlannedRouteReplacement
                     && (AtCenter(stage.Start!, bounds) || AtCenter(stage.End!, bounds))))).ToArray();
         if (!anchoredStages.Any(a => a.Text == "阶段 1")) return ids;
         ids.UnionWith(anchoredStages.Select(a => a.Id));
+        AddMissingBranches(anchoredStages);
         ids.UnionWith(frames.Select(a => a.Id));
         ids.UnionWith(markers.Where(m => m.Number <= last).Select(m => m.Annotation.Id));
         return ids;
+
+        void AddMissingBranches(IEnumerable<MapAnnotation> mainStages)
+        {
+            var confirmed = mainStages.ToHashSet();
+            foreach (var (key, annotations) in floors)
+            foreach (var branch in annotations.Where(a => IsLegacyStage(a) && !a.IsMarker
+                && a.Points.Count == 0 && a.Text!.EndsWith(" 支路", StringComparison.Ordinal)))
+            {
+                // Only an empty generated branch on this topology, paired with
+                // a confirmed same-floor main stage, is eligible. Keep healthy
+                // manual routes and unrelated/ambiguous damaged drawings.
+                if (!annotations.Any(a => confirmed.Contains(a) && a.Text == branch.Text![..^3]
+                    && a.EffectiveColorHex == branch.EffectiveColorHex)) continue;
+                var cells = navigation.Modules.Where(m => m.FloorKey == key).SelectMany(m => m.Cells).ToArray();
+                if (cells.Any(c => c.Contains(branch.Start!)) && cells.Any(c => c.Contains(branch.End!)))
+                    ids.Add(branch.Id);
+            }
+        }
     }
 
     private static bool IsLegacyStage(MapAnnotation annotation)

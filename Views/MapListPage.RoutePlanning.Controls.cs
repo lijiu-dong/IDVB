@@ -66,7 +66,7 @@ public sealed partial class MapListPage
         content.Children.Add(new TextBlock { Text = "搜房楼层" });
         foreach (var floor in floors) floorPanel.Children.Add(floor);
         content.Children.Add(floorPanel);
-        content.Children.Add(new TextBlock { Text = "仅勾选要搜房的楼层。未勾选楼层仍可必要通行、跨层和到达出口，不额外探索房间。", TextWrapping = TextWrapping.Wrap });
+        content.Children.Add(new TextBlock { Text = "仅勾选要搜房的楼层。优先不经过未勾选楼层；仅在勾选楼层与入口、出口无法连通时借道，不为增加搜房覆盖绕行其他楼层。", TextWrapping = TextWrapping.Wrap });
         var specialTeleports = new CheckBox { Content = "通过特殊房间传送（打夜莺）", IsChecked = false,
             Tag = "special-room-teleports", Visibility = specialTeleportFloors is { Count: > 0 } ? Visibility.Visible : Visibility.Collapsed };
         specialTeleports.IsEnabled = specialTeleportFloors is { Count: > 0 };

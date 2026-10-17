@@ -158,10 +158,11 @@ public static class MapExplorationRoutePlanner
             Add(link.FromNodeId, link.ToNodeId, null, [], link.Cost, transferRooms, specialTeleport: link.IsSpecialTeleport);
             if (!link.Directed) Add(link.ToNodeId, link.FromNodeId, null, [], link.Cost, transferRooms);
         }
-        HashSet<string> Reach(string start, bool reverse)
+        HashSet<string> Reach(string start, bool reverse, Dictionary<string, List<Edge>>? source = null)
         {
-            var graph = adjacent.Keys.ToDictionary(n => n, _ => new List<string>());
-            foreach (var edge in adjacent.Values.SelectMany(e => e))
+            source ??= adjacent;
+            var graph = source.Keys.ToDictionary(n => n, _ => new List<string>());
+            foreach (var edge in source.Values.SelectMany(e => e))
                 graph[reverse ? edge.To : edge.From].Add(reverse ? edge.From : edge.To);
             var reached = new HashSet<string>(); var pending = new Stack<string>(); pending.Push(start);
             while (pending.TryPop(out var node))
@@ -172,6 +173,20 @@ public static class MapExplorationRoutePlanner
             }
             return reached;
         }
+        // Unselected floors are a connectivity fallback, not extra channels
+        // for maximizing loot coverage on the selected floors. Prefer a graph
+        // confined to search/gate floors whenever it can connect the request.
+        var preferredFloors = options.AllowedFloors.Append(entrance.FloorKey).Append(exit.FloorKey).ToHashSet();
+        if (options.UseSpecialRoomTeleports)
+            preferredFloors.UnionWith(MapSpecialRoomTeleports.RequiredFloors(topology));
+        var preferred = adjacent.ToDictionary(pair => pair.Key, pair => pair.Value
+            .Where(edge => preferredFloors.Contains(nodes[edge.From].FloorKey)
+                && preferredFloors.Contains(nodes[edge.To].FloorKey)).ToList());
+        var preferredReach = Reach(entrance.Id, false, preferred);
+        preferredReach.IntersectWith(Reach(exit.Id, true, preferred));
+        if (preferredReach.Contains(exit.Id) && options.AllowedFloors.All(floor =>
+            modules.Values.Any(module => module.FloorKey == floor && preferredReach.Contains(module.CenterNodeId))))
+            adjacent = preferred;
         var reachable = Reach(entrance.Id, false);
         reachable.IntersectWith(Reach(exit.Id, true));
         if (!reachable.Contains(exit.Id)) throw new InvalidOperationException("入口与出口不连通，请检查关闭的门和跨楼层连接。");

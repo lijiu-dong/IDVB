@@ -49,6 +49,11 @@ public sealed class MapSubscriptionUpdateEngine
                 failedCount++;
                 record.LastError = exception.Message;
             }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                failedCount++;
+                record.LastError = "订阅下载超时，已保留现有地图，请稍后重试。";
+            }
             record.LastCheckedAtUtc = DateTimeOffset.UtcNow;
             progress?.Invoke(new((double)checkedCount / enabled.Length, "正在完成订阅检查……"));
         }
@@ -72,6 +77,11 @@ public sealed class MapSubscriptionUpdateEngine
             ?? throw new InvalidDataException("地图订阅 feed 为空。");
         var publication = MapSubscriptionCrypto.Verify(
             envelope, link.PublisherKeyId, officialPublicKeyPem);
+        var segments = link.FeedUri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length == 5 && segments[0] == "api" && segments[1] == "maps"
+            && segments[2] == "subscriptions" && Guid.TryParse(segments[3], out var expectedId)
+            && publication.PublicationId != expectedId)
+            throw new CryptographicException("订阅 feed 的地图包身份与链接不一致。");
         if (!IdvmPlatformCompatibility.SupportsWindows(publication.SupportedPlatforms))
             throw new InvalidDataException("该地图订阅不支持 Windows，已拒绝订阅请求。");
         record.PublisherHandle = publication.PublisherHandle;
@@ -79,9 +89,12 @@ public sealed class MapSubscriptionUpdateEngine
         record.IsOfficialPublisher = publication.IsOfficialPublisher;
         record.IsBuilderPublisher = publication.IsBuilderPublisher;
         record.PackageName = publication.PackageName;
-        var communityMetadata = await GetCommunityMetadataAsync(link.FeedUri, publication.PublicationId, cancellationToken);
-        record.PublisherDisplayName ??= communityMetadata.PublisherDisplayName;
-        record.PackageName ??= communityMetadata.PackageName;
+        if (record.PublisherDisplayName is null || record.PackageName is null)
+        {
+            var communityMetadata = await GetCommunityMetadataAsync(link.FeedUri, publication.PublicationId, cancellationToken);
+            record.PublisherDisplayName ??= communityMetadata.PublisherDisplayName;
+            record.PackageName ??= communityMetadata.PackageName;
+        }
         if (record.LastPublishedAtUtc is { } previous && publication.PublishedAtUtc < previous)
             throw new CryptographicException("订阅 feed 发生版本回退，已拒绝应用。");
         if (record.InstalledMapIds.Count > 0
@@ -89,7 +102,13 @@ public sealed class MapSubscriptionUpdateEngine
                 record.LastAppliedPlaintextSha256,
                 publication.PlaintextSha256,
                 StringComparison.OrdinalIgnoreCase))
+        {
+            // A verified metadata-only update must also advance the rollback
+            // watermark, even when the installed content hash stays identical.
+            record.LastPublishedAtUtc = publication.PublishedAtUtc;
+            record.LastAppliedVersion = publication.Version;
             return false;
+        }
 
         var packageUri = ResolvePackageUri(link.FeedUri, publication.PackageUri);
         var encrypted = await ReadUriAsync(
@@ -146,21 +165,27 @@ public sealed class MapSubscriptionUpdateEngine
         }
         if (!string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("远程订阅资源必须使用 HTTPS。");
-        using var response = await _httpClient.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        // HttpClient.Timeout stops covering the body after ResponseHeadersRead.
+        // Bound the complete transfer so a stalled stream cannot hold the
+        // subscription operation gate indefinitely.
+        using var transferTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        transferTimeout.CancelAfter(TimeSpan.FromMinutes(5));
+        var transferToken = transferTimeout.Token;
+        using var response = await _httpClient.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, transferToken);
         if (response.StatusCode != HttpStatusCode.OK)
             throw new HttpRequestException($"订阅资源返回 HTTP {(int)response.StatusCode}。");
         if (response.Content.Headers.ContentLength > maximumBytes)
             throw new InvalidDataException("订阅资源超过安全大小上限。");
-        await using var source = await response.Content.ReadAsStreamAsync(cancellationToken);
+        await using var source = await response.Content.ReadAsStreamAsync(transferToken);
         await using var target = new MemoryStream();
         var buffer = new byte[81920];
         while (true)
         {
-            var read = await source.ReadAsync(buffer, cancellationToken);
+            var read = await source.ReadAsync(buffer, transferToken);
             if (read == 0) break;
             if (target.Length + read > maximumBytes)
                 throw new InvalidDataException("订阅资源超过安全大小上限。");
-            await target.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+            await target.WriteAsync(buffer.AsMemory(0, read), transferToken);
             progress?.Invoke(target.Length, response.Content.Headers.ContentLength);
         }
         return target.ToArray();
@@ -211,7 +236,7 @@ public sealed class MapSubscriptionUpdateEngine
                     item.TryGetProperty("name", out var packageName) ? packageName.GetString() : null);
             }
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             // Public catalog metadata only improves labels; the signed feed remains authoritative.
         }

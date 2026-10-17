@@ -60,7 +60,17 @@ public sealed class MapSubscriptionService
             record.PackageName = publication.PackageName;
             record.CoverPath = publication.CoverPath;
             record.LastAppliedVersion = publication.Version;
-            record.LastPublishedAtUtc = DateTimeOffset.UtcNow;
+            var envelope = JsonSerializer.Deserialize<SignedMapPublicationEnvelope>(
+                await File.ReadAllBytesAsync(Path.Combine(publication.OutputDirectory, "feed.json"), cancellationToken),
+                MapSubscriptionProtocol.JsonOptions) ?? throw new InvalidDataException("本地发布清单为空。");
+            var payload = MapSubscriptionCrypto.Verify(envelope, link.PublisherKeyId,
+                MapSubscriptionTrust.LoadOfficialPublicKey(AppContext.BaseDirectory));
+            if (payload.PublicationId != publication.PublicationId || payload.Version != publication.Version)
+                throw new InvalidDataException("本地发布清单与登记版本不一致。");
+            record.LastAppliedPlaintextSha256 = payload.PlaintextSha256;
+            record.LastError = null;
+            record.LastPublishedAtUtc = payload.PublishedAtUtc;
+            record.LastAppliedAtUtc = DateTimeOffset.UtcNow;
             record.InstalledMapIds = maps.Select(map => map.Id).ToList();
             record.CoCreationMapBindings.Clear();
             record.ClassBindings = maps.Select(map => map.Class).Distinct(StringComparer.OrdinalIgnoreCase)

@@ -91,12 +91,20 @@ public sealed partial class IdvmPackageService
         _tagStore = tagStore ?? new MapTagStore();
     }
 
-    public async Task ExportAsync(
+    public Task ExportAsync(
         IdvmExportScope scope,
         string? className,
         string destination,
         CancellationToken cancellationToken = default,
-        IdvmCompressionMode compressionMode = IdvmCompressionMode.Maximum)
+        IdvmCompressionMode compressionMode = IdvmCompressionMode.Maximum) =>
+        ExportCoreAsync(scope, className, destination, cancellationToken, compressionMode, null);
+
+    internal Task ExportSnapshotAsync(MapCatalogSnapshot snapshot, IdvmExportScope scope,
+        string? className, string destination, CancellationToken cancellationToken) =>
+        ExportCoreAsync(scope, className, destination, cancellationToken, IdvmCompressionMode.Maximum, snapshot);
+
+    private async Task ExportCoreAsync(IdvmExportScope scope, string? className, string destination,
+        CancellationToken cancellationToken, IdvmCompressionMode compressionMode, MapCatalogSnapshot? preparedSnapshot)
     {
         using var memory = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("Idvm.Export", className ?? "all-classes");
         if (string.IsNullOrWhiteSpace(destination))
@@ -108,9 +116,9 @@ public sealed partial class IdvmPackageService
         // A current-class export must not retain unrelated maps throughout
         // image validation and compression. The repository still performs its
         // normal catalog normalization/migration before detaching the subset.
-        var snapshot = scope == IdvmExportScope.CurrentClass && !string.IsNullOrWhiteSpace(className)
+        var snapshot = preparedSnapshot ?? (scope == IdvmExportScope.CurrentClass && !string.IsNullOrWhiteSpace(className)
             ? await _repository.GetClassCatalogSnapshotAsync(className)
-            : await _repository.GetCatalogSnapshotAsync();
+            : await _repository.GetCatalogSnapshotAsync());
         var selectedMaps = SelectMaps(snapshot.Maps, scope, className);
         IDVBuff.Core.Diagnostics.MemoryJournal.Current?.Record("export-selection",
             new { scope = scope.ToString(), className, snapshotMapCount = snapshot.Maps.Count, selectedMapCount = selectedMaps.Length });

@@ -11,6 +11,15 @@ public sealed partial class IdvmPackageService
         return SelectMaps((await _repository.GetCatalogSnapshotAsync()).Maps, scope, className);
     }
 
+    internal async Task<MapCatalogSnapshot> GetExportSnapshotAsync(IdvmExportScope scope, string? className,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return scope == IdvmExportScope.CurrentClass && !string.IsNullOrWhiteSpace(className)
+            ? await _repository.GetClassCatalogSnapshotAsync(className)
+            : await _repository.GetCatalogSnapshotAsync();
+    }
+
     private static MapRecord[] SelectMaps(
         IEnumerable<MapRecord> maps,
         IdvmExportScope scope,
