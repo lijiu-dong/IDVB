@@ -1,4 +1,6 @@
 using OpenCvSharp;
+using System.Runtime.InteropServices;
+using IDVBuff.Core.Diagnostics;
 
 namespace IDVBuff.Features.Maps;
 
@@ -29,9 +31,11 @@ internal static class MapStructureScaleHintEstimator
         hint = new(0d, 0d, 0, 0);
         if (reference.Edges.Empty() || live.Edges.Empty())
             return false;
+        using var operation = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation(
+            "Structure.ScaleHint", $"reference={reference.Edges.Width}x{reference.Edges.Height};live={live.Edges.Width}x{live.Edges.Height}");
 
-        var referenceLogs = BuildPairDistanceLogs(reference.Edges);
-        var liveLogs = BuildPairDistanceLogs(live.Edges);
+        using var referenceLogs = BuildPairDistanceLogs(reference.Edges);
+        using var liveLogs = BuildPairDistanceLogs(live.Edges);
         if (referenceLogs.Length < MinimumPairCount
             || liveLogs.Length < MinimumPairCount)
         {
@@ -41,17 +45,17 @@ internal static class MapStructureScaleHintEstimator
         minimumScale = Math.Max(0.05d, minimumScale);
         maximumScale = Math.Max(minimumScale, maximumScale);
         var minimumLog = Math.Min(
-            referenceLogs.Min(),
-            liveLogs.Min() - Math.Log(maximumScale));
+            referenceLogs.Minimum,
+            liveLogs.Minimum - Math.Log(maximumScale));
         var maximumLog = Math.Max(
-            referenceLogs.Max(),
-            liveLogs.Max() - Math.Log(minimumScale));
+            referenceLogs.Maximum,
+            liveLogs.Maximum - Math.Log(minimumScale));
         var binWidth = (maximumLog - minimumLog) / HistogramBinCount;
         if (!double.IsFinite(binWidth) || binWidth <= 1e-6d)
             return false;
 
         var referenceHistogram = BuildHistogram(
-            referenceLogs,
+            referenceLogs.Values,
             minimumLog,
             binWidth);
         var scales = Enumerable.Range(0, HintScaleCount)
@@ -63,9 +67,10 @@ internal static class MapStructureScaleHintEstimator
             .Select(scale => Correlate(
                 referenceHistogram,
                 BuildHistogram(
-                    liveLogs.Select(value => value - Math.Log(scale)).ToArray(),
+                    liveLogs.Values,
                     minimumLog,
-                    binWidth)))
+                    binWidth,
+                    Math.Log(scale))))
             .ToArray();
         var bestIndex = Enumerable.Range(0, scores.Length)
             .MaxBy(index => scores[index]);
@@ -110,44 +115,81 @@ internal static class MapStructureScaleHintEstimator
         return double.IsFinite(hint.Scale);
     }
 
-    private static double[] BuildPairDistanceLogs(Mat edges)
+    internal static PairDistanceLogs BuildPairDistanceLogs(Mat edges)
     {
-        var points = MapStructureScaleSearch.FindNonZeroPoints(edges);
-        if (points.Length > MaximumSamplePoints)
+        // This consumer needs at most 192 locations. Keep OpenCV's original
+        // ordering and rounding without first copying every edge into the GC heap.
+        Point[] sampled;
+        using (var locations = new Mat())
         {
-            var sampled = new Point[MaximumSamplePoints];
-            var stride = (points.Length - 1d) / (MaximumSamplePoints - 1d);
-            for (var index = 0; index < sampled.Length; index++)
-                sampled[index] = points[(int)Math.Round(index * stride)];
-            points = sampled;
+            var request = MemoryJournal.Request("Structure.ScaleHint.EdgeLocations", nativeModule: "OpenCvSharpExtern.dll");
+            Cv2.FindNonZero(edges, locations);
+            if (locations.Empty()) return new(0);
+            MemoryJournal.TrackResource(locations, "Structure.ScaleHint.EdgeLocations",
+                checked(locations.Total() * locations.ElemSize()), "OpenCvSharpExtern.dll", request);
+            try
+            {
+                var count = checked((int)locations.Total());
+                var points = MemoryMarshal.CreateReadOnlySpan(ref locations.At<Point>(0, 0), count);
+                var sampledRequest = MemoryJournal.Request("Structure.ScaleHint.SampledPoints",
+                    Math.Min(count, MaximumSamplePoints) * 8L);
+                sampled = new Point[Math.Min(count, MaximumSamplePoints)];
+                MemoryJournal.ObserveManagedArray(sampled, "Structure.ScaleHint.SampledPoints", sampledRequest);
+                if (count > MaximumSamplePoints)
+                {
+                    var stride = (count - 1d) / (MaximumSamplePoints - 1d);
+                    for (var index = 0; index < sampled.Length; index++)
+                        sampled[index] = points[(int)Math.Round(index * stride)];
+                }
+                else points.CopyTo(sampled);
+            }
+            finally
+            {
+                locations.Dispose();
+                MemoryJournal.ReleaseResource(locations);
+            }
         }
 
         // ponytail: bounded O(n²) pairs keep this optional hint cheap; replace
         // with a spatial sampler only if real captures show it is a bottleneck.
-        var distances = new List<double>(points.Length * 8);
-        for (var first = 0; first < points.Length; first++)
+        // Exact upper bound, in one closeable in-process scratch allocation.
+        // Histograms borrow the same doubles; filtering changes only the length,
+        // without a second large managed array or a resized copy.
+        var capacity = sampled.Length * (sampled.Length - 1) / 2;
+        var distances = new PairDistanceLogs(capacity);
+        try
         {
-            for (var second = first + 1; second < points.Length; second++)
+            var values = distances.WritableValues;
+            var used = 0;
+            for (var first = 0; first < sampled.Length; first++)
             {
-                var dx = points[first].X - points[second].X;
-                var dy = points[first].Y - points[second].Y;
-                var distance = Math.Sqrt((dx * dx) + (dy * dy));
-                if (double.IsFinite(distance) && distance > 1.5d)
-                    distances.Add(Math.Log(distance));
+                for (var second = first + 1; second < sampled.Length; second++)
+                {
+                    var dx = sampled[first].X - sampled[second].X;
+                    var dy = sampled[first].Y - sampled[second].Y;
+                    var distance = Math.Sqrt((dx * dx) + (dy * dy));
+                    if (double.IsFinite(distance) && distance > 1.5d)
+                        values[used++] = Math.Log(distance);
+                }
             }
+            distances.Complete(used);
+            return distances;
         }
-        return distances.ToArray();
+        catch { distances.Dispose(); throw; }
     }
 
-    private static double[] BuildHistogram(
-        IReadOnlyList<double> values,
+    internal static double[] BuildHistogram(
+        ReadOnlySpan<double> values,
         double minimumLog,
-        double binWidth)
+        double binWidth,
+        double logScale = 0d)
     {
         var histogram = new double[HistogramBinCount];
         foreach (var value in values)
         {
-            var index = (int)Math.Floor((value - minimumLog) / binWidth);
+            // Apply the same subtraction in the same order, without copying
+            // all pair distances for each of the 65 candidate scales.
+            var index = (int)Math.Floor(((value - logScale) - minimumLog) / binWidth);
             if (index == HistogramBinCount)
                 index--;
             if ((uint)index < HistogramBinCount)
@@ -164,6 +206,51 @@ internal static class MapStructureScaleHintEstimator
             smoothed[index] = (previous + (2d * histogram[index]) + next) / 4d;
         }
         return smoothed;
+    }
+
+    // Borrowed spans remain valid only within this owner's using scope. No
+    // pointer, Mat or full pair list escapes into a result/cache/async callback.
+    internal sealed class PairDistanceLogs : IDisposable
+    {
+        private Mat? _storage;
+        private readonly int _capacity;
+        private bool _disposed;
+        internal int Length { get; private set; }
+        internal double Minimum { get; private set; } = double.PositiveInfinity;
+        internal double Maximum { get; private set; } = double.NegativeInfinity;
+        internal PairDistanceLogs(int capacity)
+        {
+            _capacity = capacity;
+            if (capacity == 0) return;
+            var request = MemoryJournal.Request("Structure.ScaleHint.PairLogs", capacity * sizeof(double), "OpenCvSharpExtern.dll");
+            var storage = new Mat(1, capacity, MatType.CV_64FC1);
+            try { MemoryJournal.TrackResource(storage, "Structure.ScaleHint.PairLogs", capacity * sizeof(double), "OpenCvSharpExtern.dll", request); }
+            catch { storage.Dispose(); throw; }
+            _storage = storage;
+        }
+        internal Span<double> WritableValues
+        {
+            get
+            {
+                ObjectDisposedException.ThrowIf(_disposed, this);
+                return _storage is null ? [] : MemoryMarshal.CreateSpan(ref _storage.At<double>(0, 0), _capacity);
+            }
+        }
+        internal ReadOnlySpan<double> Values => WritableValues[..Length];
+        internal void Complete(int used)
+        {
+            Length = used;
+            foreach (var value in Values) { Minimum = Math.Min(Minimum, value); Maximum = Math.Max(Maximum, value); }
+        }
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            var storage = Interlocked.Exchange(ref _storage, null);
+            if (storage is null) return;
+            try { storage.Dispose(); }
+            finally { MemoryJournal.ReleaseResource(storage); }
+        }
     }
 
     private static double Correlate(

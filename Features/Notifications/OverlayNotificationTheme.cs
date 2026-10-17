@@ -10,15 +10,15 @@ namespace IDVBuff.Features.Notifications;
 /// </summary>
 public static class OverlayNotificationTheme
 {
-    public const float CardWidth = 420f;
-    public const float MinCardHeight = 48f;
+    public const float CardWidth = 520f;
+    public const float MinCardHeight = 64f;
     public const float CornerRadius = 10f;
     public const float CardSpacing = 10f;
     public const float PaddingLeft = 16f;
     public const float PaddingRight = 16f;
-    public const float PaddingTop = 12f;
-    public const float PaddingBottom = 12f;
-    public const float IconSize = 20f;
+    public const float PaddingTop = 16f;
+    public const float PaddingBottom = 16f;
+    public const float IconSize = 26f;
     public const float IconGap = 12f;
     public const float ProgressBarThickness = 3.5f;
 
@@ -162,7 +162,7 @@ public static class OverlayNotificationTheme
 
 /// <summary>
 /// 屏幕浮层通知度量参数。
-/// 依据当前屏幕/游戏窗口分辨率与系统 DPI 动态缩放，确保在任意分辨率与高 DPI 显示器上具备最佳可读性。
+/// 仅依据目标窗口的物理分辨率缩放；同一分辨率在所有 DPI 下保持相同像素尺寸。
 /// </summary>
 public sealed class NotificationMetrics
 {
@@ -186,23 +186,34 @@ public sealed class NotificationMetrics
     public float BaseTopOffset { get; }
     public float AvailableTextWidth { get; }
 
+    public static NotificationMetrics FromPhysicalResolution(double width, double height)
+    {
+        if (!double.IsFinite(width) || !double.IsFinite(height) || width <= 0 || height <= 0)
+            return Default;
+        // Use both axes so ultrawide screens do not inflate the card beyond their height.
+        // Keep an 18px readability floor on 720p/768p displays.
+        var scale = Math.Max(1d, Math.Min(width / 1920d, height / 1080d));
+        scale = Math.Min(scale, width / (OverlayNotificationTheme.CardWidth + 40d));
+        return new NotificationMetrics((float)scale);
+    }
+
     public NotificationMetrics(float scale = 1.0f)
     {
         Scale = Math.Max(0.5f, scale);
-        CardWidth = 420f * Scale;
-        MinCardHeight = 48f * Scale;
+        CardWidth = OverlayNotificationTheme.CardWidth * Scale;
+        MinCardHeight = OverlayNotificationTheme.MinCardHeight * Scale;
         CornerRadius = 10f * Scale;
         CardSpacing = 10f * Scale;
         PaddingLeft = 16f * Scale;
         PaddingRight = 16f * Scale;
-        PaddingTop = 12f * Scale;
-        PaddingBottom = 12f * Scale;
-        IconSize = 20f * Scale;
+        PaddingTop = OverlayNotificationTheme.PaddingTop * Scale;
+        PaddingBottom = OverlayNotificationTheme.PaddingBottom * Scale;
+        IconSize = OverlayNotificationTheme.IconSize * Scale;
         IconGap = 12f * Scale;
         ProgressBarThickness = 3.5f * Scale;
         OutlineThickness = Math.Max(1.0f, 1.4f * Scale);
         IconStrokeThickness = Math.Max(1.5f, 2.0f * Scale);
-        FontSize = 12.5f * Scale;
+        FontSize = 18f * Scale;
         BaseTopOffset = 10f * Scale;
         AvailableTextWidth = CardWidth - (PaddingLeft + IconSize + IconGap + PaddingRight);
     }

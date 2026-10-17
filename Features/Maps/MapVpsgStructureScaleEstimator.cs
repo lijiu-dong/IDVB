@@ -59,7 +59,9 @@ public sealed class MapVpsgStructureScaleEstimator
             tuning,
             includeAppearanceScale: false,
             preferredScale: priorScale,
-            useScaleHint: true);
+            useScaleHint: true,
+            refineNativeResolution: live.DiagnosticTiming?.Profile ==
+                MapStructurePreprocessingProfile.NativeObservedStructureLine);
         if (selection.Scales.Count == 0
             || !double.IsFinite(selection.BestCost))
         {

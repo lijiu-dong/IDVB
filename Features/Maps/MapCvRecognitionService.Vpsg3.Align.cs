@@ -1,35 +1,11 @@
 using System.Diagnostics.CodeAnalysis;
 using IDVBuff.Core.Diagnostics;
 using OpenCvSharp;
-
 namespace IDVBuff.Features.Maps;
 
 public sealed partial class MapCvRecognitionService
 {
-    /// <summary>
-    /// 尝试使用 VPSG 3.0 进行极速结构对齐（向后兼容重载）。
-    /// </summary>
-    public bool TryAlignWithVpsg3(
-        CapturedGameFrame frame,
-        MapRecord map,
-        string floorKey,
-        double identityPriorConfidence,
-        [NotNullWhen(true)] out MapRecognitionAttempt? attempt,
-        double? knownScaleSeed = null) =>
-        TryAlignWithVpsg3(
-            frame,
-            map,
-            floorKey,
-            identityPriorConfidence,
-            out attempt,
-            out _,
-            knownScaleSeed);
-
-    /// <summary>
-    /// 尝试使用 VPSG 3.0 进行极速结构对齐（尺度估计 + 平移搜索 + 亚像素精修 + 空间验证）。
-    /// 当目标楼层具备有效的 PrebuiltStructureLine 且预构建索引就绪时，优先执行 VPSG 3.0。
-    /// 成功时直接返回通过结构验证的对齐结果；失败或未就绪时返回 false，由调用方回退至传统流程，并通过 status 完整携带死因因果链。
-    /// </summary>
+    /// <summary>以目标楼层的预制轮廓完成 VPSG 3.0 尺度、平移和空间验证；失败或未就绪时返回 false，并通过 status 携带原因供调用方回退。</summary>
     public bool TryAlignWithVpsg3(
         CapturedGameFrame frame,
         MapRecord map,
@@ -38,9 +14,11 @@ public sealed partial class MapCvRecognitionService
         [NotNullWhen(true)] out MapRecognitionAttempt? attempt,
         out IdvbStatus status,
         double? knownScaleSeed = null,
-        bool hasValidatedFloorScale = false)
+        bool hasValidatedFloorScale = false,
+        bool requireObservableScale = false)
     {
         attempt = null;
+        var alignmentStarted = System.Diagnostics.Stopwatch.GetTimestamp();
         if (_disposed)
         {
             status = IdvbStatus.ClientError(
@@ -129,15 +107,44 @@ public sealed partial class MapCvRecognitionService
 
         using (lease)
         {
+            if (_matchScopedResources)
+                _vpsg3Registry.ReleaseIdleDerivedGeometryForOtherMaps(map.Id);
             double? refreshPrior = null;
-            if (!isLowStructure)
-                (knownScaleSeed, refreshPrior) = ResolveVpsgScaleLock(
+            (knownScaleSeed, refreshPrior) = ResolveVpsgScaleLock(
                     frame, map, floorKey, knownScaleSeed);
             var scanFrame = ScanExecutionContext.Current is { IsAutomatic: true } scan ? scan.Frame : null;
             var sharedObservation = ReferenceEquals(scanFrame?.Source, frame.Image) ? scanFrame.Observation : null;
-            using var ownedObservation = sharedObservation is null ? Vpsg3FastLiveExtractor.Extract(frame.Image, frame.ViewportBounds) : null;
-            var observation = sharedObservation ?? ownedObservation!;
+            var observationStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+            // Borrow the frame-owned observation prepared during readiness. The frame
+            // outlives alignment and recovery; only its owner may dispose this data.
+            var observation = sharedObservation ?? frame.GetOrCreateVpsg3Observation();
+            var observationPreparationMs = System.Diagnostics.Stopwatch.GetElapsedTime(observationStarted).TotalMilliseconds;
+            var solverStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+            var preSolverMs = System.Diagnostics.Stopwatch.GetElapsedTime(alignmentStarted, solverStarted).TotalMilliseconds;
             var result = Vpsg3FastBootstrapSolver.TrySolve(observation, lease.Floor, knownScaleSeed: knownScaleSeed);
+            if (requireObservableScale && knownScaleSeed is null && !result.IsAccepted
+                && TrySolveScaleHarmonic(observation, lease.Floor, result.Scale, out var harmonic, out var harmonicCount))
+            {
+                MapLogCollector.Instance.Append(
+                    MapLogCategory.StructureRegistration,
+                    MapLogLevel.Info,
+                    "VPSG3 scale harmonic corrected",
+                    details: new()
+                    {
+                        ["mapId"] = map.Id,
+                        ["floor"] = floorKey,
+                        ["estimatedScale"] = result.Scale,
+                        ["estimateRejection"] = result.FallbackReason,
+                        ["correctedScale"] = harmonic.Scale,
+                        ["confidence"] = harmonic.Confidence,
+                        ["testedHarmonics"] = harmonicCount
+                    });
+                // A harmonic of a coarse pitch estimate is a basin, not a
+                // calibrated scale: leave precision refinement free to move it.
+                result = harmonic;
+            }
+            var solverWallMs = System.Diagnostics.Stopwatch.GetElapsedTime(solverStarted).TotalMilliseconds;
+            var refreshStarted = System.Diagnostics.Stopwatch.GetTimestamp();
             var refreshComparisonMs = 0d;
             var refreshScaleCount = result.TestedScaleHypotheses;
             if (refreshPrior is { } prior
@@ -145,9 +152,9 @@ public sealed partial class MapCvRecognitionService
                 && prior >= Vpsg3TuningConfig.Default.MinSupportedScale
                 && prior <= Vpsg3TuningConfig.Default.MaxSupportedScale)
             {
-                var fresh = result;
+                var baseline = result;
                 var comparison = CompareVpsg3ScaleRefresh(
-                    observation, lease.Floor, fresh, prior);
+                    observation, lease.Floor, baseline, prior);
                 result = comparison.Selected;
                 knownScaleSeed = comparison.SelectedPriorHypothesis
                     ? result.Scale : null;
@@ -156,7 +163,7 @@ public sealed partial class MapCvRecognitionService
                 MapLogCollector.Instance.Append(
                     MapLogCategory.StructureRegistration,
                     MapLogLevel.Info,
-                    "VPSG3 scale refresh compared on same frame",
+                    "VPSG3 floor scale checked against observed color residuals",
                     details: new()
                     {
                         ["mapId"] = map.Id,
@@ -164,9 +171,7 @@ public sealed partial class MapCvRecognitionService
                         ["priorScale"] = prior,
                         ["priorAccepted"] = comparison.Baseline?.IsAccepted,
                         ["priorConfidence"] = comparison.Baseline?.Confidence,
-                        ["freshAccepted"] = fresh.IsAccepted,
-                        ["freshScale"] = fresh.Scale,
-                        ["freshConfidence"] = fresh.Confidence,
+                        ["reestimated"] = refreshScaleCount > baseline.TestedScaleHypotheses,
                         ["bestPriorScale"] = comparison.BestPrior?.Scale,
                         ["bestPriorConfidence"] = comparison.BestPrior?.Confidence,
                         ["selectedScale"] = result.Scale,
@@ -174,58 +179,24 @@ public sealed partial class MapCvRecognitionService
                         ["testedScaleCount"] = refreshScaleCount
                     });
             }
-            else if (!isLowStructure && knownScaleSeed.HasValue
-                && result.IsAccepted
-                && result.Confidence < 0.75d)
-            {
-                // A wrong scale can still pass the permissive sparse gate and
-                // otherwise remain locked after all coverage milestones end.
-                // Recheck weak steady fits against an independent floor solve.
-                var lockedResult = result;
-                var fresh = Vpsg3FastBootstrapSolver.TrySolve(observation, lease.Floor);
-                refreshComparisonMs = Math.Max(0d,
-                    fresh.Timing.TotalMs - observation.ExtractionMilliseconds);
-                refreshScaleCount = lockedResult.TestedScaleHypotheses
-                    + fresh.TestedScaleHypotheses;
-                if (fresh.IsAccepted
-                    && fresh.Confidence >= lockedResult.Confidence + 0.05d
-                    && Math.Abs(fresh.Scale - knownScaleSeed.Value) / knownScaleSeed.Value > 0.005d)
-                {
-                    result = fresh;
-                    knownScaleSeed = null;
-                    refreshComparisonMs += lockedResult.Timing.TotalMs - fresh.Timing.TotalMs;
-                }
-                MapLogCollector.Instance.Append(
-                    MapLogCategory.StructureRegistration,
-                    MapLogLevel.Info,
-                    "VPSG3 weak steady scale rechecked",
-                    details: new()
-                    {
-                        ["mapId"] = map.Id,
-                        ["floor"] = floorKey,
-                        ["lockedScale"] = lockedResult.Scale,
-                        ["lockedConfidence"] = lockedResult.Confidence,
-                        ["freshScale"] = fresh.Scale,
-                        ["freshConfidence"] = fresh.Confidence,
-                        ["freshAccepted"] = fresh.IsAccepted,
-                        ["selectedScale"] = result.Scale
-                    });
-            }
+            var scaleRefreshWallMs = System.Diagnostics.Stopwatch.GetElapsedTime(refreshStarted).TotalMilliseconds;
+            var voteDiagnosticStarted = System.Diagnostics.Stopwatch.GetTimestamp();
             var score = Vpsg3LocalRefiner.CountHits(observation.SparseEdgePoints, lease.Floor, result.Scale, result.OffsetX, result.OffsetY, frame.ViewportBounds);
             var sampling = observation.GetSparseSamplingDiagnostics();
             MapLogCollector.Instance.Append(MapLogCategory.StructureRegistration, result.IsAccepted ? MapLogLevel.Info : MapLogLevel.Warning, "VPSG3VoteDiagnostics", details: new() { ["mapId"] = map.Id, ["floor"] = floorKey, ["totalEdgePoints"] = sampling.TotalEdgePoints, ["requestedSparsePoints"] = sampling.RequestedSparsePoints, ["actualSparsePoints"] = sampling.ActualSparsePoints, ["samplingStep"] = sampling.SamplingStep, ["sparsePointHash"] = sampling.SparsePointHash, ["quadrantPointCounts"] = new[] { sampling.TopLeftCount, sampling.TopRightCount, sampling.BottomLeftCount, sampling.BottomRightCount }, ["sparsePointCount"] = score.PointCount, ["hitsK5"] = score.HitsK5, ["hitsK3"] = score.HitsK3, ["weightedNumerator"] = score.HitsK5 + 2 * score.HitsK3, ["weightedDenominator"] = 3 * score.PointCount, ["weightedScore"] = result.Confidence, ["minimumVerificationScore"] = Vpsg3TuningConfig.Default.MinVerificationScore, ["scoreUnitsBelowThreshold"] = Math.Max(0, (int)Math.Ceiling(Vpsg3TuningConfig.Default.MinVerificationScore * 3 * score.PointCount) - (score.HitsK5 + 2 * score.HitsK3)) });
 
+            var diagnosticTiming = default(Vpsg3DiagnosticTiming);
             if (MapDiagnosticModeCapture.IsActive)
             {
                 try
                 {
                     var refPath = _repository.GetPrebuiltStructureLinePath(map, floorKey);
-                    Vpsg3DiagnosticCapture.CaptureIfActive(
+                    diagnosticTiming = Vpsg3DiagnosticCapture.CaptureIfActive(
                         MapDiagnosticModeCapture.CurrentMapOpenId,
                         observation,
                         refPath,
                         result,
-                        tag: "vpsg3-live");
+                        tag: "vpsg3-live", preparedFloor: lease.Floor);
                 }
                 catch (Exception diagEx)
                 {
@@ -237,6 +208,7 @@ public sealed partial class MapCvRecognitionService
                 }
             }
 
+            var voteDiagnosticWallMs = System.Diagnostics.Stopwatch.GetElapsedTime(voteDiagnosticStarted).TotalMilliseconds;
             if (!result.IsAccepted)
             {
                 var subCode = result.FallbackReason?.Contains("ApertureMargin", StringComparison.OrdinalIgnoreCase) == true
@@ -267,12 +239,37 @@ public sealed partial class MapCvRecognitionService
                 return false;
             }
 
+            if (requireObservableScale && !IsVpsg3ScaleObservable(observation, lease.Floor, result))
+            {
+                status = IdvbStatus.Fallback(
+                    IdvbHttpCode.Vpsg3FallbackToLegacy,
+                    IdvbSubCode.Vpsg3FallbackNotConverged,
+                    Vpsg3ScaleUnobservableReason,
+                    "VPSG 3.0 快速对齐未接受 · 可见结构不足以确定本楼层尺度",
+                    technicalDetail: $"map={map.SequenceNumber}#{floorKey}, scale={result.Scale:F5}, conf={result.Confidence:F3}",
+                    stage: "Vpsg3.ScaleObservability");
+                MapLogCollector.Instance.AppendStatus(
+                    status,
+                    MapLogCategory.StructureRegistration,
+                    elapsedMs: System.Diagnostics.Stopwatch.GetElapsedTime(alignmentStarted).TotalMilliseconds,
+                    details: new()
+                    {
+                        ["mapId"] = map.Id,
+                        ["floor"] = floorKey,
+                        ["scale"] = result.Scale,
+                        ["confidence"] = result.Confidence,
+                        ["probeStep"] = ScaleObservabilityStep
+                    });
+                return false;
+            }
+
             var finalScale = result.Scale;
             var finalX = result.OffsetX;
             var finalY = result.OffsetY;
             var refineTime = result.Timing.RefineMs;
 
-            if (lease.Floor.PrecisionDistance.IsEmpty)
+            var precisionStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+            if (!lease.Floor.HasPrecisionDistance)
             {
                 var floorDef = map.Floors.FirstOrDefault(f => string.Equals(f.Key, floorKey, StringComparison.OrdinalIgnoreCase));
                 if (floorDef is not null && TryGetEligiblePrebuiltPath(map, floorDef, out var prebuiltPath) && prebuiltPath is not null)
@@ -282,7 +279,7 @@ public sealed partial class MapCvRecognitionService
             }
 
             Vpsg3PrecisionResult? precision = null;
-            if (!lease.Floor.PrecisionDistance.IsEmpty)
+            if (lease.Floor.HasPrecisionDistance)
             {
                 TrackActivePrecisionFloor(lease.Floor);
                 var precisionBudget = Vpsg3PrecisionBudget.Start();
@@ -298,6 +295,23 @@ public sealed partial class MapCvRecognitionService
                 }
             }
 
+            var precisionWallMs = System.Diagnostics.Stopwatch.GetElapsedTime(precisionStarted).TotalMilliseconds;
+            var semanticStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+            if (lease.Floor.SemanticIndex is { } semanticIndex)
+            {
+                var semantic = semanticIndex.VerifyObservation(observation,
+                    finalScale, finalX, finalY, observation.ViewportBounds);
+                if (!semantic.Accepted)
+                {
+                    status = IdvbStatus.Fallback(IdvbHttpCode.Vpsg3FallbackToLegacy,
+                        IdvbSubCode.Vpsg3FallbackNotConverged, "SemanticContourRejected", semantic.Reason,
+                        stage: "Vpsg3.SemanticContours");
+                    return false;
+                }
+            }
+
+            var semanticWallMs = System.Diagnostics.Stopwatch.GetElapsedTime(semanticStarted).TotalMilliseconds;
+            var resultBuildStarted = System.Diagnostics.Stopwatch.GetTimestamp();
             var transform = MapCanonicalTransformMath.BuildOverlayTransform(
                 finalScale,
                 finalScale,
@@ -309,7 +323,9 @@ public sealed partial class MapCvRecognitionService
                 orientationDegrees: MapFloorRules.GetFloorProfile(map, floorKey)?.OrientationDegrees ?? 0,
                 alignmentMode: MapOverlayAlignmentMode.Uniform);
 
+            var forwardStarted = System.Diagnostics.Stopwatch.GetTimestamp();
             var forwardMean = Vpsg3PrecisionRefiner.MeasureForwardMean(observation, lease.Floor, finalScale, finalX, finalY);
+            var forwardMeanMs = System.Diagnostics.Stopwatch.GetElapsedTime(forwardStarted).TotalMilliseconds;
             var chamferEstimate = forwardMean ?? double.PositiveInfinity;
 
             var coverage = (double)result.BestCandidate.Spatial.HitPoints / Math.Max(1, result.BestCandidate.Spatial.TotalValidPoints);
@@ -375,12 +391,14 @@ public sealed partial class MapCvRecognitionService
                 structureResult,
                 identityPriorConfidence);
 
+            var resultBuildWallMs = System.Diagnostics.Stopwatch.GetElapsedTime(resultBuildStarted).TotalMilliseconds - forwardMeanMs;
             var coverageTimer = System.Diagnostics.Stopwatch.StartNew();
             MeasureAlignmentCoverage(frame, recognition, observation);
             coverageTimer.Stop();
 
-            var totalTime = result.Timing.TotalMs + refreshComparisonMs
-                + (refineTime - result.Timing.RefineMs) + coverageTimer.Elapsed.TotalMilliseconds;
+            // Wall time includes semantic checks, lazy index work and diagnostics.
+            // Extraction may precede this call and must not be charged again.
+            var totalTime = System.Diagnostics.Stopwatch.GetElapsedTime(alignmentStarted).TotalMilliseconds;
             var diagnostics = MapCvRecognitionDiagnostics.CreateDiagnostics(ReadyMapCount, TotalMapCount);
             diagnostics.ScaleBootstrapAttempted = true;
             diagnostics.ScaleBootstrapSucceeded = true;
@@ -448,20 +466,34 @@ public sealed partial class MapCvRecognitionService
                     ["margin"] = result.ApertureMargin,
                     ["partitions"] = result.PassedPartitions,
                     ["extractionMs"] = result.Timing.ExtractionMs,
+                    ["observationSource"] = sharedObservation is null ? "frame-owned" : "scan-owned",
+                    ["observationPreparationMs"] = observationPreparationMs,
+                    ["scaleRefreshAdditionalMs"] = refreshComparisonMs,
                     ["scaleMs"] = result.Timing.ScaleMs,
                     ["scaleLockUsed"] = knownScaleSeed.HasValue,
                     ["coverageMs"] = coverageTimer.Elapsed.TotalMilliseconds,
+                    ["forwardMeanMs"] = forwardMeanMs,
+                    ["preSolverMs"] = preSolverMs,
+                    ["solverWallMs"] = solverWallMs,
+                    ["scaleRefreshWallMs"] = scaleRefreshWallMs,
+                    ["voteDiagnosticWallMs"] = voteDiagnosticWallMs,
+                    ["diagnosticInputWriteMs"] = diagnosticTiming.InputWriteMs,
+                    ["diagnosticSemanticWriteMs"] = diagnosticTiming.SemanticWriteMs,
+                    ["diagnosticOverlayMs"] = diagnosticTiming.OverlayMs,
+                    ["diagnosticFitnessWriteMs"] = diagnosticTiming.FitnessWriteMs,
+                    ["precisionWallMs"] = precisionWallMs,
+                    ["semanticWallMs"] = semanticWallMs,
+                    ["resultBuildWallMs"] = resultBuildWallMs,
                     ["translationMs"] = result.Timing.TranslationMs,
                     ["refineMs"] = refineTime,
                     ["verificationMs"] = result.Timing.VerificationMs,
                     ["totalMs"] = totalTime
                 });
 
-            CompleteVpsgScaleRefresh(frame,
-                !refreshPrior.HasValue
-                || Math.Abs(finalScale - refreshPrior.Value) / refreshPrior.Value > 0.005d);
+            CompleteVpsgScaleRefresh(frame, finalScale);
             return true;
         }
     }
+
 
 }

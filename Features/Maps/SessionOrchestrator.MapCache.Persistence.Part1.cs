@@ -132,38 +132,50 @@ public sealed partial class SessionOrchestrator
         MapFeatureCacheKey key,
         bool succeeded)
     {
+        var operationMatch = _matchSession.Snapshot;
         try
         {
-            if (!_mapFeatureCacheRepository.TryGet(key, out var existing)
-                || existing is null)
+            await _mapCacheWriteGate.WaitAsync();
+            try
             {
-                return;
-            }
-            var outcome = MapFeatureCacheRules.RecordValidationOutcome(
-                existing.Scale.Validation,
-                succeeded,
-                DateTimeOffset.UtcNow);
-            if (outcome is null)
-                return; // 成功且无失败历史：快乐路径零写
-
-            var updated = CopyEntryWithValidation(existing, outcome);
-            await UpsertMapCacheAsync(updated);
-            _logCollector.Append(
-                MapLogCategory.StructureRegistration,
-                MapLogLevel.Info,
-                $"缩放缓存验证结果已记录 · map={key.MapId} · "
-                + $"floor={key.FloorKey} · succeeded={succeeded}",
-                details: new()
+                if (!IsCurrentMatchOperation(operationMatch)
+                    || !IsCacheKeyForCurrentLease(key))
+                    return;
+                if (!_mapFeatureCacheRepository.TryGet(key, out var existing)
+                    || existing is null)
                 {
-                    ["mapId"] = key.MapId,
-                    ["floor"] = key.FloorKey,
-                    ["succeeded"] = succeeded,
-                    ["failedValidationCount"] = outcome.FailedValidationCount,
-                    ["successfulValidationCount"] =
-                        outcome.SuccessfulValidationCount,
-                    ["distrusted"] = !MapFeatureCacheRules.IsCacheEntryTrusted(
-                        updated)
-                });
+                    return;
+                }
+                var outcome = MapFeatureCacheRules.RecordValidationOutcome(
+                    existing.Scale.Validation,
+                    succeeded,
+                    DateTimeOffset.UtcNow);
+                if (outcome is null)
+                    return; // 成功且无失败历史：快乐路径零写
+
+                var updated = CopyEntryWithValidation(existing, outcome);
+                await _mapFeatureCacheRepository.UpsertAsync(updated);
+                _logCollector.Append(
+                    MapLogCategory.StructureRegistration,
+                    MapLogLevel.Info,
+                    $"缩放缓存验证结果已记录 · map={key.MapId} · "
+                    + $"floor={key.FloorKey} · succeeded={succeeded}",
+                    details: new()
+                    {
+                        ["mapId"] = key.MapId,
+                        ["floor"] = key.FloorKey,
+                        ["succeeded"] = succeeded,
+                        ["failedValidationCount"] = outcome.FailedValidationCount,
+                        ["successfulValidationCount"] =
+                            outcome.SuccessfulValidationCount,
+                        ["distrusted"] = !MapFeatureCacheRules.IsCacheEntryTrusted(
+                            updated)
+                    });
+            }
+            finally
+            {
+                _mapCacheWriteGate.Release();
+            }
         }
         catch (Exception ex)
         {

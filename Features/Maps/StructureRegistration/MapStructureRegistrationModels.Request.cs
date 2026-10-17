@@ -12,9 +12,12 @@ public sealed class MapStructureRegistrationRequest
 {
     private MapScaleSearchPolicy _scaleSearchPolicy;
 
-    public Mat ReferenceImage { get; init; } = new();
+    // Requests borrow all pixels; they never allocate or own placeholder Mats.
+    // PreparedReference permits an omitted reference raster. LiveRoi is required
+    // by the registrar and an unset input retains the InvalidInput result.
+    public Mat? ReferenceImage { get; init; }
     public MapAlignmentChannel Channel { get; init; } = MapAlignmentChannel.Standard;
-    public Mat LiveRoi { get; init; } = new();
+    public Mat LiveRoi { get; init; } = null!;
     public Mat? OriginalLiveRoi { get; init; }
     public double PhysicalPixelsPerLivePixel { get; init; } = 1d;
     /// <summary>

@@ -14,7 +14,8 @@ public static partial class OutputLog
 
     private readonly record struct CaptureContext(
         int ClientWidth, int ClientHeight,
-        int RegionWidth, int RegionHeight, IntPtr Monitor);
+        int RegionWidth, int RegionHeight, IntPtr Monitor,
+        int RegionX, int RegionY, string? RegionSource);
 
     /// <summary>Uses the running application's compiled versions and effective safe mode.</summary>
     public static void ConfigureApplication(string product, string build, bool safeMode)
@@ -56,7 +57,7 @@ public static partial class OutputLog
     /// <summary>Records the pixel dimensions resolved by the actual viewport crop rules.</summary>
     public static void UpdateCaptureContext(
         int clientWidth, int clientHeight, int regionWidth, int regionHeight,
-        IntPtr windowHandle)
+        IntPtr windowHandle, int regionX = 0, int regionY = 0, string? regionSource = null)
     {
         if (writer is null)
             return;
@@ -67,7 +68,8 @@ public static partial class OutputLog
             var resolution = ReadDeviceResolution(monitor);
             lock (Gate)
             {
-                var next = new CaptureContext(clientWidth, clientHeight, regionWidth, regionHeight, monitor);
+                var next = new CaptureContext(clientWidth, clientHeight, regionWidth, regionHeight, monitor,
+                    regionX, regionY, regionSource);
                 if (next == captureContext && resolution == deviceResolution)
                     return;
                 captureContext = next;
@@ -109,6 +111,9 @@ public static partial class OutputLog
                 ["clientHeight"] = captureContext?.ClientHeight,
                 ["recognitionRegionWidth"] = captureContext?.RegionWidth,
                 ["recognitionRegionHeight"] = captureContext?.RegionHeight,
+                ["recognitionRegionX"] = captureContext?.RegionX,
+                ["recognitionRegionY"] = captureContext?.RegionY,
+                ["recognitionRegionSource"] = captureContext?.RegionSource,
                 ["recognitionRegionState"] = captureContext is not null ? "resolved"
                     : applicationSafeMode == true ? "disabled-by-safe-mode" : "awaiting-game-window",
                 ["scanLogFile"] = scanLogPath is null ? "none" : Path.GetFileName(scanLogPath),

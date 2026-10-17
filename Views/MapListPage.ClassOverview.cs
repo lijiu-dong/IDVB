@@ -49,11 +49,11 @@ public sealed partial class MapListPage
         SetClassEditBusy(true);
         try
         {
-            var exported = await Task.Run(() => MapClassOverviewExporter.Export(
+            var exported = await RunMapOperationAsync("正在导出全览……", () => Task.Run(() => MapClassOverviewExporter.Export(
                 directory,
                 maps,
-                _repository.GetFloorImagePath,
-                map => colors.TryGetValue(map.Id, out var color) ? color : null));
+                _repository.GetFloorAppearanceImagePath,
+                map => colors.TryGetValue(map.Id, out var color) ? color : null)));
             await ShowMessageAsync("全览图导出完成",
                 $"已导出 {exported.Count} 张楼层全览图：\n{directory}");
         }

@@ -42,7 +42,9 @@ internal sealed record MapOverlayRenderAnnotation(
     bool? IsItalic = null,
     bool? IsStrikethrough = null,
     NormalizedRectangle? SourceRegion = null,
-    IReadOnlyList<NormalizedPoint>? FreeCropPoints = null)
+    IReadOnlyList<NormalizedPoint>? FreeCropPoints = null,
+    IReadOnlyList<NormalizedPoint>? RoutePoints = null,
+    bool IsMarker = false)
 {
     internal static MapOverlayRenderAnnotation[] FromProfile(FloorRecognitionProfile profile, FloorDefinition? floor)
     {
@@ -67,7 +69,8 @@ internal sealed record MapOverlayRenderAnnotation(
         }
         return profile.Annotations.Where(a => a.IsValid).Select(a => new MapOverlayRenderAnnotation(
             a.Type, a.ColorIndex, a.EffectiveColorHex, a.Bounds?.Clone(), a.Start?.Clone(), a.End?.Clone(),
-            a.Text, a.FontFamily, a.FontSize, a.IsBold, a.IsItalic, a.IsStrikethrough, region, points)).ToArray();
+            a.Text, a.FontFamily, a.FontSize, a.IsBold, a.IsItalic, a.IsStrikethrough, region, points,
+            a.Type == MapAnnotationType.Route ? a.Points.Select(point => point.Clone()).ToArray() : null, a.IsMarker)).ToArray();
     }
 }
 
@@ -82,7 +85,8 @@ internal sealed record MapOverlayRenderMap(
     IReadOnlyList<MapOverlayRenderAnnotation>? Annotations = null,
     string? FloorLabel = null,
     bool SupportsVectorRoutes = true,
-    int RouteLineThickness = 1);
+    int RouteLineThickness = 1,
+    float RouteOpacity = 1f);
 
 internal sealed record MapOverlayRenderPlayer(
     PlayerSlot PlayerSlot,
@@ -139,7 +143,8 @@ internal static partial class MapOverlayBitmapRenderer
     private sealed record MapLayerCacheEntry(
         int Width,
         int Height,
-        Bitmap Bitmap);
+        Bitmap Bitmap,
+        Rectangle? SourceRegion = null);
 
     private const float DefaultDpi = 96f;
     private const float MiniMapOpacity = 0.55f;
@@ -164,8 +169,10 @@ internal static partial class MapOverlayBitmapRenderer
         lock (ImageCacheLock)
         {
             foreach (var image in ImageCache.Values)
-                image.Dispose();
+                DisposeCachedBitmap(image);
             ImageCache.Clear();
+            SourceImageVersions.Clear();
+            SourceImageRecency.Clear();
             InvalidateLayerCachesCore();
         }
     }
@@ -185,13 +192,13 @@ internal static partial class MapOverlayBitmapRenderer
     private static void InvalidateLayerCachesCore()
     {
         foreach (var entry in ScaledImageCache.Values)
-            entry.Bitmap.Dispose();
+            DisposeCachedBitmap(entry.Bitmap);
         ScaledImageCache.Clear();
         foreach (var entry in MapLayerCache.Values)
-            entry.Bitmap.Dispose();
+            DisposeCachedBitmap(entry.Bitmap);
         MapLayerCache.Clear();
         foreach (var entry in MiniMapLayerCache.Values)
-            entry.Bitmap.Dispose();
+            DisposeCachedBitmap(entry.Bitmap);
         MiniMapLayerCache.Clear();
     }
 
@@ -202,7 +209,7 @@ internal static partial class MapOverlayBitmapRenderer
             var firstKey = cache.Keys.First();
             if (cache.Remove(firstKey, out var entry))
             {
-                entry.Bitmap.Dispose();
+                DisposeCachedBitmap(entry.Bitmap);
             }
         }
     }
@@ -214,7 +221,7 @@ internal static partial class MapOverlayBitmapRenderer
             var firstKey = ScaledImageCache.Keys.First();
             if (ScaledImageCache.Remove(firstKey, out var entry))
             {
-                entry.Bitmap.Dispose();
+                DisposeCachedBitmap(entry.Bitmap);
             }
         }
     }
@@ -287,7 +294,7 @@ internal static partial class MapOverlayBitmapRenderer
 
         try
         {
-            using var source = new Bitmap(imagePath);
+            var source = MapImageDimensions.Read(imagePath);
             var scaledWidth = source.Width * scale;
             var scaledHeight = source.Height * scale;
             if (source.Width <= 0
@@ -306,7 +313,8 @@ internal static partial class MapOverlayBitmapRenderer
             height = (float)scaledHeight;
             return true;
         }
-        catch (ArgumentException)
+        catch (Exception exception) when (exception is ArgumentException
+            or ExternalException or InvalidDataException)
         {
             return false;
         }
@@ -437,17 +445,40 @@ internal static partial class MapOverlayBitmapRenderer
     {
         lock (ImageCacheLock)
         {
+            EnsureImageCacheSourceVersionCore(imagePath);
             if (ImageCache.TryGetValue(imagePath, out var cached) && cached is not null)
                 return cached;
+            var sourceVersion = ReadSourceImageVersion(imagePath);
             var bytes = File.ReadAllBytes(imagePath);
-            using var stream = new MemoryStream(bytes, writable: false);
-            var loaded = new Bitmap(stream);
-            if (!ImageCache.TryAdd(imagePath, loaded))
+            IDVBuff.Core.Diagnostics.MemoryJournal.ObserveManagedArray(bytes, "Overlay.SourceImage.EncodedBytes");
+            // GDI+ can read the encoded source again while its Bitmap is alive.
+            // The cache owns both; release the stream after disposing its bitmap.
+            var request = IDVBuff.Core.Diagnostics.MemoryJournal.Request("Overlay.SourceImage", nativeModule: "gdiplus.dll");
+            var stream = new MemoryStream(bytes, writable: false);
+            Bitmap loaded;
+            try { loaded = new Bitmap(stream); }
+            catch { stream.Dispose(); throw; }
+            try
             {
-                loaded.Dispose();
-                return ImageCache[imagePath];
+                SourceImageStreams.Add(loaded, stream);
+                IDVBuff.Core.Diagnostics.MemoryJournal.TrackResource(stream, "Overlay.SourceImage.Stream", 0);
+                IDVBuff.Core.Diagnostics.MemoryJournal.TrackResource(loaded, "Overlay.SourceImage", checked((long)loaded.Width * loaded.Height * 4), "gdiplus.dll", request);
+                TrimSourceImageCacheCore(MaxSourceCacheEntries - 1);
+                if (!ImageCache.TryAdd(imagePath, loaded))
+                {
+                    DisposeCachedBitmap(loaded);
+                    return ImageCache[imagePath];
+                }
+                SourceImageVersions[imagePath] = sourceVersion;
+                SourceImageRecency.AddLast(imagePath);
+                return loaded;
             }
-            return loaded;
+            catch
+            {
+                try { DisposeCachedBitmap(loaded); }
+                finally { stream.Dispose(); }
+                throw;
+            }
         }
     }
 }

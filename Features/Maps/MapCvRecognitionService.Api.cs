@@ -11,7 +11,7 @@ public sealed partial class MapCvRecognitionService
         using var execution = ScanExecutionContext.Enter(mode, cancellationToken, startedTimestamp: startedTimestamp);
         execution.CatalogRevision = CatalogRevision;
         execution.VariantGroups = ScanVariantGroups;
-        var scan = RunSideEntranceScan(frame, new MapRecognitionTuning(), mapClass: mapClass);
+        using var scan = RunSideEntranceScan(frame, new MapRecognitionTuning(), mapClass: mapClass);
         var verified = new Dictionary<Guid, RuntimeMapRecognition>();
         var verifiedIndexes = new Dictionary<Guid, ScanStructureIndex>();
         if (execution.Frame is { } observation)
@@ -32,6 +32,8 @@ public sealed partial class MapCvRecognitionService
                     .ThenByDescending(item => item.State == ScanIdentityState.Unverified)
                     .ThenBy(ScanIdentityVerifier.FitCost).First();
             }
+            // Formal alignment has its own deadline, started only if comparison finished in time.
+            execution.BeginAlignmentPhase();
             foreach (var candidate in scan.Candidates.OrderBy(c => ScanIdentityVerifier.FitCost(c.IdentityEvidence)))
             {
                 if (execution.VariantGroups.Any(group => group.Contains(candidate.Map.Id)

@@ -7,6 +7,7 @@
         <Deploy />
     </Project>
     <Project Path="Core\IDVBuff.Core.csproj" />
+    <Project Path="IDVB.ScanRaster\IDVB.ScanRaster.csproj" />
     <Project Path="IDVB.Vision.Contracts\IDVB.Vision.Contracts.csproj" />
     <Project Path="IDVB.Vision\IDVB.Vision.csproj" />
     <Project Path="IDVB.Vision.Tests\IDVB.Vision.Tests.csproj" />

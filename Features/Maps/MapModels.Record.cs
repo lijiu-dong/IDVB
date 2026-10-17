@@ -71,14 +71,12 @@ public sealed class MapBackgroundLayer
         if (!Enum.IsDefined(Shape))
             Shape = MapBackgroundLayerShape.Circle;
         BrushSizePixels = Math.Clamp(BrushSizePixels <= 0 ? 64 : BrushSizePixels, 1, 1024);
-        Points = (Points ?? [])
-            .Where(point => point is not null && point.IsValid)
-            .Select(point => new NormalizedPoint
-            {
-                X = Math.Clamp(point.X, 0d, 1d),
-                Y = Math.Clamp(point.Y, 0d, 1d)
-            })
-            .ToList();
+        // Normalization owns this list already. Valid points are within [0,1],
+        // so cloning/clamping every stroke on each catalog read changes no data
+        // and repeatedly allocates the whole drawing. Clone() remains the
+        // independent editing/snapshot boundary.
+        Points ??= [];
+        Points.RemoveAll(static point => point is null || !point.IsValid);
     }
 }
 
@@ -247,6 +245,8 @@ public static class MapFloorRules
 
 public sealed partial class MapRecord
 {
+    /// <summary>Protects the prepared base-map elements on co-creation maps and their local copies.</summary>
+    public bool IsCoCreationTemplate { get; set; }
     public Guid Id { get; set; }
     public int SequenceNumber { get; set; }
     public string FloorOneFileName { get; set; } = string.Empty;
@@ -383,78 +383,12 @@ public sealed partial class MapRecord
         Tags ??= [];
     }
 
-    public MapRecord Clone()
-    {
-        NormalizeRecognition();
-        return new MapRecord
-        {
-            Id = Id,
-            SequenceNumber = SequenceNumber,
-            FloorOneFileName = FloorOneFileName,
-            FloorTwoFileName = FloorTwoFileName,
-            Recognition = Recognition.Clone(),
-            Source = Source,
-            AcquisitionKind = AcquisitionKind,
-            SubscriptionId = SubscriptionId,
-            SubscriptionPublisherHandle = SubscriptionPublisherHandle,
-            SubscriptionPublisherIsOfficial = SubscriptionPublisherIsOfficial,
-            SubscriptionPublisherIsBuilder = SubscriptionPublisherIsBuilder,
-            SubscriptionPublisherKeyId = SubscriptionPublisherKeyId,
-            SubscriptionVersion = SubscriptionVersion,
-            SourceProjectId = SourceProjectId,
-            SourceProjectRevision = SourceProjectRevision,
-            SourceVisualSha256 = SourceVisualSha256,
-            SourceStructureSha256 = SourceStructureSha256,
-            Title = Title,
-            ContentVersion = ContentVersion,
-            PortableGates = PortableGates.Select(gate => gate.Clone()).ToList(),
-            Tags = new Dictionary<Guid, string>(Tags),
-            MainEntrance = MainEntrance?.Clone(),
-            SideEntrance = SideEntrance?.Clone(),
-            Class = Class,
-            ClassProperties = ClassProperties.Clone(),
-            Floors = Floors.Select(f => new FloorDefinition
-            {
-                Key = f.Key,
-                DisplayName = f.DisplayName,
-                SortOrder = f.SortOrder,
-                MarkerKeys = MapFloorMarkerRules.Normalize(f.MarkerKeys).ToList(),
-                ImageFileName = f.ImageFileName,
-                ImageSha256 = f.ImageSha256,
-                ImageWidth = f.ImageWidth,
-                ImageHeight = f.ImageHeight,
-                ImageFileLength = f.ImageFileLength,
-                ImageLastWriteUtcTicks = f.ImageLastWriteUtcTicks,
-                RecognitionFileName = f.RecognitionFileName,
-                RecognitionSha256 = f.RecognitionSha256,
-                RecognitionSourceSha256 = f.RecognitionSourceSha256,
-                RecognitionWidth = f.RecognitionWidth,
-                RecognitionHeight = f.RecognitionHeight,
-                RecognitionFileLength = f.RecognitionFileLength,
-                RecognitionLastWriteUtcTicks = f.RecognitionLastWriteUtcTicks,
-                OverlayFileName = f.OverlayFileName,
-                OverlaySha256 = f.OverlaySha256,
-                OverlaySourceSha256 = f.OverlaySourceSha256,
-                OverlayWidth = f.OverlayWidth,
-                OverlayHeight = f.OverlayHeight,
-                OverlayFileLength = f.OverlayFileLength,
-                OverlayLastWriteUtcTicks = f.OverlayLastWriteUtcTicks,
-                ThumbnailFileName = f.ThumbnailFileName,
-                ThumbnailSha256 = f.ThumbnailSha256,
-                ThumbnailWidth = f.ThumbnailWidth,
-                ThumbnailHeight = f.ThumbnailHeight,
-                ThumbnailFileLength = f.ThumbnailFileLength,
-                ThumbnailLastWriteUtcTicks = f.ThumbnailLastWriteUtcTicks,
-                PrebuiltStructureLine = f.PrebuiltStructureLine?.Clone()
-            }).ToList(),
-            CreatedAt = CreatedAt,
-            UpdatedAt = UpdatedAt
-        };
-    }
+
 }
 
 public sealed partial class MapDraft
 {
+    public bool IsCoCreationTemplate { get; set; }
     public Guid? Id { get; set; }
     public string? FloorOnePath { get; set; }
     public string? FloorTwoPath { get; set; }

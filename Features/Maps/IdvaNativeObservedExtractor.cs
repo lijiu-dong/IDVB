@@ -1,5 +1,6 @@
 using OpenCvSharp;
 using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text.Json;
 
@@ -17,10 +18,11 @@ public sealed class IdvaNativeObservedExtractor
         "BA418F4571B287CE21C36F5793DFFD5EAFBCDB23B73EF65087440B3ABF530246";
     private static readonly Lazy<bool> Definition = new(ValidateDefinition);
 
-    public sealed record Result(Mat ObservedEdges, Mat ValidMask) : IDisposable
+    public sealed record Result(Mat ObservedEdges, Mat ValidMask, Mat? SemanticLabels = null) : IDisposable
     {
         public void Dispose()
         {
+            SemanticLabels?.Dispose();
             ObservedEdges.Dispose();
             ValidMask.Dispose();
         }
@@ -32,6 +34,8 @@ public sealed class IdvaNativeObservedExtractor
         ArgumentNullException.ThrowIfNull(source);
         if (source.Empty())
             throw new InvalidDataException("IDVA 实时输入图像不能为空。");
+        using var operation = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation(
+            "IDVA.NativeObserved.Extract", $"{source.Width}x{source.Height}");
 
         using var bgr = new Mat();
         switch (source.Channels())
@@ -99,7 +103,7 @@ public sealed class IdvaNativeObservedExtractor
                 Cv2.BitwiseNot(invalid, validMask);
                 validMask.SetTo(Scalar.White, observedEdges);
 
-                return new Result(observedEdges, validMask);
+                return new Result(observedEdges, validMask, SemanticStructureContours.LabelLive(observedEdges, room, corridor));
             }
         }
     }
@@ -349,7 +353,9 @@ public sealed class IdvaNativeObservedExtractor
             return Mat.Zeros(mask.Size(), MatType.CV_8UC1).ToMat();
 
         var keep = new bool[n];
-        var border = Math.Max(1, (int)Math.Round(Math.Min(mask.Width, mask.Height) * 0.02d));
+        var width = mask.Width;
+        var height = mask.Height;
+        var border = Math.Max(1, (int)Math.Round(Math.Min(width, height) * 0.02d));
         for (var i = 1; i < n; i++)
         {
             keep[i] = stats.At<int>(i, (int)ConnectedComponentsTypes.Area) >= minArea;
@@ -358,26 +364,35 @@ public sealed class IdvaNativeObservedExtractor
                 var left = stats.At<int>(i, (int)ConnectedComponentsTypes.Left);
                 var top = stats.At<int>(i, (int)ConnectedComponentsTypes.Top);
                 keep[i] &= left >= border && top >= border
-                    && left + stats.At<int>(i, (int)ConnectedComponentsTypes.Width) <= mask.Width - border
-                    && top + stats.At<int>(i, (int)ConnectedComponentsTypes.Height) <= mask.Height - border;
+                    && left + stats.At<int>(i, (int)ConnectedComponentsTypes.Width) <= width - border
+                    && top + stats.At<int>(i, (int)ConnectedComponentsTypes.Height) <= height - border;
             }
         }
 
-        var total = mask.Width * mask.Height;
-        var labelArray = new int[total];
-        Marshal.Copy(labels.Data, labelArray, 0, total);
-
         var output = Mat.Zeros(mask.Size(), MatType.CV_8UC1).ToMat();
-        var outputArray = new byte[total];
-        for (var i = 0; i < total; i++)
+        try
         {
-            var label = labelArray[i];
-            if (label > 0 && keep[label])
-                outputArray[i] = 255;
+            // ConnectedComponents already owns this complete native label
+            // plane. Read each row directly and write the final output rather
+            // than duplicating both planes into temporary managed arrays.
+            for (var y = 0; y < height; y++)
+            {
+                var row = MemoryMarshal.CreateReadOnlySpan(ref labels.At<int>(y, 0), width);
+                var target = MemoryMarshal.CreateSpan(ref output.At<byte>(y, 0), width);
+                ref var labelRow = ref MemoryMarshal.GetReference(row);
+                ref var targetRow = ref MemoryMarshal.GetReference(target);
+                for (var x = 0; x < row.Length; x++)
+                {
+                    // x is bounded by this complete native row. Hoist its
+                    // references so Debug builds do not call span accessors
+                    // for every pixel; the owner stays alive through the loop.
+                    var label = Unsafe.Add(ref labelRow, x);
+                    if (label > 0 && keep[label]) Unsafe.Add(ref targetRow, x) = 255;
+                }
+            }
+            return output;
         }
-
-        Marshal.Copy(outputArray, 0, output.Data, total);
-        return output;
+        catch { output.Dispose(); throw; }
     }
 
     private static Mat FillSmallHoles(Mat mask, int maxArea)
@@ -393,20 +408,18 @@ public sealed class IdvaNativeObservedExtractor
 
         var h = mask.Height;
         var w = mask.Width;
-        var total = w * h;
-        var labelArray = new int[total];
-        Marshal.Copy(labels.Data, labelArray, 0, total);
-
         var borderLabels = new HashSet<int>();
+        var top = MemoryMarshal.CreateReadOnlySpan(ref labels.At<int>(0, 0), w);
+        var bottom = MemoryMarshal.CreateReadOnlySpan(ref labels.At<int>(h - 1, 0), w);
         for (var x = 0; x < w; x++)
         {
-            borderLabels.Add(labelArray[x]);
-            borderLabels.Add(labelArray[(h - 1) * w + x]);
+            borderLabels.Add(top[x]);
+            borderLabels.Add(bottom[x]);
         }
         for (var y = 0; y < h; y++)
         {
-            borderLabels.Add(labelArray[y * w]);
-            borderLabels.Add(labelArray[y * w + (w - 1)]);
+            borderLabels.Add(labels.At<int>(y, 0));
+            borderLabels.Add(labels.At<int>(y, w - 1));
         }
 
         var fill = new bool[n];
@@ -417,16 +430,22 @@ public sealed class IdvaNativeObservedExtractor
         }
 
         var output = mask.Clone();
-        var outputArray = new byte[total];
-        Marshal.Copy(output.Data, outputArray, 0, total);
-        for (var i = 0; i < total; i++)
+        try
         {
-            var label = labelArray[i];
-            if (label > 0 && fill[label])
-                outputArray[i] = 255;
+            for (var y = 0; y < h; y++)
+            {
+                var row = MemoryMarshal.CreateReadOnlySpan(ref labels.At<int>(y, 0), w);
+                var target = MemoryMarshal.CreateSpan(ref output.At<byte>(y, 0), w);
+                ref var labelRow = ref MemoryMarshal.GetReference(row);
+                ref var targetRow = ref MemoryMarshal.GetReference(target);
+                for (var x = 0; x < w; x++)
+                {
+                    var label = Unsafe.Add(ref labelRow, x);
+                    if (label > 0 && fill[label]) Unsafe.Add(ref targetRow, x) = 255;
+                }
+            }
+            return output;
         }
-
-        Marshal.Copy(outputArray, 0, output.Data, total);
-        return output;
+        catch { output.Dispose(); throw; }
     }
 }

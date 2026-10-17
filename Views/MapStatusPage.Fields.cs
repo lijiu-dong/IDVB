@@ -110,6 +110,8 @@ public sealed partial class MapStatusPage : UserControl
     private readonly ToggleSwitch _showBoxAnnotationsToggle = new() { Visibility = Visibility.Collapsed };
     private readonly ToggleSwitch _showLineAnnotationsToggle = new() { Visibility = Visibility.Collapsed };
     private readonly Slider _mapOpacitySlider = CreatePercentageSlider("大地图不透明度");
+    private readonly Slider _routeOpacitySlider = CreatePercentageSlider("路线透明度");
+    private readonly TextBlock _routeOpacityValue = CreateMutedText();
     private readonly TextBlock _mapOpacityValue = CreateMutedText();
     private readonly ToggleSwitch _showGateMarkersOnMiniMapToggle = new() { Visibility = Visibility.Collapsed };
     private readonly ToggleSwitch _showAuxiliaryAnchorsOnMiniMapToggle = new() { Visibility = Visibility.Collapsed };
@@ -156,6 +158,7 @@ public sealed partial class MapStatusPage : UserControl
     private readonly SliderSaveState _statusOffsetXSave = new();
     private readonly SliderSaveState _statusOffsetYSave = new();
     private readonly SliderSaveState _mapOpacitySave = new();
+    private readonly SliderSaveState _routeOpacitySave = new();
     private readonly SliderSaveState _miniMapOpacitySave = new();
     private readonly SliderSaveState _miniMapOffsetXSave = new();
     private readonly SliderSaveState _miniMapOffsetYSave = new();

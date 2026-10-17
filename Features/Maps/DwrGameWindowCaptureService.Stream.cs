@@ -16,6 +16,9 @@ public sealed partial class DwrGameWindowCaptureService
 
     public void PrepareViewportCapture()
     {
+#if IDVB_DEVELOPMENT_BUILD
+        if (IDVBuff.Lifecycle.BackgroundTestRuntime.Enabled) return;
+#endif
         if (!TryGetForegroundClientBounds(out var bounds, out var window, out _)) return;
         GameFrameStream? previous;
         long version;
@@ -79,6 +82,15 @@ public sealed partial class DwrGameWindowCaptureService
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (!viewport.IsValid || maximumWait <= TimeSpan.Zero) return null;
+#if IDVB_DEVELOPMENT_BUILD
+        if (IDVBuff.Lifecycle.BackgroundTestRuntime.Enabled)
+        {
+            // Render a new OG frame into this process's owned DIB. No cached
+            // screenshot and no capture of another application's desktop.
+            await Task.Delay(1, cancellationToken).ConfigureAwait(false);
+            return TryCaptureViewport(viewport, out var backgroundFrame, out _) ? backgroundFrame : null;
+        }
+#endif
         PrepareViewportCapture();
         GameFrameStream? stream;
         MapScreenRect client;

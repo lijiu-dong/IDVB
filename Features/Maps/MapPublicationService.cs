@@ -73,7 +73,8 @@ public sealed class MapPublicationService
         var plaintextPath = Path.Combine(staging, "payload.idvm");
         try
         {
-            await _packages.ExportAsync(scope, className, plaintextPath, cancellationToken);
+            await MapOperationProgress.RunAsync(0, .85, () => _packages.ExportAsync(scope, className, plaintextPath, cancellationToken));
+            MapOperationProgress.Report(.85, "正在加密地图包……");
             var plaintext = await File.ReadAllBytesAsync(plaintextPath, cancellationToken);
             var plainHash = Convert.ToHexString(SHA256.HashData(plaintext));
             var contentKey = existingContentKey ?? RandomNumberGenerator.GetBytes(32);
@@ -108,7 +109,8 @@ public sealed class MapPublicationService
                 isOfficialPublisher,
                 isBuilderPublisher,
                 packageName.Trim(),
-                IdvmPlatformCompatibility.All);
+                ["windows"]);
+            MapOperationProgress.Report(.95, "正在签署发布清单……");
             var envelope = MapSubscriptionCrypto.Sign(payload, credential.PrivateKeyPem);
             var feedPath = Path.Combine(output, "feed.json");
             var feedTemporary = feedPath + ".tmp";

@@ -12,7 +12,7 @@ public readonly record struct MapCatalogRevision(long LastWriteUtcTicks, long Le
 /// </summary>
 public sealed partial class MapRepository
 {
-    private const int CurrentStorageSchemaVersion = 18;
+    private const int CurrentStorageSchemaVersion = 20;
     private const string FloorOneRecognitionFileName = "floor-1-recognition.png";
     private const string FloorTwoRecognitionFileName = "floor-2-recognition.png";
     private const string FloorOneOverlayFileName = "floor-1-overlay.png";
@@ -20,18 +20,22 @@ public sealed partial class MapRepository
     private static readonly SemaphoreSlim Gate = new(1, 1);
     private static readonly System.Text.Json.JsonSerializerOptions SerializerOptions = new()
     {
-        WriteIndented = true,
+        WriteIndented = false,
         PropertyNameCaseInsensitive = true
     };
 
     private readonly string _rootDirectory;
+    private readonly MapCoCreationTemplateCatalog _fixedTemplates;
     private readonly Lazy<SideEntranceFeaturePreprocessor> _sideEntrancePreprocessor =
         new(() => new SideEntranceFeaturePreprocessor());
-    private MapCatalogRevision _cachedClassesRevision = MapCatalogRevision.Empty;
-    private IReadOnlyList<string> _cachedClasses = [];
+    // Share only small class metadata across the management/runtime repositories.
+    // Every consumer receives a copy; catalog revisions invalidate external edits.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string,
+        (MapCatalogRevision Revision, string[] Classes)> ClassNamesCache = new(StringComparer.OrdinalIgnoreCase);
 
-    public MapRepository(string? rootDirectory = null)
+    public MapRepository(string? rootDirectory = null, string? coCreationTemplateRoot = null)
     {
+        _fixedTemplates = new MapCoCreationTemplateCatalog(coCreationTemplateRoot);
         _rootDirectory = rootDirectory ?? Path.Combine(
             global::IDVBuff.AppDataPaths.RootDirectory,
             "Maps");
@@ -42,104 +46,21 @@ public sealed partial class MapRepository
     private string CatalogPath => Path.Combine(_rootDirectory, "maps.json");
 
 
-    public Task<MapDraft?> CreateDraftAsync(Guid id) => CreateDraftCoreAsync(id);
-
-    private async Task<MapDraft?> CreateDraftCoreAsync(Guid id, bool gateAlreadyHeld = false)
-    {
-        if (!gateAlreadyHeld)
-            await Gate.WaitAsync();
-        try
-        {
-            var catalog = await ReadCatalogAsync();
-            var record = catalog.Maps.SingleOrDefault(map => map.Id == id);
-            if (record is null)
-                return null;
-            // The list path uses file stamps to stay responsive. Editing a
-            // specific map is the point where we perform the full content
-            // verification before exposing its assets to the editor.
-            await VerifyFloorImageBindingsAsync(record);
-
-            var floorPaths = record.Floors.ToDictionary(
-                floor => floor.Key,
-                floor => GetEditableFloorImagePath(record, floor.Key),
-                StringComparer.Ordinal);
-            var floorPreviewPaths = floorPaths.ToDictionary(
-                pair => pair.Key,
-                pair =>
-                {
-                    var previewPath = GetFloorRecognitionPath(record, pair.Key);
-                    return File.Exists(previewPath) ? previewPath : pair.Value;
-                },
-                StringComparer.Ordinal);
-
-            return new MapDraft
-            {
-                Id = record.Id,
-                FloorOnePath = GetFloorOnePath(record),
-                FloorTwoPath = GetFloorTwoPath(record),
-                FloorPaths = floorPaths,
-                FloorPreviewPaths = floorPreviewPaths,
-                FloorRecognitionSourcePaths = string.Equals(record.Source, "survey", StringComparison.Ordinal)
-                    ? record.Floors.ToDictionary(
-                        floor => floor.Key,
-                        floor => GetFloorRecognitionPath(record, floor.Key),
-                        StringComparer.Ordinal)
-                    : [],
-                Floors = record.Floors.Select(f => new FloorDefinition
-                {
-                    Key = f.Key,
-                    DisplayName = f.DisplayName,
-                    SortOrder = f.SortOrder,
-                    MarkerKeys = MapFloorMarkerRules.Normalize(f.MarkerKeys).ToList(),
-                    PrebuiltStructureLine = f.PrebuiltStructureLine?.Clone()
-                }).ToList(),
-                Class = record.Class,
-                ClassProperties = GetClassProperties(catalog, record.Class),
-                Title = record.Title,
-                ContentVersion = record.ContentVersion,
-                Source = record.Source,
-                AcquisitionKind = record.AcquisitionKind,
-                SubscriptionId = record.SubscriptionId,
-                SubscriptionPublisherHandle = record.SubscriptionPublisherHandle,
-                SubscriptionPublisherIsOfficial = record.SubscriptionPublisherIsOfficial,
-                SubscriptionPublisherIsBuilder = record.SubscriptionPublisherIsBuilder,
-                SubscriptionPublisherKeyId = record.SubscriptionPublisherKeyId,
-                SubscriptionVersion = record.SubscriptionVersion,
-                SourceProjectId = record.SourceProjectId,
-                SourceProjectRevision = record.SourceProjectRevision,
-                SourceVisualSha256 = record.SourceVisualSha256,
-                SourceStructureSha256 = record.SourceStructureSha256,
-                PortableGates = record.PortableGates.Select(gate => gate.Clone()).ToList(),
-                Tags = new Dictionary<Guid, string>(record.Tags),
-                Recognition = record.Recognition.Clone(),
-                PrebuiltStructureLinePaths = record.Floors
-                    .Where(floor => floor.PrebuiltStructureLine?.IsComplete is true)
-                    .ToDictionary(
-                        floor => floor.Key,
-                        floor => GetPrebuiltStructureLinePath(record, floor.Key),
-                        StringComparer.Ordinal),
-                PrebuiltStructureAlgorithmPath = record.Floors
-                    .FirstOrDefault(floor => floor.PrebuiltStructureLine?.IsComplete is true)
-                    is { } algorithmFloor
-                        ? GetPrebuiltStructureAlgorithmPath(record, algorithmFloor.Key)
-                        : null
-            };
-        }
-        finally
-        {
-            if (!gateAlreadyHeld)
-                Gate.Release();
-        }
-    }
-
     public Task<MapRecord> SaveAsync(MapDraft draft) =>
         Task.Run(() => SaveCoreAsync(draft));
 
     private async Task<MapRecord> SaveCoreAsync(
         MapDraft draft,
-        bool gateAlreadyHeld = false)
+        bool gateAlreadyHeld = false,
+        ImportCatalogReuse? importCatalog = null)
     {
-        ValidateDraft(draft);
+        using var navigationOperation = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("Repository.SaveNavigation", draft.Id?.ToString());
+        var navigation = draft.LoadNavigationForSave();
+        using var navigationOwnership = navigation is null ? null : IDVBuff.Core.Diagnostics.MemoryJournal.Own("Repository.SaveNavigation");
+        if (navigation is not null) IDVBuff.Core.Diagnostics.MemoryJournal.ObserveManagedObject(navigation, "Repository.SaveNavigation");
+        ValidateDraft(draft, navigation);
+        if (navigation is not null)
+            await MapNavigationRules.ValidateImagesAsync(navigation, draft.FloorPaths);
 
         if (!gateAlreadyHeld)
             await Gate.WaitAsync();
@@ -150,10 +71,21 @@ public sealed partial class MapRepository
         var createdDownsampleOriginals = new List<string>();
         try
         {
-            var catalog = await ReadCatalogAsync();
+            var catalog = await ReadCatalogAsync(importCatalog);
             var existing = draft.Id is { } id ? catalog.Maps.SingleOrDefault(map => map.Id == id) : null;
             if (draft.Id is not null && existing is null && !draft.CreateAsImportedCopy)
                 throw new InvalidOperationException("找不到要编辑的地图。");
+            if (existing?.TemplateOrigin is { } origin && draft.TemplateOrigin != origin)
+                throw new InvalidOperationException("模板基础资源已更新，请重新打开地图后保存；当前草稿未覆盖新版。");
+
+            if (existing?.IsCoCreationTemplate is true)
+            {
+                draft.IsCoCreationTemplate = true;
+                draft.SourceVisualSha256 = existing.SourceVisualSha256;
+                if (await _fixedTemplates.GetFixedStructureAsync(existing.SourceVisualSha256) is null)
+                    BindStoredPortableFixedStructure(draft, existing);
+            }
+            await _fixedTemplates.BindFixedStructureAsync(draft);
 
             var record = existing ?? new MapRecord
             {
@@ -162,6 +94,9 @@ public sealed partial class MapRepository
             };
             isNewRecord = existing is null;
             record.Title = draft.Title?.Trim() ?? string.Empty;
+            record.IsCoCreationTemplate = draft.IsCoCreationTemplate || existing?.IsCoCreationTemplate is true;
+            record.TemplateOrigin = existing?.TemplateOrigin ?? draft.TemplateOrigin;
+            record.AppearancePalette = record.IsCoCreationTemplate ? draft.AppearancePalette?.Normalize() : null;
             record.Source = string.Equals(draft.Source, "survey", StringComparison.Ordinal)
                 ? "survey"
                 : "manual";
@@ -182,6 +117,7 @@ public sealed partial class MapRepository
             record.PortableGates = draft.PortableGates
                 .Select(gate => gate.Clone())
                 .ToList();
+            record.Navigation = navigation;
             record.Tags = (draft.Tags ?? [])
                 .Where(pair => pair.Key != Guid.Empty && !string.IsNullOrWhiteSpace(pair.Value))
                 .ToDictionary(pair => pair.Key, pair => pair.Value.Trim());
@@ -210,6 +146,8 @@ public sealed partial class MapRepository
             record.Class = targetClass;
             var classDownsampleFactor = MapRepository.ClampImageDownsampleFactor(
                 GetClassProperties(catalog, targetClass).ImageDownsampleFactor);
+            if (draft.IsCoCreationTemplate && classDownsampleFactor != 0)
+                throw new InvalidOperationException("共创模板的固定轮廓不支持降采样，请选择未降采样的地图类。");
             if (draft.Floors.Count > 0)
                 record.Floors = draft.Floors
                     .OrderBy(floor => floor.SortOrder)
@@ -224,6 +162,12 @@ public sealed partial class MapRepository
                     })
                     .ToList();
             record.Recognition = draft.Recognition.Clone();
+            if (record.Navigation is not null && MapRouteRules.MapContainsVectorRoutes(record))
+            {
+                var routeProperties = GetClassProperties(catalog, record.Class);
+                routeProperties.ContainsVectorRoutes = true;
+                catalog.ClassProperties[record.Class] = routeProperties;
+            }
             record.NormalizeRecognition();
             ValidateFloorDefinitions(record);
 
@@ -299,10 +243,16 @@ public sealed partial class MapRepository
                 record,
                 stagingDirectory,
                 floorImageFileNames);
+            if (record.Navigation is not null)
+                await MapNavigationRules.RebindGeneratedImagesAsync(record.Navigation,
+                    floorImageFileNames.ToDictionary(pair => pair.Key, pair => Path.Combine(stagingDirectory, pair.Value)));
 
+            MapOperationProgress.Report(.25, "正在生成地图资源……");
+            var processedFloors = 0;
             // Generate and explicitly bind both derived assets for each floor.
             foreach (var (key, fileName) in floorImageFileNames)
             {
+                MapOperationProgress.Report(.25 + .65 * processedFloors++ / Math.Max(1, floorImageFileNames.Count), "正在处理地图楼层……");
                 var sourcePath = Path.Combine(stagingDirectory, fileName);
                 if (!File.Exists(sourcePath)) continue;
                 var floor = record.Floors.Single(candidate => candidate.Key == key);
@@ -311,6 +261,8 @@ public sealed partial class MapRepository
                 var overlayFileName = GetFloorOverlayFileName(key);
                 var recognitionPath = Path.Combine(stagingDirectory, recognitionFileName);
                 var overlayPath = Path.Combine(stagingDirectory, overlayFileName);
+                var thumbnailPath = Path.Combine(stagingDirectory, GetFloorThumbnailFileName(key));
+                var thumbnailGenerated = false;
                 var hasSurveyStructure = draft.FloorRecognitionSourcePaths.TryGetValue(
                     key,
                     out var surveyStructurePath)
@@ -344,35 +296,45 @@ public sealed partial class MapRepository
                     || !UsesWholeSourceImage(profile);
                 if (hasSurveyStructure)
                 {
-                    using var surveyImage = DecodeImage(surveyStructurePath!);
-                    if (surveyImage.Empty())
-                        throw new InvalidOperationException("测绘识别结构无法解码。");
-                    using var processed = MapBackgroundProcessor.Process(
-                        surveyImage,
-                        profile,
-                        removeBackground,
-                        backgroundRemovalIntensity);
-                    if (!needsIndependentRecognition && UsesWholeSourceImage(profile))
-                        await CopyRecognitionSourceAsync(surveyStructurePath!, recognitionPath);
-                    else if (!Cv2.ImWrite(recognitionPath, processed.Recognition))
-                        throw new InvalidOperationException("无法保存测绘识别图。");
-                    if (!Cv2.ImWrite(overlayPath, processed.Overlay))
-                        throw new InvalidOperationException("无法保存测绘透明叠加图。");
-                    profile.RecognitionPixelWidth = processed.Recognition.Width;
-                    profile.RecognitionPixelHeight = processed.Recognition.Height;
-                    profile.ValidMapBounds ??= MapReferenceBounds.FullImage(
-                        processed.Recognition.Width,
-                        processed.Recognition.Height);
+                    if (TryWriteOwnedUnmaskedRegionAssets(surveyStructurePath!, recognitionPath,
+                            profile, overlayPath, removeBackground, needsIndependentRecognition || !UsesWholeSourceImage(profile),
+                            needsIndependentRecognition ? thumbnailPath : null))
+                    {
+                        thumbnailGenerated = needsIndependentRecognition;
+                        if (!needsIndependentRecognition && UsesWholeSourceImage(profile))
+                            await CopyRecognitionSourceAsync(surveyStructurePath!, recognitionPath);
+                    }
+                    else
+                    {
+                        using var processed = ProcessRecognitionSource(
+                            surveyStructurePath!,
+                            profile,
+                            removeBackground,
+                            backgroundRemovalIntensity,
+                            "测绘识别结构无法解码。");
+                        if (!needsIndependentRecognition && UsesWholeSourceImage(profile))
+                            await CopyRecognitionSourceAsync(surveyStructurePath!, recognitionPath);
+                        else if (!Cv2.ImWrite(recognitionPath, processed.Recognition))
+                            throw new InvalidOperationException("无法保存测绘识别图。");
+                        if (!Cv2.ImWrite(overlayPath, processed.Overlay))
+                            throw new InvalidOperationException("无法保存测绘透明叠加图。");
+                        profile.RecognitionPixelWidth = processed.Recognition.Width;
+                        profile.RecognitionPixelHeight = processed.Recognition.Height;
+                        profile.ValidMapBounds ??= MapReferenceBounds.FullImage(
+                            processed.Recognition.Width,
+                            processed.Recognition.Height);
+                    }
                 }
                 else
                 {
-                    CreateRecognitionAssets(
+                    thumbnailGenerated = CreateRecognitionAssets(
                         sourcePath,
                         recognitionPath,
                         profile,
                         overlayPath,
                         removeBackground,
-                        backgroundRemovalIntensity);
+                        backgroundRemovalIntensity,
+                        needsIndependentRecognition ? thumbnailPath : null);
                 }
                 await PopulateDerivedImageMetadataAsync(
                     floor,
@@ -381,20 +343,21 @@ public sealed partial class MapRepository
                     overlayPath,
                     profile,
                     forceRecognitionPath: hasSurveyStructure || needsIndependentRecognition);
-                await ImportPrebuiltStructureLineAsync(stagingDirectory, floor, key, draft);
+                if (draft.IsCoCreationTemplate)
+                    await ImportFixedTemplateStructureAsync(stagingDirectory, floor, key, draft);
+                else
+                    await ImportPrebuiltStructureLineAsync(stagingDirectory, floor, key, draft);
 
                 // 侧门特征预处理：若侧门锚点已标注，生成特征图
                 // Imported feature metadata does not include the current source
                 // hash or algorithm version. Generate against the staged prebuilt.
-                await TryGenerateSideEntranceFeatureAsync(stagingDirectory, profile);
+                await TryGenerateSideEntranceFeatureAsync(stagingDirectory, profile, floor.PrebuiltStructureLine?.FileName);
 
                 var recognitionSourcePath = needsIndependentRecognition || !UsesWholeSourceImage(profile)
                     ? Path.Combine(stagingDirectory, recognitionFileName)
                     : sourcePath;
-                var thumbnailPath = Path.Combine(
-                    stagingDirectory,
-                    GetFloorThumbnailFileName(key));
-                await CreateThumbnailAsync(recognitionSourcePath, thumbnailPath);
+                if (!thumbnailGenerated)
+                    await CreateThumbnailAsync(recognitionSourcePath, thumbnailPath);
                 await PopulateThumbnailMetadataAsync(floor, thumbnailPath);
 
                 // Keep the legacy first/second asset names aligned with the
@@ -444,6 +407,7 @@ public sealed partial class MapRepository
                     }
                 }
             }
+            PreserveNavigationSnapshots(record.Id, stagingDirectory);
             targetDirectory = GetMapDirectory(record.Id);
             if (Directory.Exists(targetDirectory))
             {
@@ -459,7 +423,8 @@ public sealed partial class MapRepository
             if (existing is null)
                 catalog.Maps.Add(record);
 
-            await WriteCatalogAsync(catalog);
+            MapOperationProgress.Report(.95, "正在保存地图索引……");
+            await WriteCatalogAsync(catalog, importCatalog: importCatalog);
 
             if (backupDirectory is not null && Directory.Exists(backupDirectory))
                 Directory.Delete(backupDirectory, recursive: true);

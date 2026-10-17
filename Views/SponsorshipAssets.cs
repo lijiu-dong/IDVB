@@ -22,9 +22,12 @@ internal static class SponsorshipAssets
         var (name, _) = Identity(asset);
         using var resource = typeof(SponsorshipAssets).Assembly.GetManifestResourceStream("IDVB.Sponsorship." + name)
             ?? throw new InvalidDataException("赞助资源缺失。");
-        using var buffer = new MemoryStream();
-        resource.CopyTo(buffer);
-        var bytes = buffer.ToArray();
+        // Embedded resources expose their exact immutable length. Growing a
+        // MemoryStream and then calling ToArray duplicated this encoded image
+        // on every page visit, before WIC allocated the actual display pixels.
+        var bytes = new byte[checked((int)resource.Length)];
+        IDVBuff.Core.Diagnostics.MemoryJournal.ObserveManagedArray(bytes, "Sponsorship.EncodedInput/" + asset);
+        resource.ReadExactly(bytes);
         Verify(asset, bytes);
         return bytes;
     }

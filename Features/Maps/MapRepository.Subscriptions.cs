@@ -76,8 +76,9 @@ public sealed partial class MapRepository
                 .ToHashSet();
             var oldMaps = catalog.Maps.Where(map => oldMapIds.Contains(map.Id)).ToArray();
             var newMaps = catalog.Maps.Where(map => newMapIds.Contains(map.Id)).ToArray();
-            if (oldMaps.Length != oldMapIds.Count
-                || oldMaps.Any(map => !previousBindings.Values.Contains(
+            // Missing IDs are already deleted maps, not a reason to reject a
+            // verified replacement. Still validate every surviving map's class.
+            if (oldMaps.Any(map => !previousBindings.Values.Contains(
                     map.Class, StringComparer.OrdinalIgnoreCase)))
                 throw new InvalidOperationException("原订阅地图或地图类映射不完整，无法安全替换。");
             foreach (var imported in importedClasses)

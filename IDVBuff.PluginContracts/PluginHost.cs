@@ -324,7 +324,7 @@ public sealed class PluginHost : IPluginHost, IPluginRegistry, IDisposable
             Plugin = plugin;
             MessageTypes = messageTypes;
             DesiredEnabled = initiallyEnabled;
-            var attribute = plugin.GetType().GetCustomAttribute<PluginAttribute>();
+            var attribute = PluginMetadata.For(plugin.GetType());
             IsAlwaysActive = attribute?.AlwaysActive ?? false;
         }
 

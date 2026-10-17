@@ -26,6 +26,7 @@
        确保走与主应用完全相同的编译产物，同时保持主程序与 RealCLI 构建互不干扰。 -->
   <ItemGroup>
     <ProjectReference Include="..\Core\IDVBuff.Core.csproj" />
+    <ProjectReference Include="..\IDVB.ScanRaster\IDVB.ScanRaster.csproj" />
     <ProjectReference Include="..\Infrastructure\IDVBuff.Infrastructure.csproj" />
     <ProjectReference Include="..\Pipeline\IDVBuff.Pipeline.csproj" />
     <ProjectReference Include="..\Survey\Domain\IDVBuff.Survey.Domain.csproj" />

@@ -67,6 +67,9 @@ public sealed partial class MapCvRecognitionService
         var nativeObserved = shared is null ? frame.GetOrCreateNativeObservedStructure() : null;
         var observedEdges = shared?.ObservedEdges ?? nativeObserved!.ObservedEdges;
         var validMask = shared?.ValidMask ?? nativeObserved!.ValidMask;
+        var labels = shared?.SemanticLabels ?? nativeObserved?.SemanticLabels;
+        using var computationLabels = new Mat();
+        if (labels is not null) Cv2.Resize(labels, computationLabels, frame.ComputationImage.Size(), interpolation: InterpolationFlags.Nearest);
         using var computationEdges = new Mat();
         using var computationMask = new Mat();
         Cv2.Resize(
@@ -82,10 +85,10 @@ public sealed partial class MapCvRecognitionService
 
         computation = MapStructurePreprocessor.UseNativeObservedStructureLine(
             computationEdges,
-            computationMask);
+            computationMask, labels is null ? null : computationLabels);
         original = MapStructurePreprocessor.UseNativeObservedStructureLine(
             observedEdges,
-            validMask);
+            validMask, labels);
         timer.Stop();
         elapsedMilliseconds = timer.Elapsed.TotalMilliseconds;
     }

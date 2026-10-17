@@ -12,7 +12,8 @@ namespace IDVBuff.Views;
 public sealed partial class ScanModeSelector
 {
     private (ScanPerformanceMode Mode, bool Animate, bool Glass)? _motionState;
-    private bool CanAnimate() => IsLoaded
+    private bool _retired;
+    private bool CanAnimate() => !_retired && IsLoaded
         && Visibility == Visibility.Visible
         && _ui.AnimationsEnabled
         && _ancestors.All(item => item.Element.Visibility == Visibility.Visible)
@@ -177,6 +178,9 @@ public sealed partial class ScanModeSelector
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
+        if (_retired) return;
+        _renderedFrame = null;
+        _renderedTheme = null;
         for (var parent = VisualTreeHelper.GetParent(this);
              parent is not null;
              parent = VisualTreeHelper.GetParent(parent))
@@ -195,7 +199,11 @@ public sealed partial class ScanModeSelector
         UpdateAppearance(false);
     }
 
-    private void OnUnloaded(object sender, RoutedEventArgs e)
+    private void OnUnloaded(object sender, RoutedEventArgs e) => ReleaseViewResources();
+
+    internal void Retire() { _retired = true; ReleaseViewResources(); }
+
+    private void ReleaseViewResources()
     {
         foreach (var (element, token) in _ancestors)
             element.UnregisterPropertyChangedCallback(VisibilityProperty, token);
@@ -211,6 +219,9 @@ public sealed partial class ScanModeSelector
         _pointerNeedsSettle = false;
         _track.ReleasePointerCaptures();
         UpdateAppearance(false);
+        ReleaseGeometry();
+        _renderedFrame = null;
+        _renderedTheme = null;
     }
 
     private void WindowChanged(AppWindow sender, AppWindowChangedEventArgs args) =>

@@ -67,20 +67,22 @@ public sealed class FloorRecognitionProfile
     public MapReferenceBounds GetEffectiveValidMapBounds(int? referenceWidth = null, int? referenceHeight = null) =>
         MapRecognitionProfile.ResolveEffectiveValidMapBounds(this, referenceWidth, referenceHeight);
 
-    public FloorRecognitionProfile Clone() => new()
+    public FloorRecognitionProfile Clone() => Clone(includeEditableGeometry: true);
+
+    internal FloorRecognitionProfile Clone(bool includeEditableGeometry) => new()
     {
         Floor = Floor,
         FloorKey = FloorKey,
         OrientationDegrees = OrientationDegrees,
         RecognitionRegion = RecognitionRegion?.Clone(),
-        FreeCropPoints = (FreeCropPoints ?? []).Where(point => point.IsValid).Select(point => point.Clone()).ToList(),
+        FreeCropPoints = includeEditableGeometry ? (FreeCropPoints ?? []).Where(point => point.IsValid).Select(point => point.Clone()).ToList() : [],
         RecognitionPixelWidth = RecognitionPixelWidth,
         RecognitionPixelHeight = RecognitionPixelHeight,
         ValidMapBounds = ValidMapBounds?.Clone(),
         Anchors = Anchors.Select(anchor => anchor.Clone()).ToList(),
         WholeImageIgnoreRegions = WholeImageIgnoreRegions.Select(region => region.Clone()).ToList(),
-        Annotations = Annotations.Select(a => a.Clone()).ToList(),
-        BackgroundLayers = (BackgroundLayers ?? []).Select(layer => layer.Clone()).ToList(),
+        Annotations = includeEditableGeometry ? Annotations.Select(a => a.Clone()).ToList() : [],
+        BackgroundLayers = includeEditableGeometry ? (BackgroundLayers ?? []).Select(layer => layer.Clone()).ToList() : [],
         SideEntranceFeatureFileName = SideEntranceFeatureFileName,
         SideEntranceFeatureSha256 = SideEntranceFeatureSha256,
         SideEntranceFeatureSourceSha256 = SideEntranceFeatureSourceSha256,
@@ -308,7 +310,8 @@ public sealed partial class MapRecognitionProfile
         NormalizeAnnotations(profile);
         profile.OrientationDegrees = NormalizeOrientation(profile.OrientationDegrees);
         profile.RecognitionRegion = NormalizeRecognitionRegion(profile.RecognitionRegion);
-        profile.FreeCropPoints = (profile.FreeCropPoints ?? []).Where(point => point.IsValid).Select(point => point.Clone()).ToList();
+        profile.FreeCropPoints ??= [];
+        profile.FreeCropPoints.RemoveAll(static point => point is null || !point.IsValid);
         profile.RecognitionPixelWidth = Math.Max(0, profile.RecognitionPixelWidth);
         profile.RecognitionPixelHeight = Math.Max(0, profile.RecognitionPixelHeight);
         profile.ValidMapBounds = NormalizeValidMapBounds(profile);
@@ -369,13 +372,15 @@ public sealed partial class MapRecognitionProfile
 
     public bool HasAllRequiredAnchors() => HasRequiredIdentificationData();
 
-    public MapRecognitionProfile Clone()
+    public MapRecognitionProfile Clone() => Clone(includeEditableGeometry: true);
+
+    internal MapRecognitionProfile Clone(bool includeEditableGeometry)
     {
         EnsureStandardAnchors();
         var clone = new MapRecognitionProfile
         {
             SchemaVersion = SchemaVersion,
-            Floors = Floors.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.Clone()),
+            Floors = Floors.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.Clone(includeEditableGeometry)),
             WholeImage = WholeImage.Clone()
         };
         clone.EnsureStandardAnchors();
@@ -417,76 +422,6 @@ public sealed partial class MapRecognitionProfile
     }
 }
 
-/// <summary>
-/// Keeps FirstFloor/SecondFloor readable from legacy catalogs while writing a
-/// single canonical Floors dictionary in new catalogs.
-/// </summary>
-public sealed class MapRecognitionProfileJsonConverter : JsonConverter<MapRecognitionProfile>
-{
-    public override MapRecognitionProfile? Read(
-        ref Utf8JsonReader reader,
-        Type typeToConvert,
-        JsonSerializerOptions options)
-    {
-        using var document = JsonDocument.ParseValue(ref reader);
-        var root = document.RootElement;
-        if (root.ValueKind == JsonValueKind.Null)
-            return new MapRecognitionProfile();
-
-        var inner = CreateInnerOptions(options);
-        var profile = new MapRecognitionProfile();
-        if (root.TryGetProperty("SchemaVersion", out var schemaVersion)
-            && schemaVersion.TryGetInt32(out var version))
-            profile.SchemaVersion = version;
-        if (root.TryGetProperty("WholeImage", out var wholeImage))
-            profile.WholeImage = JsonSerializer.Deserialize<WholeImageRecognitionSettings>(
-                wholeImage.GetRawText(), inner) ?? new WholeImageRecognitionSettings();
-
-        if (root.TryGetProperty("FirstFloor", out var firstFloor))
-            profile.FirstFloor = JsonSerializer.Deserialize<FloorRecognitionProfile>(
-                firstFloor.GetRawText(), inner)
-                ?? new FloorRecognitionProfile { Floor = MapFloor.First };
-        if (root.TryGetProperty("SecondFloor", out var secondFloor))
-            profile.SecondFloor = JsonSerializer.Deserialize<FloorRecognitionProfile>(
-                secondFloor.GetRawText(), inner)
-                ?? new FloorRecognitionProfile { Floor = MapFloor.Second };
-        if (root.TryGetProperty("Floors", out var floors))
-        {
-            profile.Floors = JsonSerializer.Deserialize<Dictionary<string, FloorRecognitionProfile>>(
-                floors.GetRawText(), inner) ?? [];
-        }
-
-        profile.EnsureStandardAnchors();
-        return profile;
-    }
-
-    public override void Write(
-        Utf8JsonWriter writer,
-        MapRecognitionProfile value,
-        JsonSerializerOptions options)
-    {
-        value.EnsureStandardAnchors();
-        var inner = CreateInnerOptions(options);
-        writer.WriteStartObject();
-        writer.WriteNumber("SchemaVersion", Math.Max(8, value.SchemaVersion));
-        writer.WritePropertyName("WholeImage");
-        JsonSerializer.Serialize(writer, value.WholeImage, inner);
-        writer.WritePropertyName("Floors");
-        JsonSerializer.Serialize(writer, value.Floors, inner);
-        writer.WriteEndObject();
-    }
-
-    private static JsonSerializerOptions CreateInnerOptions(JsonSerializerOptions options)
-    {
-        var inner = new JsonSerializerOptions(options);
-        for (var index = inner.Converters.Count - 1; index >= 0; index--)
-        {
-            if (inner.Converters[index] is MapRecognitionProfileJsonConverter)
-                inner.Converters.RemoveAt(index);
-        }
-        return inner;
-    }
-}
 /*
  * 文件职责：MapModels.Profile。
  * 所属模块：Features/Maps，主要负责地图识别、对齐、会话编排、缓存或覆盖层功能。

@@ -222,7 +222,7 @@ public sealed partial class SessionOrchestrator
             if (!Settings.DisableAutoFloor && alignmentFrame.DetectedFloorKey is { } detectedFloor && !string.IsNullOrWhiteSpace(detectedFloor))
             {
                 targetFloorKey = detectedFloor;
-                PresentDetectedFloorBeforeAlignment(locked, detectedFloor, alignmentFrame);
+                PresentDetectedFloorBeforeAlignment(locked, detectedFloor, alignmentFrame, isCurrent);
                 _pendingAlignmentSeed = CreateIndependentFloorSeedSession(locked, targetFloorKey);
             }
 

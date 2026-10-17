@@ -13,6 +13,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Core\IDVBuff.Core.csproj" />
+    <ProjectReference Include="..\IDVB.ScanRaster\IDVB.ScanRaster.csproj" />
     <ProjectReference Include="..\Infrastructure\IDVBuff.Infrastructure.csproj" />
     <ProjectReference Include="..\Pipeline\IDVBuff.Pipeline.csproj" />
     <ProjectReference Include="..\UpdateCore\IDVBuff.UpdateCore.csproj" />

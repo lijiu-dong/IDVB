@@ -136,7 +136,7 @@ public sealed partial class SessionOrchestrator
     {
         using var pass = CancellationTokenSource.CreateLinkedTokenSource(token);
         var mode = _settings!.ScanPerformanceMode;
-        pass.CancelAfter(ScanExecutionPolicy.For(mode).BudgetMilliseconds);
+        pass.CancelAfter(ScanExecutionPolicy.For(mode).TotalBudgetMilliseconds);
         using var execution = ScanExecutionContext.Enter(mode, pass.Token,
             () => IsMapObservationCurrent(match, toggle, generation));
         using var suppressDiagnostics = MapDiagnosticModeCapture.Suppress();
@@ -184,7 +184,7 @@ public sealed partial class SessionOrchestrator
             // and timeouts. Only a usable replacement or a changed target revokes it.
             if (frame is null || !execution.CanCompute) return;
 
-            var result = CreateObservationRecognitionState();
+            using var result = CreateObservationRecognitionState();
             await Task.Run(() => RunInitialSideEntranceRecognition(frame, result), pass.Token);
             if (!IsMapObservationCurrent(match, toggle, generation) || execution.Expired) return;
             if (!IsCurrentCaptureTarget(frame))

@@ -1,4 +1,5 @@
 using IDVBuff.Features.Maps;
+using IDVBuff.Appearance;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
@@ -33,20 +34,23 @@ public sealed partial class MapListPage : UserControl
         var graphicItems = new List<ModernLayerItem>();
         var textNumber = 0;
         var lineNumber = 0;
+        var routeNumber = 0;
         var rectangleNumber = 0;
         foreach (var annotation in profile.Annotations)
         {
             var (label, glyph) = annotation.Type switch
             {
+                MapAnnotationType.Text when annotation.IsMarker => ($"标记 {annotation.Text}", "\uE734"),
                 MapAnnotationType.Text => ($"文字 {++textNumber}  {annotation.Text}", "\uE8D2"),
                 MapAnnotationType.Line => ($"直线 {++lineNumber}", "\uE8A1"),
+                MapAnnotationType.Route => (annotation.Text ?? $"路线阶段 {++routeNumber}", "\uE707"),
                 _ => ($"矩形 {++rectangleNumber}", "\uE7FB")
             };
             graphicItems.Add(new ModernLayerItem(
                 ModernAnnotationKey(annotation.Id),
                 label,
                 glyph,
-                new EditorSelection(EditorSelectionKind.Annotation, annotation.Id),
+                new EditorSelection(MapEditorElementKind.Annotation, annotation.Id),
                 ParseEditorColor(annotation.EffectiveColorHex)));
         }
         _modernLayerList.Children.Add(CreateModernLayerGroup("graphics", "图形元素", graphicItems));
@@ -58,7 +62,7 @@ public sealed partial class MapListPage : UserControl
                 "crop",
                 "画布裁剪",
                 "\uE7A8",
-                new EditorSelection(EditorSelectionKind.Crop),
+                new EditorSelection(MapEditorElementKind.Crop),
                 RecognitionRegionRed));
         }
         var anchorNumber = 0;
@@ -71,7 +75,7 @@ public sealed partial class MapListPage : UserControl
                 ModernAnchorKey(anchor.Id),
                 label,
                 isGate ? "\uE839" : "\uE707",
-                new EditorSelection(EditorSelectionKind.Anchor, anchor.Id),
+                new EditorSelection(MapEditorElementKind.Anchor, anchor.Id),
                 GetAnchorColor(anchor)));
         }
         var concealNumber = 0;
@@ -81,7 +85,7 @@ public sealed partial class MapListPage : UserControl
                 ModernBackgroundKey(layer.Id),
                 $"遮瑕 {++concealNumber}",
                 "\uE74A",
-                new EditorSelection(EditorSelectionKind.Background, layer.Id),
+                new EditorSelection(MapEditorElementKind.Background, layer.Id),
                 Color.FromArgb(255, 245, 86, 44)));
         }
         _modernLayerList.Children.Add(CreateModernLayerGroup("special", "特殊元素", specialItems));
@@ -97,7 +101,7 @@ public sealed partial class MapListPage : UserControl
         {
             Text = title,
             FontSize = 14,
-            Foreground = new SolidColorBrush(EditorText),
+            Foreground = EditorText,
             VerticalAlignment = VerticalAlignment.Center
         });
         var eye = CreateModernEyeButton(isVisible);
@@ -118,7 +122,7 @@ public sealed partial class MapListPage : UserControl
                 Text = "暂无元素",
                 Margin = new Thickness(35, 7, 8, 10),
                 FontSize = 11,
-                Foreground = new SolidColorBrush(EditorMuted)
+                Foreground = EditorMuted
             });
         }
 
@@ -134,7 +138,7 @@ public sealed partial class MapListPage : UserControl
             Header = header,
             Content = rows,
             IsExpanded = !_editorGroupExpansion.TryGetValue(key, out var expanded) || expanded,
-            Background = new SolidColorBrush(Color.FromArgb(45, 255, 255, 255))
+            Background = EditorPanelRaised
         };
         expander.Expanding += (_, _) => _editorGroupExpansion[key] = true;
         expander.Collapsed += (_, _) => _editorGroupExpansion[key] = false;
@@ -145,14 +149,14 @@ public sealed partial class MapListPage : UserControl
     private Grid CreateModernLayerRow(string groupKey, ModernLayerItem item)
     {
         var selected = item.Selection is not null &&
-            (item.Selection.Kind == EditorSelectionKind.Annotation && item.Selection.Id is Guid annotationId
+            (item.Selection.Kind == MapEditorElementKind.Annotation && item.Selection.Id is Guid annotationId
                 ? _modernSelectedAnnotationIds.Contains(annotationId)
                 : Equals(_modernSelection, item.Selection));
         var row = new Grid
         {
             MinHeight = 38,
             Padding = new Thickness(9, 3, 5, 3),
-            Background = new SolidColorBrush(selected ? Color.FromArgb(110, 26, 119, 220) : Color.FromArgb(0, 0, 0, 0))
+            Background = selected ? EditorBrush(ThemeToken.Selection) : new SolidColorBrush(Microsoft.UI.Colors.Transparent)
         };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(26) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -161,7 +165,7 @@ public sealed partial class MapListPage : UserControl
         {
             Glyph = item.Glyph,
             FontSize = 14,
-            Foreground = new SolidColorBrush(item.Accent ?? EditorMuted),
+            Foreground = item.Accent is { } accent ? new SolidColorBrush(accent) : EditorMuted,
             VerticalAlignment = VerticalAlignment.Center
         });
         var label = new Button
@@ -171,17 +175,19 @@ public sealed partial class MapListPage : UserControl
             HorizontalContentAlignment = HorizontalAlignment.Left,
             Background = new SolidColorBrush(Color.FromArgb(0, 0, 0, 0)),
             BorderThickness = new Thickness(0),
-            Foreground = new SolidColorBrush(EditorText),
+            Foreground = selected ? EditorBrush(ThemeToken.SelectionText) : EditorText,
             FontSize = 12,
             Padding = new Thickness(3),
             IsEnabled = item.Selection is not null
+                && MapEditorElementEditing.CanEdit(_modernToolState.SpecialElementsReadOnly, item.Selection.Kind)
         };
         label.Click += (_, _) =>
         {
             if (item.Selection is null || !IsModernItemVisible(groupKey, item.Key))
                 return;
+            ResetModernAutomaticRoute();
             _modernToolState.Select(MapEditorTool.Select);
-            if (item.Selection.Kind == EditorSelectionKind.Annotation && item.Selection.Id is Guid id)
+            if (item.Selection.Kind == MapEditorElementKind.Annotation && item.Selection.Id is Guid id)
             {
                 if (IsModernKeyDown(Windows.System.VirtualKey.Shift))
                 {
@@ -214,7 +220,7 @@ public sealed partial class MapListPage : UserControl
                     _modernAnnotationSelectionAnchorId = id;
                 }
                 _modernSelection = _modernSelectedAnnotationIds.Count == 1
-                    ? new EditorSelection(EditorSelectionKind.Annotation, _modernSelectedAnnotationIds.First())
+                    ? new EditorSelection(MapEditorElementKind.Annotation, _modernSelectedAnnotationIds.First())
                     : null;
             }
             else
@@ -226,6 +232,7 @@ public sealed partial class MapListPage : UserControl
             RefreshModernToolVisuals();
             RenderModernEditor();
             RefreshModernLayerList();
+            FocusModernEditor();
         };
         Grid.SetColumn(label, 1);
         row.Children.Add(label);
@@ -236,7 +243,7 @@ public sealed partial class MapListPage : UserControl
         return row;
     }
 
-    private static Button CreateModernEyeButton(bool visible) => new()
+    private Button CreateModernEyeButton(bool visible) => new()
     {
         Content = new FontIcon { Glyph = visible ? "\uE890" : "\uED1A", FontSize = 14 },
         Width = 34,
@@ -244,7 +251,7 @@ public sealed partial class MapListPage : UserControl
         Padding = new Thickness(0),
         Background = new SolidColorBrush(Color.FromArgb(0, 0, 0, 0)),
         BorderThickness = new Thickness(0),
-        Foreground = new SolidColorBrush(visible ? EditorText : EditorMuted)
+        Foreground = visible ? EditorText : EditorMuted
     };
 
     private void ToggleModernGroupVisibility(string groupKey)
@@ -267,7 +274,7 @@ public sealed partial class MapListPage : UserControl
             _hiddenEditorItems.Remove(itemKey);
         if (_hiddenEditorItems.Contains(itemKey) && selection is not null && Equals(selection, _modernSelection))
             _modernSelection = null;
-        if (_hiddenEditorItems.Contains(itemKey) && selection?.Kind == EditorSelectionKind.Annotation && selection.Id is Guid id)
+        if (_hiddenEditorItems.Contains(itemKey) && selection?.Kind == MapEditorElementKind.Annotation && selection.Id is Guid id)
             _modernSelectedAnnotationIds.Remove(id);
         if (itemKey == "image" && _modernImage is not null)
             _modernImage.Visibility = IsModernItemVisible(groupKey, itemKey) ? Visibility.Visible : Visibility.Collapsed;
@@ -277,8 +284,8 @@ public sealed partial class MapListPage : UserControl
 
     private bool SelectionBelongsToModernGroup(EditorSelection? selection, string groupKey) => selection?.Kind switch
     {
-        EditorSelectionKind.Annotation => groupKey == "graphics",
-        EditorSelectionKind.Anchor or EditorSelectionKind.Crop or EditorSelectionKind.Background => groupKey == "special",
+        MapEditorElementKind.Annotation => groupKey == "graphics",
+        MapEditorElementKind.Anchor or MapEditorElementKind.Crop or MapEditorElementKind.Background => groupKey == "special",
         _ => false
     };
 

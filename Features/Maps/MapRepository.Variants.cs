@@ -44,6 +44,8 @@ public sealed partial class MapRepository
             var properties = GetClassProperties(catalog, canonicalOld);
             catalog.ClassProperties.Remove(canonicalOld);
             catalog.ClassProperties[normalizedNew] = properties;
+            foreach (var instance in catalog.TemplateInstances.Where(i => string.Equals(i.LocalClass, canonicalOld, StringComparison.OrdinalIgnoreCase)))
+                instance.LocalClass = normalizedNew;
             foreach (var map in catalog.Maps.Where(map => string.Equals(
                          map.Class, canonicalOld, StringComparison.OrdinalIgnoreCase)))
                 map.Class = normalizedNew;

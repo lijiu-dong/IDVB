@@ -22,8 +22,8 @@ public sealed partial class MapStructureReferenceCache : IDisposable
     private readonly LinkedList<CacheKey> _lruList = new();
     private readonly Dictionary<CacheKey, (MapStructureFeatures Features, LinkedListNode<CacheKey> Node)> _memoryCache = new();
     // 借出中的条目计数，以及淘汰时仍被借用、需延后释放的条目。
-    private readonly Dictionary<CacheKey, int> _leaseCounts = new();
-    private readonly Dictionary<CacheKey, MapStructureFeatures> _evictedWhileLeased = new();
+    private readonly Dictionary<MapStructureFeatures, int> _leaseCounts = new();
+    private readonly HashSet<MapStructureFeatures> _evictedWhileLeased = new();
 
     private long _cacheHits;
     private long _cacheMisses;
@@ -83,62 +83,41 @@ public sealed partial class MapStructureReferenceCache : IDisposable
             _lruList.Remove(cached.Node);
             _lruList.AddFirst(cached.Node);
             _cacheHits++;
-            _leaseCounts[key] = _leaseCounts.GetValueOrDefault(key) + 1;
-            return new MapStructureFeaturesLease(this, key, cached.Features);
+            return CreateLease(cached.Features);
         }
     }
 
-    private void ReturnLease(CacheKey key)
+    private void ReturnLease(MapStructureFeatures features)
     {
         MapStructureFeatures? toDispose = null;
         lock (_memoryGate)
         {
-            var remaining = _leaseCounts.GetValueOrDefault(key) - 1;
+            var remaining = _leaseCounts.GetValueOrDefault(features) - 1;
             if (remaining > 0)
             {
-                _leaseCounts[key] = remaining;
+                _leaseCounts[features] = remaining;
                 return;
             }
 
-            _leaseCounts.Remove(key);
+            _leaseCounts.Remove(features);
             // 租用期间被 LRU 淘汰的条目，等最后一个借用者归还才真正释放。
-            if (_evictedWhileLeased.Remove(key, out var evicted))
-                toDispose = evicted;
+            if (_evictedWhileLeased.Remove(features))
+                toDispose = features;
+            // A completed registration can precede semantic scale bootstrap
+            // in the same scan. Retaining its dense field until the next
+            // rescan overlaps both stages, even though no reader still uses it.
+            if (toDispose is null && _memoryCache.Any(entry =>
+                    entry.Key.Profile == MapStructurePreprocessingProfile.PrebuiltStructureLine
+                    && ReferenceEquals(entry.Value.Features, features)))
+                features.CompactReferenceDistanceRaster();
         }
         toDispose?.Dispose();
     }
 
     /// <summary>
-    /// 常驻参考特征的借用凭据。<see cref="Features"/> 由缓存持有，归还即失效，
-    /// 借用方不得自行释放它，也不得在归还后继续引用。
+    /// Returns an independently owned feature copy for compatibility callers.
+    /// Read-only registration callers should use RentOrCreate instead.
     /// </summary>
-    public sealed class MapStructureFeaturesLease : IDisposable
-    {
-        private readonly MapStructureReferenceCache _owner;
-        private readonly CacheKey _key;
-        private bool _returned;
-
-        internal MapStructureFeaturesLease(
-            MapStructureReferenceCache owner,
-            CacheKey key,
-            MapStructureFeatures features)
-        {
-            _owner = owner;
-            _key = key;
-            Features = features;
-        }
-
-        public MapStructureFeatures Features { get; }
-
-        public void Dispose()
-        {
-            if (_returned)
-                return;
-            _returned = true;
-            _owner.ReturnLease(_key);
-        }
-    }
-
     public MapStructureFeatures GetOrCreate(
         Guid mapId,
         DateTimeOffset updatedAt,
@@ -160,7 +139,8 @@ public sealed partial class MapStructureReferenceCache : IDisposable
         Guid mapId, DateTimeOffset updatedAt, Mat referenceImage,
         IReadOnlyList<NormalizedRectangle>? ignoreRegions, string floor,
         MapStructureGenerationTuning? generationTuning,
-        MapStructurePreprocessingProfile profile)
+        MapStructurePreprocessingProfile profile, Action<MapStructureFeaturesLease>? rental = null,
+        SemanticStructureIndex? residentSemanticIndex = null)
     {
         using var cacheRoute = MapOperationTraceAmbient.StartChild(
             "reference_cache_route",
@@ -193,14 +173,14 @@ public sealed partial class MapStructureReferenceCache : IDisposable
                 _lruList.AddFirst(cached.Node);
                 _cacheHits++;
 
-                return cached.Features.Clone();
+                return AccessResident(cached.Features, rental);
             }
             _cacheMisses++;
         }
         memoryLookup.Complete();
 
         if (profile == MapStructurePreprocessingProfile.PrebuiltStructureLine)
-            return Remember(key, MapStructurePreprocessor.UsePrebuiltStructureLine(referenceImage), generationSnapshot);
+            return Remember(key, MapStructurePreprocessor.UseResidentPrebuiltStructureLine(referenceImage, residentSemanticIndex), generationSnapshot, rental);
 
         var directory = Path.Combine(
             _rootDirectory,
@@ -303,7 +283,7 @@ public sealed partial class MapStructureReferenceCache : IDisposable
                         edgePyramid: [edges.Clone(), halfEdges, quarterEdges],
                         keyPoints: keyPoints,
                         descriptors: descriptors,
-                        repeatedRegionMask: repeated), generationSnapshot);
+                        repeatedRegionMask: repeated), generationSnapshot, rental);
             }
             nuisance.Dispose();
             structure.Dispose();
@@ -391,19 +371,18 @@ public sealed partial class MapStructureReferenceCache : IDisposable
             // The cache is optional. A read-only or full cache directory must
             // not prevent in-memory registration.
         }
-        return Remember(key, generated, generationSnapshot);
+        return Remember(key, generated, generationSnapshot, rental);
     }
 
     private MapStructureFeatures Remember(
         CacheKey key,
         MapStructureFeatures features,
-        long expectedGeneration)
+        long expectedGeneration, Action<MapStructureFeaturesLease>? rental = null)
     {
-        using var distanceMap = MapOperationTraceAmbient.StartChild(
-            "reference_distance_map",
-            MapOperationWaitKind.Compute);
-        features.GetOrCreateReferenceDistanceMap();
-        features.GetOrCreateClippedReferenceDistanceMap(12d);
+        // Scale bootstrap reads edges, never these full-size float planes.
+        // Rentals let actual registration consumers create them on first use;
+        // the legacy owned-copy API preserves its eager preparation contract.
+        if (rental is null) EnsureOwnedCopyDistances(features);
 
         lock (_memoryGate)
         {
@@ -411,6 +390,7 @@ public sealed partial class MapStructureReferenceCache : IDisposable
             {
                 // 缓存代次已改变（对局已重置并调用了 Clear()），放弃将此孤儿特征存入常驻缓存，
                 // 直接返回未缓存的特征供当前调用方使用或释放，防止内存常驻泄漏。
+                rental?.Invoke(new MapStructureFeaturesLease(null, features));
                 return features;
             }
 
@@ -423,7 +403,7 @@ public sealed partial class MapStructureReferenceCache : IDisposable
                 features.Dispose();
                 _lruList.Remove(existing.Node);
                 _lruList.AddFirst(existing.Node);
-                return existing.Features.Clone();
+                return AccessResident(existing.Features, rental);
             }
 
             // 预制线图含两张全尺寸 CV_32F 距离图，只保留当前候选供 VPSG 复用。
@@ -439,8 +419,8 @@ public sealed partial class MapStructureReferenceCache : IDisposable
                 {
                     // 仍被租用的条目不能就地释放，否则借用方手上的 Mat 会失效；
                     // 转入延后释放队列，等最后一个借用者归还。
-                    if (_leaseCounts.GetValueOrDefault(evictKey) > 0)
-                        _evictedWhileLeased[evictKey] = evicted.Features;
+                    if (_leaseCounts.GetValueOrDefault(evicted.Features) > 0)
+                        _evictedWhileLeased.Add(evicted.Features);
                     else
                         evicted.Features.Dispose();
                     _memoryCache.Remove(evictKey);
@@ -452,7 +432,7 @@ public sealed partial class MapStructureReferenceCache : IDisposable
             var node = _lruList.AddFirst(key);
             _memoryCache[key] = (features, node);
 
-            return features.Clone();
+            return AccessResident(features, rental);
         }
     }
 
@@ -460,22 +440,9 @@ public sealed partial class MapStructureReferenceCache : IDisposable
 
     public void Dispose()
     {
+        Clear();
         lock (_memoryGate)
         {
-            _generation++;
-            foreach (var (features, _) in _memoryCache.Values)
-            {
-                features.Dispose();
-            }
-            foreach (var features in _evictedWhileLeased.Values)
-            {
-                features.Dispose();
-            }
-            _memoryCache.Clear();
-            _evictedWhileLeased.Clear();
-            _leaseCounts.Clear();
-            _lruList.Clear();
-
             if (_cacheHits + _cacheMisses > 0)
             {
                 var hitRate = _cacheHits * 100.0 / (_cacheHits + _cacheMisses);

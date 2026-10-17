@@ -4,6 +4,8 @@
         <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
         <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
         <OutputType>WinExe</OutputType>
+        <!-- Old Windows 10/11 builds on CET-capable CPUs fail fast with "Your Windows doesn't fully support CET". -->
+        <CetCompat>false</CetCompat>
 
         <!-- WinUI 3 -->
         <UseWinUI>true</UseWinUI>
@@ -30,11 +32,11 @@
         <Product>Identity Vision Bridge</Product>
         <Company>Identity Vision Bridge</Company>
         <!-- Canonical SemVer product identity. The UI adds the conventional v prefix. -->
-        <IDVBProductVersion>1.7.0</IDVBProductVersion>
+        <IDVBProductVersion>1.7.1-preview</IDVBProductVersion>
         <IDVBReleaseLine>b01.7</IDVBReleaseLine>
         <Version>$(IDVBProductVersion)</Version>
-        <AssemblyVersion>1.7.0.0</AssemblyVersion>
-        <FileVersion>1.7.0.0</FileVersion>
+        <AssemblyVersion>1.7.1.0</AssemblyVersion>
+        <FileVersion>1.7.1.0</FileVersion>
         <InformationalVersion>$(IDVBProductVersion)</InformationalVersion>
         <UseSystemDrawing>true</UseSystemDrawing>
         <Configurations>Debug;Release;Test</Configurations>
@@ -68,6 +70,7 @@
         <Using Include="IDVBuff.Presentation.Theming" />
         <FrameworkReference Include="Microsoft.WindowsDesktop.App.WindowsForms" />
         <ProjectReference Include="Core\IDVBuff.Core.csproj" />
+        <ProjectReference Include="IDVB.ScanRaster\IDVB.ScanRaster.csproj" />
         <ProjectReference Include="IDVB.Vision\IDVB.Vision.csproj" Aliases="VisionEngine" />
         <ProjectReference Include="IDVBuff.Appearance\IDVBuff.Appearance.csproj" />
         <ProjectReference Include="Infrastructure\IDVBuff.Infrastructure.csproj" />
@@ -116,6 +119,9 @@
         <Content Include="Assets\Algorithms\structure-zongcai-native-reference-v1.idva"
                  CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Assets\Games\*.png" CopyToOutputDirectory="PreserveNewest" />
+        <!-- Co-creation templates are installed by users from independent .idvmx packages. -->
+        <Content Remove="Assets\CoCreationTemplates\**\*" />
+        <None Remove="Assets\CoCreationTemplates\**\*" />
         <Content Include="Assets\Algorithms\structure-native-observed-v2.idva"
                  CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Assets\Algorithms\structure-doom-girl-hard-wangqingxin-v1.idva"
@@ -154,6 +160,7 @@
 
     <ItemGroup>
         <Compile Remove="Core\**\*.cs" />
+        <Compile Remove="IDVB.ScanRaster\**\*.cs" />
         <Compile Remove="IDVB.Vision.Contracts\**\*.cs" />
         <Compile Remove="IDVB.Vision\**\*.cs" />
         <Compile Remove="IDVB.Vision.Tests\**\*.cs" />

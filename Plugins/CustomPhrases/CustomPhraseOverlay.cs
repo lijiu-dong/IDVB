@@ -1,7 +1,4 @@
 using System.Drawing;
-using System.Drawing.Drawing2D;
-using System.Drawing.Imaging;
-using System.Drawing.Text;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using IDVBuff.PluginContracts;
@@ -55,6 +52,11 @@ internal sealed partial class CustomPhraseOverlay : IDisposable
     private int _selectedIndex = -1;
     private bool _visible;
     private bool _disposed;
+
+    public bool IsVisible
+    {
+        get { lock (_sync) return _visible; }
+    }
 
     public void Show(IReadOnlyList<string> phrases, PluginClientBounds gameBounds)
     {
@@ -121,7 +123,8 @@ internal sealed partial class CustomPhraseOverlay : IDisposable
         int selected;
         lock (_sync)
         {
-            selected = _selectedIndex;
+            selected = _visible ? _selectedIndex : -1;
+            _selectedIndex = -1;
             _visible = false;
             cancellation = _pollCancellation;
             _pollCancellation = null;
@@ -191,71 +194,6 @@ internal sealed partial class CustomPhraseOverlay : IDisposable
                 return index;
         }
         return -1;
-    }
-
-    private void Render()
-    {
-        // 光标轮询线程与窗口线程（WM_INPUT 滚轮）都会触发重画，这里把绘制串行化。
-        lock (_renderGate)
-            RenderCore();
-    }
-
-    private void RenderCore()
-    {
-        PhraseBox[] boxes;
-        Rectangle windowBounds;
-        int selected;
-        lock (_sync)
-        {
-            if (!_visible || _handle == IntPtr.Zero)
-                return;
-            boxes = _boxes.ToArray();
-            windowBounds = _windowBounds;
-            selected = _selectedIndex;
-        }
-
-        using var bitmap = new Bitmap(
-            Math.Max(1, windowBounds.Width),
-            Math.Max(1, windowBounds.Height),
-            PixelFormat.Format32bppArgb);
-        using (var graphics = Graphics.FromImage(bitmap))
-        using (var font = new Font("Microsoft YaHei UI", 20f, FontStyle.Bold, GraphicsUnit.Pixel))
-        using (var format = new StringFormat
-        {
-            Alignment = StringAlignment.Center,
-            LineAlignment = StringAlignment.Center,
-            Trimming = StringTrimming.EllipsisCharacter,
-            FormatFlags = StringFormatFlags.NoWrap
-        })
-        {
-            graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-            foreach (var box in boxes)
-            {
-                var local = new Rectangle(
-                    box.Bounds.X - windowBounds.X,
-                    box.Bounds.Y - windowBounds.Y,
-                    box.Bounds.Width,
-                    box.Bounds.Height);
-                using var background = new SolidBrush(Color.FromArgb(218, 16, 22, 32));
-                using var border = new Pen(
-                    box.Index == selected
-                        ? Color.FromArgb(255, 255, 188, 74)
-                        : Color.FromArgb(225, 190, 205, 222),
-                    box.Index == selected ? 4f : 2f);
-                graphics.FillRectangle(background, local);
-                graphics.DrawRectangle(border, local);
-                using var textBrush = new SolidBrush(Color.White);
-                graphics.DrawString(
-                    CustomPhrasePluginData.ToDisplayText(box.Phrase),
-                    font,
-                    textBrush,
-                    local,
-                    format);
-            }
-        }
-
-        UpdateLayeredBitmap(bitmap, windowBounds);
     }
 
     /// <summary>
@@ -355,7 +293,9 @@ internal sealed partial class CustomPhraseOverlay : IDisposable
         var previousObject = IntPtr.Zero;
         try
         {
-            bitmapHandle = bitmap.GetHbitmap(Color.Transparent);
+            // Color.Transparent carries white RGB. GDI blends that white into
+            // transparent pixels; a black matte preserves premultiplied alpha.
+            bitmapHandle = bitmap.GetHbitmap(Color.FromArgb(0, 0, 0, 0));
             previousObject = SelectObject(memoryDc, bitmapHandle);
             var destination = new NativePoint(bounds.X, bounds.Y);
             var source = new NativePoint(0, 0);

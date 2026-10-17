@@ -176,6 +176,7 @@ public interface IOverlayWindow : IDisposable
     void SetAllowExtend(bool allow);
     void SetMapOpacity(double opacity);
     void SetRouteLineThickness(int level) { }
+    void SetRouteOpacity(double opacity) { }
     void SetHideMiniMap(bool hide) { }
     void SetShowGateMarkers(bool show);
     void SetShowAuxiliaryAnchors(bool show);

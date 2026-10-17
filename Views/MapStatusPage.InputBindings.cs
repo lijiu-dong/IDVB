@@ -17,24 +17,6 @@ public sealed partial class MapStatusPage
     /// <summary>Returns the runtime master switch for onboarding emphasis.</summary>
     public FrameworkElement GetRuntimeEnableControl() => _enabledToggle;
 
-    /// <summary>Returns the map-display calibration action for onboarding emphasis.</summary>
-    public FrameworkElement? GetMapViewportCalibrationControl() =>
-        FindDescendantButton(this, "校准地图区域");
-
-    private static Button? FindDescendantButton(DependencyObject root, string content)
-    {
-        if (root is Button { Content: string text } button && text == content)
-            return button;
-
-        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(root); index++)
-        {
-            if (FindDescendantButton(VisualTreeHelper.GetChild(root, index), content) is { } child)
-                return child;
-        }
-
-        return null;
-    }
-
     private async void BindingButton_Click(MapRuntimeBindingTarget target)
     {
         var binding = GetBinding(target);
@@ -44,6 +26,7 @@ public sealed partial class MapStatusPage
             return;
         }
 
+        StopForegroundRecording();
         _recording = null;
         _recordingHeldKeys.Clear();
         _recordingTriggerKey = 0;
@@ -195,6 +178,7 @@ public sealed partial class MapStatusPage
     {
         if (_recording is not { } target)
             return;
+        StopForegroundRecording();
         _recording = null;
         _recordingHeldKeys.Clear();
         _recordingTriggerKey = 0;

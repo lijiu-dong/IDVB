@@ -231,12 +231,42 @@ public sealed partial class MainPage : Page
     }
 
     private long _navigationRevision;
+    private string? _displayedModuleId;
+    private string? _pendingModuleId;
+    private Task? _pendingNavigationTask;
 
     private async void NavigateTo(string moduleId, NavigationEntry? navigationEntry = null)
         => await NavigateToAsync(moduleId, navigationEntry);
 
-    private async Task NavigateToAsync(string moduleId, NavigationEntry? navigationEntry = null)
+    private async Task NavigateToAsync(string moduleId, NavigationEntry? navigationEntry = null, string? initialMapClass = null)
     {
+        if (initialMapClass is null)
+        {
+            if (_pendingModuleId == moduleId && _pendingNavigationTask is { } pending)
+            {
+                await pending;
+                return;
+            }
+            if (_pendingNavigationTask is null && _displayedModuleId == moduleId)
+                return;
+        }
+        _pendingModuleId = moduleId;
+        var task = NavigateToCoreAsync(moduleId, navigationEntry, initialMapClass);
+        _pendingNavigationTask = task;
+        try { await task; }
+        finally
+        {
+            if (ReferenceEquals(_pendingNavigationTask, task))
+            {
+                _pendingNavigationTask = null;
+                _pendingModuleId = null;
+            }
+        }
+    }
+
+    private async Task NavigateToCoreAsync(string moduleId, NavigationEntry? navigationEntry, string? initialMapClass)
+    {
+        using var memory = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("UI.Navigate", moduleId);
         var revision = ++_navigationRevision;
         SetNavigationCompact(_navigationCompactPreference);
 
@@ -258,12 +288,12 @@ public sealed partial class MainPage : Page
                 moduleId, App.IsSafeMode, App.IsServicesReady, App.ServicesReadyTask);
             if (!servicesReady.IsCompletedSuccessfully)
             {
-                ModuleContentHost.Content = new ProgressRing
+                ReplaceModuleContent(new ProgressRing
                 {
                     IsActive = true,
                     HorizontalAlignment = HorizontalAlignment.Center,
                     VerticalAlignment = VerticalAlignment.Center
-                };
+                });
                 await servicesReady;
                 if (revision != _navigationRevision)
                     return;
@@ -272,10 +302,12 @@ public sealed partial class MainPage : Page
             var view = App.IsSafeMode && ModuleNavigationRules.IsSafeModeRestrictedModule(moduleId)
                 ? CreateSafeModeRestrictedView(moduleId)
                 : _catalog.GetRequired(moduleId).CreateView();
+            if (view is MapListPage pendingMaps && initialMapClass is not null)
+                pendingMaps.SelectInitialClass(initialMapClass);
             // Prepare persisted state before attaching controls to the live visual tree.
             // Keep the current page visible while I/O completes.
             if (view is HomePage pendingHome)
-                await pendingHome.PrepareAsync();
+                await PrepareHomeForNavigationAsync(pendingHome);
             if (view is TagsAndTemplatesPage pendingTags)
                 await pendingTags.PrepareAsync();
             if (revision != _navigationRevision)
@@ -284,7 +316,8 @@ public sealed partial class MainPage : Page
             DisconnectScanVisuals();
             if (view is HomePage preparedHome)
                 ConnectScanVisuals(preparedHome);
-            ModuleContentHost.Content = view;
+            ReplaceModuleContent(view);
+            _displayedModuleId = moduleId;
             ConfigureMainContentScrolling(view);
             ConnectSponsorshipNavigation(view);
             if (view is HelpPage helpPage)
@@ -297,10 +330,7 @@ public sealed partial class MainPage : Page
             // Keep the main content entrance motion consistent across all modules.
             animateMainContent = true;
             if (view is MapListPage mapListPage)
-            {
-                mapListPage.ParentScrollViewer = MainContentHost;
-                mapListPage.NavigationCompactStateChanged = SetEditorNavigationCompact;
-            }
+                ConnectMapListNavigation(mapListPage);
         }
         catch (Exception exception)
         {
@@ -309,7 +339,8 @@ public sealed partial class MainPage : Page
             System.Diagnostics.Debug.WriteLine(
                 $"Module '{moduleId}' failed to create its view: {exception}");
             TryLogModuleFailure(moduleId, exception);
-            ModuleContentHost.Content = CreateModuleFailureView(moduleId, exception);
+            ReplaceModuleContent(CreateModuleFailureView(moduleId, exception));
+            _displayedModuleId = null;
         }
         try
         {
@@ -324,6 +355,13 @@ public sealed partial class MainPage : Page
                 $"Module '{moduleId}' enter animation failed: {exception}");
             TryLogModuleFailure(moduleId, exception, "enter-animation");
         }
+    }
+
+    private void ReplaceModuleContent(object view)
+    {
+        if (ModuleContentHost.Content is FrameworkElement previous && !ReferenceEquals(previous, view))
+            RetireModuleImages(previous);
+        ModuleContentHost.Content = view;
     }
 
     private async void HelpPage_ActivateGuideRequested(object? sender, EventArgs e)

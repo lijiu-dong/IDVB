@@ -116,12 +116,13 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
                 frame.ClientBounds,
                 ResolveViewportRegion(
                     (int)Math.Round(frame.ClientBounds.Width),
-                    (int)Math.Round(frame.ClientBounds.Height)));
+                    (int)Math.Round(frame.ClientBounds.Height),
+                    out _));
             if (!viewportBounds.IsValid)
             {
                 manualCapture.Complete();
                 ActiveOperationTrace?.SetTerminal("failed", "invalid-viewport-bounds");
-                _statusMessage = "已校准的地图区域无效，请重新校准。";
+                _statusMessage = "地图区域无效，请确认游戏窗口正常显示后重试，必要时手动校准地图区域。";
                 StateChanged?.Invoke(this, EventArgs.Empty);
                 return;
             }

@@ -137,6 +137,11 @@ public sealed partial class ScanModeSelector
         if (_deepMotionRunning == moving && _deepEffectsVisible == active) return;
         _deepMotionRunning = moving;
         _deepEffectsVisible = active;
+        // A transparent ancestor does not prevent Win2D from allocating and
+        // drawing its surfaces. Keep them through the fade, then close them.
+        foreach (var plate in new[] { _deepAtmosphere, _deepWisps, _deepDust, _deepShock })
+            plate.SetActive(active);
+        _deepTrack.SetActive(active);
         _deepTrack.SetRunning(moving);
         foreach (var element in new FrameworkElement[] { _deepAtmosphere, _deepWisps, _deepDust, _deepShock, _card })
         {

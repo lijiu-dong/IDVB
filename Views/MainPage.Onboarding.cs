@@ -1,75 +1,38 @@
 using IDVBuff.Features.Maps;
 using IDVBuff.Helps;
 using IDVBuff.Modules;
-using Windows.ApplicationModel.DataTransfer;
-using Windows.System;
 
 namespace IDVBuff.Views;
 
 public sealed partial class MainPage
 {
-    private const string MapSubscriptionGuideCode = "IDVB-SUBSCRIBE-MAP-GUIDE";
-
     private async Task ShowMapSubscriptionGuideAsync()
     {
-        NavigateTo("map-list");
-        await Task.Delay(50);
-        if (ModuleContentHost.Content is not MapListPage mapListPage)
+        var subscriptions = new MapSubscriptionService(new MapRepository());
+        await NavigateToCoCreationCommunityAsync();
+        if (ModuleContentHost.Content is not MapListPage communityPage)
             return;
+        await communityPage.SelectCoCreationCommunityAsync();
 
         var guide = new EmphasisGuide(EmphasisGuideHost);
         await guide.ShowAsync(
         [
             new EmphasisGuideStep(
-                "前往地图社区",
-                "点击下方链接。IDVB 会复制一个引导口令，地图社区识别后会继续带你选择地图包。",
-                NextButtonDelay: TimeSpan.Zero,
-                ActionButtonText: "打开 https://community.idvb.xgflee.com/",
-                ActionAsync: OpenMapCommunityGuideAsync)
-        ]);
-
-        var subscriptionLink = await WaitForSubscriptionLinkAsync();
-        await guide.ShowAsync(
-        [
+                "获取社区地图",
+                "这里展示地图社区的地图。点击想要的地图卡片，登录后选择“获取并添加到本地”，完成后点击检查。",
+                CheckAsync: _ => Task.FromResult(subscriptions.GetSubscriptions().Count > 0
+                    ? EmphasisGuideCheckResult.Passed
+                    : EmphasisGuideCheckResult.TryAgain("尚未检测到新获取的社区地图，请点击地图卡片完成获取后再检查。")),
+                TargetProvider: communityPage.GetCoCreationCommunityControl),
             new EmphasisGuideStep(
-                "打开地图订阅",
-                "已识别订阅链接。点击“导入”，再点击“地图订阅”。",
-                mapListPage.GetImportControl(),
-                NextButtonDelay: TimeSpan.Zero)
-        ]);
-        await mapListPage.ShowMapSubscriptionsTutorialAsync(subscriptionLink);
-        await guide.ShowAsync(
-        [
-            new EmphasisGuideStep("订阅地图完成", "地图订阅流程已经结束。点击“完成”关闭教程。", NextButtonDelay: TimeSpan.Zero, AdvanceButtonText: "完成")
+                "保持地图最新",
+                "无需单独管理更新。每次进入共创地图的“社区”页面，IDVB 都会对比本地与社区的版本；有新版本时，地图卡片右上角会显示蓝色更新图标，点击卡片即可更新。",
+                TargetProvider: communityPage.GetCoCreationCommunityControl,
+                NextButtonDelay: TimeSpan.Zero,
+                AdvanceButtonText: "完成")
         ]);
     }
 
-    private static async Task OpenMapCommunityGuideAsync(CancellationToken cancellationToken)
-    {
-        var package = new DataPackage();
-        package.SetText(MapSubscriptionGuideCode);
-        Clipboard.SetContent(package);
-        await Launcher.LaunchUriAsync(new Uri("https://community.idvb.xgflee.com/?guide=subscribe"));
-    }
-
-    private static async Task<string> WaitForSubscriptionLinkAsync()
-    {
-        while (true)
-        {
-            try
-            {
-                var content = Clipboard.GetContent();
-                if (content.Contains(StandardDataFormats.Text))
-                {
-                    var text = await content.GetTextAsync();
-                    if (text.StartsWith("idvb-sub:", StringComparison.OrdinalIgnoreCase))
-                        return text;
-                }
-            }
-            catch { }
-            await Task.Delay(400);
-        }
-    }
     /// <summary>Runs after the user accepts the first-run recommended configuration.</summary>
     public Task ShowRecommendedConfigurationGuideAsync() =>
         ShowRecommendedConfigurationGuideAsync(CancellationToken.None);
@@ -151,27 +114,17 @@ public sealed partial class MainPage
                 CheckAsync: _ => RequireRuntimeEnabledAsync())
         ], cancellationToken);
 
-        await ShowPreMatchVideoGuidesAsync(statusPage, cancellationToken);
+        await ShowPreMatchVideoGuidesAsync(cancellationToken);
     }
 
-    private async Task ShowPreMatchVideoGuidesAsync(MapStatusPage statusPage, CancellationToken cancellationToken)
+    private async Task ShowPreMatchVideoGuidesAsync(CancellationToken cancellationToken)
     {
-        var calibrationVideoOpened = false;
         var startMatchVideoOpened = false;
         var inGameVideoOpened = false;
         var endMatchVideoOpened = false;
         var guide = new EmphasisGuide(EmphasisGuideHost);
         await guide.ShowAsync(
         [
-            new EmphasisGuideStep(
-                "校准显示区域",
-                "请点击“校准地图区域”，完成一次完整地图画布的框选；如果已经校准并保存，可以直接继续。点击“观看视频教程”后，再点击检查。",
-                statusPage.GetMapViewportCalibrationControl(),
-                CheckAsync: _ => RequireCalibrationAndVideoAsync(
-                    calibrationVideoOpened),
-                EnterAsync: _ => BringCalibrationControlIntoViewAsync(statusPage),
-                TutorialVideoUri: TutorialVideoUri("vid1.mp4"),
-                VideoOpened: () => calibrationVideoOpened = true),
             new EmphasisGuideStep(
                 "如何开始对局",
                 "观看教程，了解如何打开外置控件层、选择本局地图并开始对局。",
@@ -247,23 +200,6 @@ public sealed partial class MainPage
         Task.FromResult(wasOpened
             ? EmphasisGuideCheckResult.Passed
             : EmphasisGuideCheckResult.TryAgain("请先点击“观看视频教程”并打开教程，再点击检查。"));
-
-    private static Task<EmphasisGuideCheckResult> RequireCalibrationAndVideoAsync(
-        bool videoWasOpened)
-    {
-        if (!videoWasOpened)
-            return Task.FromResult(EmphasisGuideCheckResult.TryAgain("请先点击“观看视频教程”并打开教程。"));
-
-        return Task.FromResult(App.Session.Settings.IsMapViewportCalibrated
-            ? EmphasisGuideCheckResult.Passed
-            : EmphasisGuideCheckResult.TryAgain("请先完成并保存“校准地图区域”，再点击检查。"));
-    }
-
-    private static async Task BringCalibrationControlIntoViewAsync(MapStatusPage page)
-    {
-        page.GetMapViewportCalibrationControl()?.StartBringIntoView();
-        await Task.Delay(50);
-    }
 
     private static IReadOnlyList<EmphasisGuideTextSegment> CreateQuickScanGuideDescription()
     {

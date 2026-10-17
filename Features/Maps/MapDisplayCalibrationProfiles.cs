@@ -47,6 +47,37 @@ public sealed class MapDisplayCalibrationProfile
         return new NormalizedRectangle { X = normLeft, Y = 0.09333, Width = normWidth, Height = 0.09889 };
     }
 
+    // The full-map UI is laid out on a 1920x1080 reference canvas, scaled
+    // uniformly to fit the client and centered (letterboxed on 16:10,
+    // pillarboxed on ultrawide). The map rectangle is fitted from exact
+    // calibrations at 1920x1080 and 2560x1600 (residual <= 4 physical px).
+    private const double ReferenceCanvasWidth = 1920;
+    private const double ReferenceCanvasHeight = 1080;
+    private const double ReferenceMapViewportX = 624.0;
+    private const double ReferenceMapViewportY = 144.1;
+    private const double ReferenceMapViewportWidth = 994.5;
+    private const double ReferenceMapViewportHeight = 788.4;
+
+    public static NormalizedRectangle CreateDefaultMapViewportRegion(int clientWidth, int clientHeight)
+    {
+        // Unknown client geometry: keep the whole client instead of guessing
+        // an aspect ratio that could cut the map off.
+        if (clientWidth <= 0 || clientHeight <= 0)
+            return new NormalizedRectangle { X = 0, Y = 0, Width = 1, Height = 1 };
+        var scale = Math.Min(
+            clientWidth / ReferenceCanvasWidth,
+            clientHeight / ReferenceCanvasHeight);
+        var offsetX = (clientWidth - ReferenceCanvasWidth * scale) / 2;
+        var offsetY = (clientHeight - ReferenceCanvasHeight * scale) / 2;
+        return new NormalizedRectangle
+        {
+            X = (offsetX + ReferenceMapViewportX * scale) / clientWidth,
+            Y = (offsetY + ReferenceMapViewportY * scale) / clientHeight,
+            Width = ReferenceMapViewportWidth * scale / clientWidth,
+            Height = ReferenceMapViewportHeight * scale / clientHeight
+        };
+    }
+
     public MapDisplayCalibrationProfile Clone() => new()
     {
         SchemaVersion = SchemaVersion,

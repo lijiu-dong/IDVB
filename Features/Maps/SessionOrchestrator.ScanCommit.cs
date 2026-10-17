@@ -52,9 +52,12 @@ public sealed partial class SessionOrchestrator
         var stopReason = execution.ComputeStopReason;
         execution.CompleteAutomaticPhase();
         execution.Reported = true;
-        var met = execution.ElapsedMilliseconds <= execution.Policy.BudgetMilliseconds;
+        var scanMet = execution.ScanPhaseMilliseconds <= execution.Policy.BudgetMilliseconds;
+        var alignmentMet = execution.AlignmentPhaseMilliseconds is not { } alignment
+            || alignment <= execution.Policy.AlignmentBudgetMilliseconds;
+        var met = scanMet && alignmentMet;
         _logCollector.Append(MapLogCategory.ScanLifecycle, met ? MapLogLevel.Info : MapLogLevel.Warning,
-            $"扫描自动阶段结束 · mode={execution.Policy.Mode} · elapsed={execution.ElapsedMilliseconds:F1}ms · budgetMet={met}",
+            $"扫描自动阶段结束 · mode={execution.Policy.Mode} · elapsed={execution.ElapsedMilliseconds:F1}ms · scan={execution.ScanPhaseMilliseconds:F1}ms · alignment={execution.AlignmentPhaseMilliseconds?.ToString("F1") ?? "-"}ms · budgetMet={met}",
             elapsedMs: execution.ElapsedMilliseconds,
             details: new()
             {
@@ -67,6 +70,12 @@ public sealed partial class SessionOrchestrator
                 ["cancelled"] = execution.CancellationToken.IsCancellationRequested,
                 ["superseded"] = execution.IsSuperseded,
                 ["budgetMs"] = execution.Policy.BudgetMilliseconds,
+                ["alignmentBudgetMs"] = execution.Policy.AlignmentBudgetMilliseconds,
+                ["scanPhaseMs"] = execution.ScanPhaseMilliseconds,
+                ["alignmentPhaseMs"] = execution.AlignmentPhaseMilliseconds,
+                ["scanBudgetMet"] = scanMet,
+                ["alignmentBudgetMet"] = alignmentMet,
+                ["lastPhase"] = execution.Phase.ToString(),
                 ["samplePoints"] = execution.Frame?.SearchPoints.Length ?? 0,
                 ["densePoints"] = execution.Frame?.DensePoints.Length ?? 0,
                 ["searchHypotheses"] = execution.TestedHypotheses,
@@ -80,6 +89,8 @@ public sealed partial class SessionOrchestrator
     private bool TryCommitAutomaticScan(InitialRecognitionPipelineState result,
         CapturedGameFrame frame, MapMatchSnapshot match, CancellationToken cancellation)
     {
+        using var validation = MapOperationTraceAmbient.StartTopLevel(
+            "automatic_commit_validation", MapOperationWaitKind.Compute);
         var execution = ScanExecutionContext.Current;
         var recognition = result.Recognition;
         bool Reject(string reason)
@@ -127,6 +138,12 @@ public sealed partial class SessionOrchestrator
 
         // No await between this generation/deadline check and first publication. The UI thread
         // owns the transaction; manual selection and future opens use their independent paths.
+        validation.Complete();
+        // This automatic transaction includes the deferred final present.
+        // Dispose order closes present before its containing trace phase.
+        using var publication = MapOperationTraceAmbient.StartTopLevel(
+            "automatic_commit_and_publish", MapOperationWaitKind.Compute,
+            mapId: recognition.Map.Id.ToString("D"), floorKey: recognition.Result.Floor);
         using var present = _overlay.DeferPresent();
         _provisionalRecognition = null;
         _provisionalCatalogRevision = null;
@@ -173,7 +190,7 @@ public sealed partial class SessionOrchestrator
                 ["decisionElapsedMs"] = execution.ElapsedMilliseconds
             });
         StateChanged?.Invoke(this, EventArgs.Empty);
-        QueueVariantIdentityNotification(recognition.Map.Id, userConfirmed: false);
+        QueueSelectedMapResourcePreparation(recognition.Map.Id); QueueVariantIdentityNotification(recognition.Map.Id, userConfirmed: false);
         return true;
     }
 
@@ -191,3 +208,4 @@ public sealed partial class SessionOrchestrator
         StateChanged?.Invoke(this, EventArgs.Empty);
     }
 }
+

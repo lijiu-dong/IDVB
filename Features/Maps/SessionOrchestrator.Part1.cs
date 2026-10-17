@@ -39,6 +39,8 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
             // Invalidate the match identity first. Any scan/alignment already
             // running may finish native work, but can no longer commit state.
             _matchSession.End();
+            if (!_headless)
+                IDVBuff.Features.Notifications.OverlayNotificationCenter.Warning("已结束对局状态。");
             MapDiagnosticModeCapture.EndMatch();
             CancelMatchOperations();
             var isSurvey = endingMatch.Mode == MapRunMode.Survey;
@@ -73,6 +75,18 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
             }
             await _recognition.ReleaseMatchResourcesAsync();
             ResetMatchTransientState(resetAutomaticCacheSamples: true);
+            // The released match graphs are garbage, but an idle process makes
+            // almost no allocations, so no Gen2 collection follows to reclaim
+            // and decommit them. Collect once here, at match end only (never at
+            // start, see ResetMatchTransientState), without trimming the working
+            // set: the audit logs the true residency before and after.
+            if (!_headless)
+                await Task.Run(() => IDVBuff.Diagnostics.RealtimePerformanceTracker.AuditLifecycle(
+                    "Match.Ended", triggerGcAudit: true));
+            // Finalized match graphs leave free native heap blocks committed.
+            // Between matches capture leases retire every ~450ms, so the quiet
+            // window never opens on its own; request one return explicitly.
+            IDVBuff.Core.Diagnostics.MemoryJournal.RequestNativeBackingReturn("Match.Ended");
 
             _statusMessage = "对局已结束。";
             _logCollector.Append(
@@ -85,10 +99,6 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
                     ? "本局任务已排空，自动地图缓存已完成确认落盘阶段"
                     : "本局任务已排空，自动地图缓存样本未保存"));
             StateChanged?.Invoke(this, EventArgs.Empty);
-            // Resident owners have been released. Request collection of the
-            // now-unreachable large arrays even when the idle app allocates
-            // nothing more; do not trim live pages from the working set.
-            GC.Collect(2, GCCollectionMode.Forced, blocking: false);
         }
         finally
         {

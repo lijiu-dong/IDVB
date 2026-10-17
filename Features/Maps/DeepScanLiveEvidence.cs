@@ -13,6 +13,11 @@ internal static class DeepScanLiveEvidence
         else source.CopyTo(bgr);
         using var hsv = new Mat();
         Cv2.CvtColor(bgr, hsv, ColorConversionCodes.BGR2HSV);
+        MaskHsvAnnotations(hsv, observation);
+    }
+
+    internal static void MaskHsvAnnotations(Mat hsv, Vpsg3LiveObservation observation)
+    {
         // Compact player/door markers, enemies and purple chest overlays. Their
         // colored interiors provide the measured footprint; only a small rim is
         // unknown, not a player-sized expansion into the surrounding walls.

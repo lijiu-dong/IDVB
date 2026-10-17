@@ -10,6 +10,8 @@ public sealed partial class IdvmPackageService
 
     private sealed class AnnotationDto
     {
+        public Guid? RoutePlanId { get; set; }
+        public bool IsMarker { get; set; }
         public Guid Id { get; set; }
         public string Type { get; set; } = string.Empty;
         public int ColorIndex { get; set; }
@@ -17,6 +19,7 @@ public sealed partial class IdvmPackageService
         public RectangleDto? Bounds { get; set; }
         public PointDto? Start { get; set; }
         public PointDto? End { get; set; }
+        public List<PointDto>? Points { get; set; }
         public string? Text { get; set; }
         public string? FontFamily { get; set; }
         public double? FontSize { get; set; }

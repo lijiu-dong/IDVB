@@ -8,12 +8,15 @@ namespace IDVBuff.Features.Maps;public sealed partial class MapRecognitionProfil
     {
         floor.Annotations ??= [];
         foreach (var annotation in floor.Annotations)
-        {
-            if (!MapAnnotationColor.TryNormalize(annotation.ColorHex, out var colorHex))
-                colorHex = MapAnnotationColor.FromLegacyIndex(annotation.ColorIndex);
-            annotation.ColorHex = colorHex;
-            annotation.ColorIndex = MapAnnotationColor.ToLegacyIndex(colorHex);
-        }
+            NormalizeAnnotationColor(annotation);
+    }
+
+    internal static void NormalizeAnnotationColor(MapAnnotation annotation)
+    {
+        if (!MapAnnotationColor.TryNormalize(annotation.ColorHex, out var colorHex))
+            colorHex = MapAnnotationColor.FromLegacyIndex(annotation.ColorIndex);
+        annotation.ColorHex = colorHex;
+        annotation.ColorIndex = MapAnnotationColor.ToLegacyIndex(colorHex);
     }
 
     private static void NormalizeAnchorWeights(FloorRecognitionProfile floor)

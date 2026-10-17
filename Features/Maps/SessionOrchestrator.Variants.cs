@@ -70,16 +70,15 @@ public sealed partial class SessionOrchestrator
         if (selectedMapId is not { } mapId)
             return null;
 
-        var catalog = await _mapRepository.GetCatalogSnapshotAsync();
-        var group = catalog.VariantGroups.SingleOrDefault(candidate =>
-            candidate.MapIds.Contains(mapId));
+        await EnsureMapCacheSynchronizedAsync();
+        if (!IsCurrentMatchOperation(match)) return null;
+        var group = _recognition.CatalogVariantGroups.SingleOrDefault(candidate => candidate.MapIds.Contains(mapId));
         if (group is null)
             return null;
 
-        var mapsById = catalog.Maps.ToDictionary(map => map.Id);
         var ordered = group.MapIds
-            .Where(mapsById.ContainsKey)
-            .Select(id => mapsById[id])
+            .Select(id => _recognition.TryGetMap(id))
+            .OfType<MapRecord>()
             .OrderBy(map => map.SequenceNumber)
             .ThenBy(map => map.Id)
             .ToArray();
@@ -145,9 +144,8 @@ public sealed partial class SessionOrchestrator
             var targetFloor = targetFloors.ElementAtOrDefault(floorIndex)?.Key
                 ?? targetFloors[0].Key;
 
-            var mapWasOpen = _gameMapToggleState.IsOpen;
             _matchSession.AdvanceOperationEpoch();
-            CancelMatchOperations();
+            CancelMatchOperations(preserveMapToggleState: true);
             _lowStructureRecoveryCursor.Reset();
             await DrainMatchOperationsAsync();
             await DrainMapCacheWritesAsync();
@@ -186,6 +184,17 @@ public sealed partial class SessionOrchestrator
             var currentMatch = _matchSession.Snapshot;
             _mapLease.Bind(currentMatch, targetMap.Id);
             _mapOpenSession.BeginVariantChange(targetMap.Id, targetFloor);
+            // Match the control panel's displayed numbering, independent of sparse SequenceNumber values.
+            var variantNumber = group.MapIds.Select(id => catalog.Maps.SingleOrDefault(map => map.Id == id))
+                .OfType<MapRecord>().OrderBy(map => map.SequenceNumber).ThenBy(map => map.Id)
+                .Select((map, index) => (map.Id, Number: index + 1))
+                .Single(item => item.Id == targetMap.Id).Number;
+            // Later alignment must not repost the first-identity hint for this explicit switch.
+            _variantNotificationMatchVersion = currentMatch.Version;
+            _variantNotificationMapId = targetMap.Id;
+            Interlocked.Increment(ref _selectedVariantNotificationVersion);
+            if (!_headless)
+                IDVBuff.Features.Notifications.OverlayNotificationCenter.Warning($"已切换变体，当前为地图 {variantNumber}");
             RefreshMiniMapForCurrentFloor();
             _statusMessage = $"已切换到 {targetMap.DisplayName}，等待重新对齐。";
             _logCollector.Append(
@@ -193,7 +202,9 @@ public sealed partial class SessionOrchestrator
                 MapLogLevel.Info,
                 $"切换地图变体 · from={currentMap.Id} · to={targetMap.Id} · floor={targetFloor}");
 
-            if (mapWasOpen)
+            // Read the live state after draining. External close/REST input must
+            // never be overwritten by a snapshot from before the variant change.
+            if (_gameMapToggleState.IsOpen)
             {
                 openTransition = _gameMapToggleState.SetOpenForExternalController(true);
                 realignImmediately = true;

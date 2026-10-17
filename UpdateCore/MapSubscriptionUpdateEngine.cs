@@ -4,6 +4,8 @@ using System.Text.Json;
 
 namespace IDVBuff.UpdateCore;
 
+public sealed record MapSubscriptionUpdateProgress(double Fraction, string Operation);
+
 public sealed record MapSubscriptionUpdateSummary(int Checked, int Prepared, int Failed);
 
 public sealed class MapSubscriptionUpdateEngine
@@ -22,19 +24,23 @@ public sealed class MapSubscriptionUpdateEngine
     public async Task<MapSubscriptionUpdateSummary> UpdateAllAsync(
         string subscriptionRoot,
         string officialPublicKeyPem,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Action<MapSubscriptionUpdateProgress>? progress = null)
     {
         var store = new MapSubscriptionStore(subscriptionRoot);
         var records = store.Load().ToList();
         var checkedCount = 0;
         var preparedCount = 0;
         var failedCount = 0;
-        foreach (var record in records.Where(item => item.Enabled))
+        var enabled = records.Where(item => item.Enabled).ToArray();
+        foreach (var record in enabled)
         {
             checkedCount++;
             try
             {
-                if (await PrepareAsync(subscriptionRoot, record, officialPublicKeyPem, cancellationToken))
+                progress?.Invoke(new((double)(checkedCount - 1) / enabled.Length, "正在检查订阅……"));
+                if (await PrepareAsync(subscriptionRoot, record, officialPublicKeyPem, cancellationToken,
+                    value => progress?.Invoke(value with { Fraction = (checkedCount - 1 + value.Fraction) / enabled.Length })))
                     preparedCount++;
                 record.LastError = null;
             }
@@ -44,6 +50,7 @@ public sealed class MapSubscriptionUpdateEngine
                 record.LastError = exception.Message;
             }
             record.LastCheckedAtUtc = DateTimeOffset.UtcNow;
+            progress?.Invoke(new((double)checkedCount / enabled.Length, "正在完成订阅检查……"));
         }
         store.Save(records);
         return new MapSubscriptionUpdateSummary(checkedCount, preparedCount, failedCount);
@@ -53,7 +60,8 @@ public sealed class MapSubscriptionUpdateEngine
         string root,
         MapSubscriptionRecord record,
         string officialPublicKeyPem,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<MapSubscriptionUpdateProgress>? progress)
     {
         var link = MapSubscriptionLink.Parse(record.Link);
         if (!string.Equals(link.PublisherKeyId, record.PublisherKeyId, StringComparison.Ordinal))
@@ -87,18 +95,21 @@ public sealed class MapSubscriptionUpdateEngine
         var encrypted = await ReadUriAsync(
             packageUri,
             MapSubscriptionProtocol.MaximumEncryptedPackageBytes,
-            cancellationToken);
+            cancellationToken,
+            (received, total) => progress?.Invoke(new(.1 + .75 * received / Math.Max(1d, total ?? publication.EncryptedLength), "正在下载订阅地图……")));
         if (encrypted.LongLength != publication.EncryptedLength
             || !string.Equals(
                 Convert.ToHexString(SHA256.HashData(encrypted)),
                 publication.EncryptedSha256,
                 StringComparison.OrdinalIgnoreCase))
             throw new CryptographicException("加密 IDVM 的长度或 SHA-256 与签名 feed 不一致。");
+        progress?.Invoke(new(.88, "正在验证并解密订阅地图……"));
         var plaintext = MapSubscriptionCrypto.DecryptIdvm(
             encrypted, link.ContentKey, publication.PublicationId, publication.PlaintextSha256);
         if (plaintext.LongLength != publication.PlaintextLength)
             throw new CryptographicException("解密后的 IDVM 长度与签名 feed 不一致。");
 
+        progress?.Invoke(new(.95, "正在保存订阅地图……"));
         var pendingDirectory = Path.Combine(root, "pending", record.Id.ToString("N"));
         Directory.CreateDirectory(pendingDirectory);
         var packagePath = Path.Combine(pendingDirectory, publication.PlaintextSha256 + ".idvm");
@@ -121,14 +132,17 @@ public sealed class MapSubscriptionUpdateEngine
         return true;
     }
 
-    private async Task<byte[]> ReadUriAsync(Uri uri, long maximumBytes, CancellationToken cancellationToken)
+    private async Task<byte[]> ReadUriAsync(Uri uri, long maximumBytes, CancellationToken cancellationToken,
+        Action<long, long?>? progress = null)
     {
         if (uri.IsFile)
         {
             var info = new FileInfo(uri.LocalPath);
             if (!info.Exists) throw new FileNotFoundException("找不到订阅资源。", uri.LocalPath);
             if (info.Length > maximumBytes) throw new InvalidDataException("订阅资源超过安全大小上限。");
-            return await File.ReadAllBytesAsync(uri.LocalPath, cancellationToken);
+            var bytes = await File.ReadAllBytesAsync(uri.LocalPath, cancellationToken);
+            progress?.Invoke(bytes.LongLength, bytes.LongLength);
+            return bytes;
         }
         if (!string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("远程订阅资源必须使用 HTTPS。");
@@ -147,6 +161,7 @@ public sealed class MapSubscriptionUpdateEngine
             if (target.Length + read > maximumBytes)
                 throw new InvalidDataException("订阅资源超过安全大小上限。");
             await target.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+            progress?.Invoke(target.Length, response.Content.Headers.ContentLength);
         }
         return target.ToArray();
     }

@@ -104,7 +104,7 @@ internal sealed class DirectMapDisplayWindow
         _floorIndex = index;
         var floor = _floors[index];
         _window.Title = $"{_map.DisplayName} - {floor.DisplayName}";
-        _image.Source = CreateBitmap(imagePath, preservePosition);
+        BindBitmap(imagePath, preservePosition);
     }
 
     private bool TryGetFloorImagePath(string floorKey, out string path)
@@ -116,10 +116,9 @@ internal sealed class DirectMapDisplayWindow
         return File.Exists(path);
     }
 
-    private BitmapImage CreateBitmap(string imagePath, bool preservePosition)
+    private void BindBitmap(string imagePath, bool preservePosition)
     {
-        var bitmap = new BitmapImage(new Uri(imagePath));
-        bitmap.ImageOpened += (_, _) =>
+        MemoryImageBinding.Attach(_image, new Uri(imagePath), 0, "UI.DirectMap.Floor", bitmap =>
         {
             if (bitmap.PixelWidth <= 0 || bitmap.PixelHeight <= 0)
                 return;
@@ -133,8 +132,7 @@ internal sealed class DirectMapDisplayWindow
             {
                 PlaceInitialWindow();
             }
-        };
-        return bitmap;
+        });
     }
 
     private void PlaceInitialWindow()
@@ -219,6 +217,7 @@ internal sealed class DirectMapDisplayWindow
 
     private void Window_Closed(object sender, WindowEventArgs args)
     {
+        MemoryImageBinding.Release(_image);
         _appWindow.Changed -= AppWindow_Changed;
         _window.Closed -= Window_Closed;
         OpenWindows.Remove(this);
