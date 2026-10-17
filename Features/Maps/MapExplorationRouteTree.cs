@@ -169,10 +169,20 @@ public static class MapExplorationRouteTree
             var m = modules[step.ModuleId!]; var cells = m.SafeCells.Count > 0 ? m.SafeCells : m.Cells;
             if (m.FloorKey != stage.FloorKey || step.Points.Zip(step.Points.Skip(1)).Any(p => !MapNavigationRules.ContainsSegment(cells, p.First, p.Second))) return false;
         }
-        foreach (var main in trunk.Stages.Where(s => s.FloorKey == stage.FloorKey).SelectMany(s => s.Steps))
-            if (OnPath(points[^1], main.Points) || ConflictsExceptAt(points, main.Points, branch.Junction)) return false;
+        foreach (var main in trunk.Stages.Where(s => s.FloorKey == stage.FloorKey).SelectMany(s => s.Steps.Select(step => (Stage: s.Number, Step: step))))
+            if (OnPath(points[^1], main.Step.Points) || ConflictsExceptAt(points, main.Step.Points, branch.Junction)
+                || trunk.DenseRoutes && main.Stage != stage.Number && MapExplorationRouteChannels.Crowded(points, main.Step.Points,
+                    topology.Floors.Single(f => f.FloorKey == stage.FloorKey))) return false;
         foreach (var other in accepted.Where(b => trunk.Stages.Single(s => s.Number == b.StageNumber).FloorKey == stage.FloorKey))
-            if (ConflictsExceptAt(points, Points(other.Steps), branch.Junction)) return false;
+            if (ConflictsExceptAt(points, Points(other.Steps), branch.Junction)
+                || trunk.DenseRoutes && other.StageNumber != stage.Number && MapExplorationRouteChannels.Crowded(points, Points(other.Steps),
+                    topology.Floors.Single(f => f.FloorKey == stage.FloorKey))) return false;
+        if (MapExplorationRouteGeometry.HasCrossing(stage.Steps.Select(s => s.Points)
+            .Concat(accepted.Where(b => b.StageNumber == stage.Number).Select(b => Points(b.Steps))).Append(points))) return false;
+        if (trunk.DenseRoutes && MapExplorationRouteGeometry.ExceedsLaneCapacity(trunk.Stages.Where(s => s.FloorKey == stage.FloorKey)
+            .SelectMany(s => s.Steps.Where(step => !ReferenceEquals(step, trunk.Stages.Last().Steps.LastOrDefault())).Select(step => (s.Number, step.Points)))
+            .Concat(accepted.Where(b => trunk.Stages.Single(s => s.Number == b.StageNumber).FloorKey == stage.FloorKey).Select(b => (b.StageNumber, Points(b.Steps))))
+            .Append((stage.Number, points)), topology.Floors.Single(f => f.FloorKey == stage.FloorKey))) return false;
         return true;
     }
 

@@ -168,9 +168,11 @@ public sealed class MapAnnotation
     {
         MapAnnotationType.Text or MapAnnotationType.Outline => Bounds?.IsValid is true,
         MapAnnotationType.Line => IsValidLine(Start, End),
-        MapAnnotationType.Route => IsValidLine(Start, End) && Points is { Count: >= 2 and <= 8192 }
+        MapAnnotationType.Route => Start?.IsValid is true && End?.IsValid is true && Points is { Count: >= 2 and <= 8192 }
             && Points.All(point => point?.IsValid is true)
-            && MapNavigationRules.Same(Start, Points[0]) && MapNavigationRules.Same(End, Points[^1]),
+            && MapNavigationRules.Same(Start, Points[0]) && MapNavigationRules.Same(End, Points[^1])
+            && (IsValidLine(Start, End) || Points.Count >= 3
+                && Points.Any(point => IsValidLine(Start, point))),
         _ => false
     };
 

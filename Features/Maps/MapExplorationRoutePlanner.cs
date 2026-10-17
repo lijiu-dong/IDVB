@@ -9,9 +9,12 @@ public enum MapRoutePreference { Shortest, Simplest }
 public sealed record MapExplorationOptions(string EntranceId, string ExitId,
     IReadOnlySet<string> AllowedFloors, MapRoomCoverage Coverage, MapRoutePreference Preference,
     IReadOnlySet<string> HighValueRoomIds, IReadOnlyList<MapRouteGateEndpoint> Gates,
-    bool UseSpecialRoomTeleports = false);
+    bool UseSpecialRoomTeleports = false, bool DenseRoutes = true);
 public sealed record MapExplorationStep(string From, string To, string? ModuleId,
-    IReadOnlyList<NormalizedPoint> Points, double Length, int Turns);
+    IReadOnlyList<NormalizedPoint> Points, double Length, int Turns)
+{
+    public bool UsesSideLane { get; init; }
+}
 public sealed record MapExplorationStage(int Number, string FloorKey, string Color,
     IReadOnlyList<MapExplorationStep> Steps, string? TransferRoomId, string? ArrivalRoomId);
 public sealed record MapExplorationRoute(IReadOnlyList<MapExplorationStage> Stages,
@@ -21,11 +24,12 @@ public sealed record MapExplorationRoute(IReadOnlyList<MapExplorationStage> Stag
     public IReadOnlyList<MapExplorationBranch> Branches { get; init; } = [];
     public IReadOnlyList<MapExplorationRoomVisit> RoomVisits { get; init; } = [];
     public IReadOnlySet<string>? ExplorationFloors { get; init; }
+    public bool DenseRoutes { get; init; }
 }
 
-/// <summary>Coverage uses bounded beam search over simple paths. This is a
-/// deterministic heuristic; legs use direction-aware search with occupied-channel exclusions.</summary>
-public static class MapExplorationRoutePlanner
+/// <summary>Coverage uses bounded beam search over stage walks. Same-stage
+/// returns share channels; competing stages use physical lane exclusions.</summary>
+public static partial class MapExplorationRoutePlanner
 {
     public static IReadOnlyList<string> StageColors { get; } = Array.AsReadOnly(
         new[] { "#FF4545", "#00D4FF", "#00FF5E", "#FF87A5", "#6972FF", "#FFD166", "#FF9F43", "#4D9FFF", "#F2F2F2", "#38B2AC", "#C5E86C" });
@@ -39,9 +43,10 @@ public static class MapExplorationRoutePlanner
         && (string.IsNullOrWhiteSpace(topology.LootEvidence) || module.ChestCandidateCount > 0);
     private sealed record Edge(string From, string To, string? ModuleId,
         IReadOnlyList<NormalizedPoint> Points, double Length, int Turns, int First, int Last, ulong TransferRooms,
-        BigInteger Occupied, BigInteger Conflicts, bool SpecialTeleport);
+        BigInteger Occupied, BigInteger Conflicts, BigInteger Crossings, bool SpecialTeleport, bool UsesSideLane, string? SourceLinkId);
     private readonly record struct State(string Node, int Heading, ulong TransferRooms, uint Floors);
-    private sealed record SearchLabel(State State, double Length, int Turns, BigInteger Occupied, SearchLabel? Previous, Edge? Edge, BigInteger Rooms = default, int Transfers = 0);
+    private sealed record SearchLabel(State State, double Length, int Turns, BigInteger Occupied, SearchLabel? Previous, Edge? Edge,
+        BigInteger Rooms = default, int Transfers = 0, BigInteger StageOccupied = default);
     private sealed record PathResult(IReadOnlyList<Edge> Edges, double Length, int Turns);
 
     public static MapExplorationRoute Find(MapNavigationTopology topology, MapExplorationOptions options,
@@ -56,54 +61,21 @@ public static class MapExplorationRoutePlanner
         var centerRooms = modules.Values.ToDictionary(m => m.CenterNodeId, m => m.Id);
         var entrance = options.Gates.SingleOrDefault(g => g.Id == options.EntranceId);
         var exit = options.Gates.SingleOrDefault(g => g.Id == options.ExitId);
-        if (entrance is null || exit is null || entrance.Id == exit.Id
-            || entrance.FloorKey == exit.FloorKey && MapNavigationRules.Same(entrance.Point, exit.Point))
+        if (entrance is null || exit is null || !options.DenseRoutes && (entrance.Id == exit.Id
+            || entrance.FloorKey == exit.FloorKey && MapNavigationRules.Same(entrance.Point, exit.Point)))
             throw new InvalidOperationException("请选择不同的入口和出口门标志。");
+        // Distinct graph terminals share the selected physical marker. Reaching
+        // the exit still requires a nonempty, nonoverlapping route back to it.
+        var closed = entrance.FloorKey == exit.FloorKey && MapNavigationRules.Same(entrance.Point, exit.Point);
+        if (entrance.Id == exit.Id) exit = exit with { Id = exit.Id + "@return" };
         var linksForRoute = topology.Links.ToList();
-        foreach (var gate in new[] { entrance, exit })
-        {
-            if (!MapRouteGateEndpoint.IsAllowed(gate.FloorKey, gate.AnchorKey) || !gate.Point.IsValid
-                || !modules.TryGetValue(gate.ModuleId, out var owner) || owner.IsExcludedFromAutomaticRoutes || owner.FloorKey != gate.FloorKey
-                || !owner.Cells.Any(c => c.Contains(gate.Point)) || nodes.ContainsKey(gate.Id))
-                throw new InvalidOperationException("入口或出口不是有效的 1F 大门、侧门或 2F 单门。");
-            nodes.Add(gate.Id, new() { Id = gate.Id, FloorKey = gate.FloorKey, Point = gate.Point });
-            var floor = topology.Floors.Single(f => f.FloorKey == gate.FloorKey);
-            var cells = owner.SafeCells.Count > 0 ? owner.SafeCells : owner.Cells;
-            var access = new MapNavigationModule { Cells = cells };
-            double Pixels(IReadOnlyList<NormalizedPoint> points) => points.Zip(points.Skip(1), (a, b) =>
-                Math.Sqrt(Math.Pow((b.X - a.X) * floor.ImageWidth, 2) + Math.Pow((b.Y - a.Y) * floor.ImageHeight, 2))).Sum();
-            var floorLinks = topology.Links.Where(l => modules[l.ModuleId].FloorKey == gate.FloorKey).ToArray();
-            var pixelLength = floorLinks.Sum(l => Pixels(l.Points));
-            var unitsPerPixel = pixelLength <= 1e-9 ? 1 : floorLinks.Sum(l => l.Length) / pixelLength;
-            var ports = topology.Doors.Where(d => d.Enabled && (d.ModuleAId == owner.Id || d.ModuleBId == owner.Id))
-                .Select(d => d.NodeId).Append(owner.CenterNodeId);
-            foreach (var port in ports)
-            {
-                var path = MapAutomaticRouteEndpointPath.TryFind(access, floor, gate.Point, nodes[port].Point, token);
-                if (path is null) continue;
-                var length = Pixels(path) * unitsPerPixel;
-                if (length <= 1e-9) path = [gate.Point.Clone()];
-                linksForRoute.Add(new() { Id = gate.Id + ":" + port, ModuleId = owner.Id,
-                    FromNodeId = gate.Id, ToNodeId = port, Points = path, Length = length, Cost = length });
-            }
-        }
+        AddGateLinks(topology, modules, nodes, linksForRoute, new[] { entrance, exit }, token);
+        static string Original(string id) => id.EndsWith("@lane-a", StringComparison.Ordinal) || id.EndsWith("@lane-b", StringComparison.Ordinal)
+            ? id[..^7] : id;
+        var sideLanes = options.DenseRoutes ? MapExplorationRouteChannels.Add(topology, nodes, linksForRoute, token) : [];
         var nodeBits = nodes.Keys.Select((id, index) => (id, bit: BigInteger.One << index)).ToDictionary(n => n.id, n => n.bit);
         var linkBits = linksForRoute.Select((link, index) => (link.Id, bit: BigInteger.One << (nodes.Count + index))).ToDictionary(l => l.Id, l => l.bit);
-        var conflicts = linksForRoute.ToDictionary(l => l.Id, l => linkBits[l.Id]);
-        // Different graph links can share only part of a drawn channel. Block
-        // the physical geometry, not merely the source/destination node pair.
-        foreach (var group in linksForRoute.GroupBy(l => modules[l.ModuleId].FloorKey))
-        {
-            var links = group.ToArray();
-            for (var i = 0; i < links.Length; i++)
-            for (var j = i + 1; j < links.Length; j++)
-            {
-                token.ThrowIfCancellationRequested();
-                if (!MapExplorationRouteGeometry.Conflicts(links[i].Points, links[j].Points)) continue;
-                conflicts[links[i].Id] |= linkBits[links[j].Id];
-                conflicts[links[j].Id] |= linkBits[links[i].Id];
-            }
-        }
+        var (conflicts, crossings) = ChannelConflicts(topology, modules, linksForRoute, linkBits, exit.Id, options.DenseRoutes, token);
         if (topology.Floors.Count > 32) throw new InvalidOperationException("楼层超过当前路线规划支持的数量。");
         var floorBits = topology.Floors.Select((floor, index) => (floor.FloorKey, Bit: 1u << index)).ToDictionary(f => f.FloorKey, f => f.Bit);
         var connectorBits = new Dictionary<string, ulong>();
@@ -130,7 +102,9 @@ public static class MapExplorationRoutePlanner
             adjacent[from].Add(new(from, to, module, points, length,
                 headings.Zip(headings.Skip(1), Bend).Sum(), headings.FirstOrDefault(), headings.LastOrDefault(), transferRooms,
                 nodeBits[to] | (linkId is null ? BigInteger.Zero : linkBits[linkId]),
-                nodeBits[to] | (linkId is null ? BigInteger.Zero : conflicts[linkId]), specialTeleport));
+                nodeBits[to] | (linkId is null ? BigInteger.Zero : conflicts[linkId]),
+                linkId is null ? BigInteger.Zero : crossings[linkId],
+                specialTeleport, linkId is not null && sideLanes.Contains(linkId), linkId is null ? null : Original(linkId)));
         }
         foreach (var link in linksForRoute)
         {
@@ -196,14 +170,31 @@ public static class MapExplorationRoutePlanner
 
         (double, double) Score(double length, int turns) => options.Preference == MapRoutePreference.Simplest
             ? (turns, length) : (length, turns);
-        var cache = new Dictionary<(string, string, int, ulong, BigInteger, bool, BigInteger), PathResult?>();
-        PathResult? Path(string from, string to, int heading, ulong usedTransfers, BigInteger occupied, bool shortest = false, BigInteger excluded = default)
+        var transit = new TransitTurns(adjacent, modules, nodes);
+        Func<State, BigInteger, BigInteger>? retainOccupation = null;
+        // A stage is one route, including its return trips. Only other stages
+        // occupy a competing lane. With dense mode off retain simple paths.
+        bool Blocks(BigInteger occupied, BigInteger stageOccupied, Edge edge) =>
+            ((options.DenseRoutes ? occupied & ~stageOccupied : occupied) & edge.Conflicts) != BigInteger.Zero
+            || options.DenseRoutes && (stageOccupied & edge.Crossings) != BigInteger.Zero;
+        SearchLabel Advance(SearchLabel label, State state, Edge edge, double length, int turns, BigInteger rooms = default)
+        {
+            var occupied = label.Occupied | edge.Occupied;
+            if (retainOccupation is not null) occupied = retainOccupation(state, occupied);
+            return new(state, length, turns, occupied, label, edge, label.Rooms | rooms,
+                label.Transfers + (edge.ModuleId is null ? 1 : 0),
+                edge.ModuleId is null ? edge.Occupied : label.StageOccupied | edge.Occupied);
+        }
+        var cache = new Dictionary<(string, string, int, ulong, BigInteger, BigInteger, bool, BigInteger), PathResult?>();
+        PathResult? Path(string from, string to, int heading, ulong usedTransfers, BigInteger occupied,
+            BigInteger stageOccupied, bool shortest = false, BigInteger excluded = default)
         {
             token.ThrowIfCancellationRequested();
-            if (cache.TryGetValue((from, to, heading, usedTransfers, occupied, shortest, excluded), out var cached)) return cached;
+            var key = (from, to, heading, usedTransfers, occupied, stageOccupied, shortest, excluded);
+            if (cache.TryGetValue(key, out var cached)) return cached;
             (double, double) LegScore(double length, int turns) => shortest ? (length, turns) : Score(length, turns);
             var initial = new State(from, heading, usedTransfers, floorBits[nodes[from].FloorKey]);
-            var start = new SearchLabel(initial, 0, 0, occupied, null, null);
+            var start = new SearchLabel(initial, 0, 0, occupied, null, null, StageOccupied: stageOccupied);
             var queue = new PriorityQueue<SearchLabel, (double, double)>(); queue.Enqueue(start, (0, 0));
             var costs = new Dictionary<State, SearchLabel> { [initial] = start };
             SearchLabel? goal = null;
@@ -212,13 +203,18 @@ public static class MapExplorationRoutePlanner
                 token.ThrowIfCancellationRequested();
                 var current = label.State;
                 if (!ReferenceEquals(costs[current], label)) continue;
-                if (current.Node == to) { goal = label; break; }
+                if (current.Node == to)
+                {
+                    if (closed && from == entrance.Id && label.Length <= 1e-9) continue;
+                    goal = label; break;
+                }
                 foreach (var edge in adjacent.GetValueOrDefault(current.Node) ?? [])
                 {
                     // Special transfers are explicit mandatory legs, never optional shortcuts.
                     if (edge.SpecialTeleport) continue;
+                    if (transit.Redundant(label.Edge, edge)) continue;
                     if ((edge.Occupied & excluded) != BigInteger.Zero) continue;
-                    if ((label.Occupied & edge.Conflicts) != BigInteger.Zero) continue;
+                    if (Blocks(label.Occupied, label.StageOccupied, edge)) continue;
                     var floorBit = floorBits[nodes[edge.To].FloorKey];
                     // A physical transfer room belongs to one stage only. A leg
                     // also cannot leave and return to its starting floor just to
@@ -229,19 +225,20 @@ public static class MapExplorationRoutePlanner
                     var turns = label.Turns + edge.Turns + Bend(current.Heading, edge.First);
                     var score = LegScore(length, turns);
                     if (costs.TryGetValue(next, out var old) && score.CompareTo(LegScore(old.Length, old.Turns)) >= 0) continue;
-                    var nextLabel = new SearchLabel(next, length, turns, label.Occupied | edge.Occupied, label, edge);
+                    var nextLabel = Advance(label, next, edge, length, turns);
                     costs[next] = nextLabel; queue.Enqueue(nextLabel, score);
                 }
             }
-            if (goal is null) return cache[(from, to, heading, usedTransfers, occupied, shortest, excluded)] = null;
+            if (goal is null) return cache[key] = null;
             var edges = new List<Edge>();
             for (var label = goal; label.Edge is not null; label = label.Previous!) edges.Add(label.Edge);
             edges.Reverse();
-            return cache[(from, to, heading, usedTransfers, occupied, shortest, excluded)] = new(edges, goal.Length, goal.Turns);
+            return cache[key] = new(edges, goal.Length, goal.Turns);
         }
         var prefix = new List<Edge>();
         var prefixNode = entrance.Id; var prefixHeading = 0; var prefixTransfers = 0UL;
         var prefixOccupied = nodeBits[entrance.Id];
+        var prefixStageOccupied = prefixOccupied;
         var pendingTeleports = adjacent.Values.SelectMany(edges => edges).Where(e => e.SpecialTeleport).ToList();
         var channelMask = ((BigInteger.One << linksForRoute.Count) - 1) << nodes.Count;
         if (options.UseSpecialRoomTeleports && pendingTeleports.Count != topology.FloorTransitions.Count(t => t.IsSpecialTeleport))
@@ -254,7 +251,8 @@ public static class MapExplorationRoutePlanner
             void EnqueueApproach(Edge transfer, BigInteger excluded)
             {
                 if (!exclusions.Add((transfer, excluded))) return;
-                var path = Path(prefixNode, transfer.From, prefixHeading, prefixTransfers, prefixOccupied, shortest: true, excluded: excluded);
+                var path = Path(prefixNode, transfer.From, prefixHeading, prefixTransfers, prefixOccupied,
+                    prefixStageOccupied, shortest: true, excluded: excluded);
                 if (path is not null) approaches.Enqueue((transfer, path, excluded), (path.Length, path.Turns, transfer.From));
             }
             foreach (var transfer in pendingTeleports) EnqueueApproach(transfer, BigInteger.Zero);
@@ -268,13 +266,16 @@ public static class MapExplorationRoutePlanner
                 token.ThrowIfCancellationRequested();
                 var signature = candidate.Edge.From + "->" + candidate.Edge.To + ":" + string.Join(",", candidate.Path.Edges.Select(e => e.Occupied));
                 if (!triedPaths.Add(signature)) continue;
-                var occupied = prefixOccupied; var used = prefixTransfers; var valid = true;
+                var occupied = prefixOccupied; var stageOccupied = prefixStageOccupied;
+                var used = prefixTransfers; var valid = true;
                 foreach (var edge in candidate.Path.Edges.Append(candidate.Edge))
                 {
-                    if ((occupied & edge.Conflicts) != BigInteger.Zero || (used & edge.TransferRooms) != 0) { valid = false; break; }
+                    if (Blocks(occupied, stageOccupied, edge) || (used & edge.TransferRooms) != 0) { valid = false; break; }
                     occupied |= edge.Occupied; used |= edge.TransferRooms;
+                    stageOccupied = edge.ModuleId is null ? edge.Occupied : stageOccupied | edge.Occupied;
                 }
-                if (valid && (pendingTeleports.Count > 1 || Path(candidate.Edge.To, exit.Id, 0, used, occupied, shortest: true) is not null))
+                if (valid && (pendingTeleports.Count > 1 || Path(candidate.Edge.To, exit.Id, 0, used, occupied,
+                    stageOccupied, shortest: true) is not null))
                 {
                     approach = (candidate.Edge, candidate.Path); break;
                 }
@@ -291,28 +292,39 @@ public static class MapExplorationRoutePlanner
                 throw new InvalidOperationException("未找到可到达出口的特殊传送前段，请检查楼层和关闭的门，或更换入口、出口。");
             foreach (var edge in approach.Path.Edges.Append(approach.Edge))
             {
-                if ((prefixOccupied & edge.Conflicts) != BigInteger.Zero || (prefixTransfers & edge.TransferRooms) != 0)
+                if (Blocks(prefixOccupied, prefixStageOccupied, edge) || (prefixTransfers & edge.TransferRooms) != 0)
                     throw new InvalidOperationException("特殊传送路线重复使用通道或转接房间。");
                 prefix.Add(edge); prefixOccupied |= edge.Occupied; prefixTransfers |= edge.TransferRooms;
+                prefixStageOccupied = edge.ModuleId is null ? edge.Occupied : prefixStageOccupied | edge.Occupied;
                 prefixNode = edge.To; prefixHeading = edge.Last;
             }
             pendingTeleports.Remove(approach.Edge);
         }
+        var originalEdges = adjacent.Values.SelectMany(e => e).Where(e => e.SourceLinkId is not null && !e.UsesSideLane)
+            .ToDictionary(e => (e.SourceLinkId!, e.From, e.To));
+        PathResult Layout(PathResult path) => options.DenseRoutes
+            ? CenterUnsharedStages(topology, path, originalEdges, transit, closed, exit.Id, token) : CompactTransit(path, transit);
+        bool FitsChannels(IReadOnlyList<Edge> edges) => HasLaneCapacity(edges, modules, topology.Floors, exit.Id, options.DenseRoutes)
+            && HasNoStageCrossings(edges, token);
         PathResult? Evaluate(IReadOnlyList<string> stops)
         {
             var edges = prefix.ToList(); var length = prefix.Sum(e => e.Length); var turns = 0; var heading = 0; var used = prefixTransfers;
             foreach (var edge in prefix) { turns += edge.Turns + Bend(heading, edge.First); heading = edge.Last; }
-            var occupied = prefixOccupied;
+            var occupied = prefixOccupied; var stageOccupied = prefixStageOccupied;
             for (var i = 1; i < stops.Count; i++)
             {
-                var leg = Path(stops[i - 1], stops[i], heading, used, occupied)
-                    ?? (prefix.Count > 0 ? Path(stops[i - 1], stops[i], heading, used, occupied, shortest: true) : null);
+                var leg = Path(stops[i - 1], stops[i], heading, used, occupied, stageOccupied)
+                    ?? (prefix.Count > 0 ? Path(stops[i - 1], stops[i], heading, used, occupied, stageOccupied, shortest: true) : null);
                 if (leg is null) return null;
                 edges.AddRange(leg.Edges); length += leg.Length; turns += leg.Turns;
-                foreach (var edge in leg.Edges) { used |= edge.TransferRooms; occupied |= edge.Occupied; }
+                foreach (var edge in leg.Edges)
+                {
+                    used |= edge.TransferRooms; occupied |= edge.Occupied;
+                    stageOccupied = edge.ModuleId is null ? edge.Occupied : stageOccupied | edge.Occupied;
+                }
                 if (leg.Edges.Count > 0) heading = leg.Edges[^1].Last;
             }
-            return new(edges, length, turns);
+            return FitsChannels(edges) ? new(edges, length, turns) : null;
         }
         bool IsTarget(MapNavigationModule module) => options.AllowedFloors.Contains(module.FloorKey) && IsLootTarget(topology, module);
         var candidates = modules.Values.Where(IsTarget)
@@ -330,6 +342,13 @@ public static class MapExplorationRoutePlanner
         BigInteger Mask(IEnumerable<string> ids) => ids.Aggregate(BigInteger.Zero, (mask, id) => mask | roomBits.GetValueOrDefault(id));
         var highMask = Mask(highValueRooms); var allMask = Mask(roomBits.Keys);
         var ordinaryMask = allMask ^ highMask; var ordinaryTarget = ((int)BigInteger.PopCount(ordinaryMask) + 1) / 2;
+        var remainingLength = RemainingExitLengths(adjacent, exit.Id, token);
+        var occupationByFloor = topology.Floors.ToDictionary(f => f.FloorKey, _ => BigInteger.Zero);
+        foreach (var (id, node) in nodes) occupationByFloor[node.FloorKey] |= nodeBits[id];
+        foreach (var link in linksForRoute) occupationByFloor[modules[link.ModuleId].FloorKey] |= linkBits[link.Id];
+        var completion = new CompletionRooms(adjacent.Values.SelectMany(e => e), nodes, floorBits,
+            candidates.SelectMany(g => g).GroupBy(m => m.FloorKey).ToDictionary(g => g.Key, g => Mask(g.Select(RoomKey))),
+            occupationByFloor, exit.FloorKey, allMask, connectorBits.Count <= 14, token);
         (int, int, double, double) Quality(BigInteger rooms, double length, int turns)
         {
             var high = (int)BigInteger.PopCount(rooms & highMask);
@@ -345,13 +364,20 @@ public static class MapExplorationRoutePlanner
             : Quality(Mask(Visited(currentRoute)), currentRoute.Length, currentRoute.Turns);
         var seed = new SearchLabel(new(entrance.Id, 0, 0, floorBits[entrance.FloorKey]), 0, 0,
             nodeBits[entrance.Id], null, null, IsTarget(modules[entrance.ModuleId])
-                ? Mask(new[] { RoomKey(modules[entrance.ModuleId]) }) : BigInteger.Zero);
+                ? Mask(new[] { RoomKey(modules[entrance.ModuleId]) }) : BigInteger.Zero,
+            StageOccupied: nodeBits[entrance.Id]);
         foreach (var edge in prefix)
-            seed = new(new(edge.To, edge.Last, seed.State.TransferRooms | edge.TransferRooms,
-                seed.State.Floors | floorBits[nodes[edge.To].FloorKey]), seed.Length + edge.Length,
-                seed.Turns + edge.Turns + Bend(seed.State.Heading, edge.First), seed.Occupied | edge.Occupied,
-                seed, edge, seed.Rooms | roomMasks[edge], seed.Transfers + (edge.ModuleId is null ? 1 : 0));
+            seed = Advance(seed, new(edge.To, edge.Last, seed.State.TransferRooms | edge.TransferRooms,
+                seed.State.Floors | floorBits[nodes[edge.To].FloorKey]), edge, seed.Length + edge.Length,
+                seed.Turns + edge.Turns + Bend(seed.State.Heading, edge.First), roomMasks[edge]);
+        // Mandatory prefix transfers are now complete. Occupancy on floors
+        // which no valid remaining transfer tour can revisit is irrelevant to
+        // future exclusions; keep its actual walk in Previous for drawing.
+        retainOccupation = completion.RetainOccupation;
+        seed = seed with { Occupied = retainOccupation(seed.State, seed.Occupied) };
         var frontier = new List<SearchLabel> { seed };
+        var expanded = new ExpandedLabels(Score);
+        var exitReachability = new ExitReachability(adjacent, exit.Id, options.DenseRoutes, token);
         // Keep diverse complete-route candidates instead of fixing a sequence
         // of greedy room insertions. Occupied geometry remains immutable in
         // each label; pruning affects coverage quality, never route validity.
@@ -359,26 +385,40 @@ public static class MapExplorationRoutePlanner
         {
             progress?.Report((double)depth / adjacent.Count);
             var next = new List<SearchLabel>();
-            foreach (var label in frontier)
+            foreach (var label in frontier.Where(label => Quality(completion.UpperBound(label),
+                label.Length + remainingLength.GetValueOrDefault(label.State.Node, double.PositiveInfinity), label.Turns).CompareTo(bestQuality) < 0).Where(expanded.Add))
             foreach (var edge in adjacent[label.State.Node])
             {
                 token.ThrowIfCancellationRequested();
                 if (edge.SpecialTeleport) continue;
-                if ((label.Occupied & edge.Conflicts) != BigInteger.Zero || (label.State.TransferRooms & edge.TransferRooms) != 0) continue;
+                if (transit.Redundant(label.Edge, edge)) continue;
+                if (Blocks(label.Occupied, label.StageOccupied, edge) || (label.State.TransferRooms & edge.TransferRooms) != 0) continue;
+                var nextRooms = label.Rooms | roomMasks[edge];
+                var repeated = false;
+                // Returning after visiting a new room is useful. Circling an
+                // unchanged room set is not; bound it without inventing lanes.
+                for (var prior = label; prior is not null; prior = prior.Previous)
+                {
+                    if (Original(prior.State.Node) == Original(edge.To) && prior.Rooms == nextRooms) { repeated = true; break; }
+                    if (prior.Edge?.ModuleId is null) break;
+                }
+                if (repeated) continue;
                 var transfers = label.Transfers + (edge.ModuleId is null ? 1 : 0);
                 if (transfers >= StageColors.Count && edge.To != exit.Id) continue;
                 var length = label.Length + edge.Length;
                 var turns = label.Turns + edge.Turns + Bend(label.State.Heading, edge.First);
-                var candidate = new SearchLabel(new(edge.To, edge.Last, label.State.TransferRooms | edge.TransferRooms,
+                var candidate = Advance(label, new(edge.To, edge.Last, label.State.TransferRooms | edge.TransferRooms,
                     label.State.Floors | floorBits[nodes[edge.To].FloorKey]),
-                    length, turns, label.Occupied | edge.Occupied, label, edge, label.Rooms | roomMasks[edge], transfers);
+                    edge, length, turns, roomMasks[edge]);
                 if (edge.To != exit.Id) { next.Add(candidate); continue; }
+                if (closed && length <= 1e-9) continue;
                 var quality = Quality(candidate.Rooms, length, turns);
                 if (quality.CompareTo(bestQuality) >= 0) continue;
-                bestQuality = quality;
                 var edges = new List<Edge>();
                 for (var tail = candidate; tail.Edge is not null; tail = tail.Previous!) edges.Add(tail.Edge);
-                edges.Reverse(); currentRoute = new(edges, length, turns);
+                edges.Reverse();
+                if (!FitsChannels(edges)) continue;
+                bestQuality = quality; currentRoute = new(edges, length, turns);
             }
             frontier = next.OrderBy(label => Quality(label.Rooms, label.Length, label.Turns))
                 .GroupBy(label => (label.State.Node, label.Rooms)).SelectMany(group => group.Take(2))
@@ -386,26 +426,11 @@ public static class MapExplorationRoutePlanner
                 // they reach the drop: upper floors collect rooms sooner. Keep
                 // a bounded beam per floor history and current floor instead.
                 .GroupBy(label => (label.State.Floors, nodes[label.State.Node].FloorKey))
-                .SelectMany(group => group.Where(CanFinish).Take(160)).ToList();
-        }
-        bool CanFinish(SearchLabel label)
-        {
-            var seen = new HashSet<string> { label.State.Node }; var pending = new Stack<string>(); pending.Push(label.State.Node);
-            while (pending.TryPop(out var node))
-            {
-                token.ThrowIfCancellationRequested();
-                foreach (var edge in adjacent[node])
-                {
-                    if (edge.SpecialTeleport) continue;
-                    if ((label.Occupied & edge.Conflicts) != BigInteger.Zero || (label.State.TransferRooms & edge.TransferRooms) != 0) continue;
-                    if (edge.To == exit.Id) return true;
-                    if (seen.Add(edge.To)) pending.Push(edge.To);
-                }
-            }
-            return false;
+                .SelectMany(group => group.Where(exitReachability.CanFinish).Take(160)).ToList();
         }
         if (currentRoute is null)
-            throw new InvalidOperationException("未找到不重叠、不重复使用转接房间的完整路线。请更换入口或出口。");
+            throw new InvalidOperationException("未找到阶段间不重叠、不重复使用转接房间的完整路线。请更换入口或出口。");
+        currentRoute = Layout(currentRoute);
         var stages = new List<MapExplorationStage>(); var steps = new List<MapExplorationStep>();
         var currentFloor = entrance.FloorKey;
         void Finish(string? transfer, string? arrival)
@@ -418,7 +443,8 @@ public static class MapExplorationRoutePlanner
         foreach (var edge in currentRoute.Edges)
         {
             if (edge.ModuleId is not null)
-                steps.Add(new(edge.From, edge.To, edge.ModuleId, edge.Points, edge.Length, edge.Turns));
+                steps.Add(new(edge.From, edge.To, edge.ModuleId, edge.Points, edge.Length, edge.Turns)
+                    { UsesSideLane = edge.UsesSideLane });
             else
             {
                 Finish(modules.Values.Single(m => m.CenterNodeId == edge.From).Id,
@@ -428,8 +454,8 @@ public static class MapExplorationRoutePlanner
         }
         if (steps.Count > 0 || stages.Count == 0) Finish(null, null);
         var route = new MapExplorationRoute(stages, [],
-            currentRoute.Length, currentRoute.Turns, entrance.Id, exit.Id,
-            []);
+            currentRoute.Length, currentRoute.Turns, options.EntranceId, options.ExitId,
+            []) { DenseRoutes = options.DenseRoutes };
         return MapExplorationRouteTree.Complete(topology, route, options, token);
     }
 

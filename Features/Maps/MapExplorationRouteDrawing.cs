@@ -10,7 +10,16 @@ public static class MapExplorationRouteDrawing
             MapNavigationRules.ValidateForRouting(topology);
         var modules = topology.Modules.ToDictionary(m => m.Id);
         var result = topology.Floors.ToDictionary(f => f.FloorKey, _ => new List<MapAnnotation>());
-        var previous = new List<(string Floor, IReadOnlyList<NormalizedPoint> Points)>();
+        var safeFloors = topology.Floors.ToDictionary(f => f.FloorKey, f => topology.Modules
+            .Where(m => m.FloorKey == f.FloorKey && !m.IsExcludedFromAutomaticRoutes)
+            .SelectMany(m => m.SafeCells.Count > 0 ? m.SafeCells : m.Cells).ToArray());
+        var lastStep = route.Stages.LastOrDefault()?.Steps.LastOrDefault();
+        var firstDrawnStep = route.Stages.SelectMany(s => s.Steps).FirstOrDefault(s => s.Points.Count >= 2);
+        if (route.DenseRoutes && route.Stages.GroupBy(s => s.FloorKey).Any(group =>
+            MapExplorationRouteGeometry.ExceedsLaneCapacity(group.SelectMany(s => s.Steps
+                .Where(step => !ReferenceEquals(step, lastStep)).Select(step => (s.Number, step.Points))), topology.Floors.Single(f => f.FloorKey == group.Key))))
+            throw new InvalidOperationException("同一通道挤入了超过两条路线，未写入地图。");
+        var previous = new List<(string Floor, int Stage, IReadOnlyList<NormalizedPoint> Points)>();
         foreach (var stage in route.Stages)
         {
             if (stage.TransferRoomId is not null || stage.ArrivalRoomId is not null)
@@ -31,15 +40,26 @@ public static class MapExplorationRouteDrawing
                 var safe = room.SafeCells.Count > 0 ? room.SafeCells : room.Cells;
                 if (step.Points.Zip(step.Points.Skip(1)).Any(p => !MapNavigationRules.ContainsSegment(safe, p.First, p.Second)))
                     throw new InvalidOperationException("路线超出了可通行通道，未写入地图。");
+                if (step.UsesSideLane && !MapExplorationRouteChannels.Safe(room,
+                    topology.Floors.Single(f => f.FloorKey == stage.FloorKey), safeFloors[stage.FloorKey], step.Points))
+                    throw new InvalidOperationException("密集路线过于靠近墙体或边缘，未写入地图。");
                 if (previous.Select((p, index) => (p, index)).Any(item => item.p.Floor == stage.FloorKey
+                    && (!route.DenseRoutes || item.p.Stage != stage.Number)
                     && MapExplorationRouteGeometry.Conflicts(item.p.Points, step.Points,
-                        item.index == previous.Count - 1 && MapNavigationRules.Same(item.p.Points[^1], step.Points[0]))))
+                        item.index == previous.Count - 1 && MapNavigationRules.Same(item.p.Points[^1], step.Points[0])
+                        || route.DenseRoutes && ReferenceEquals(step, lastStep) && ReferenceEquals(item.p.Points, firstDrawnStep?.Points)
+                            && MapNavigationRules.Same(item.p.Points[0], step.Points[^1]))))
                     throw new InvalidOperationException("路线存在交叉或重叠，未写入地图。请调整入口、出口或经过房间。");
-                previous.Add((stage.FloorKey, step.Points));
+                if (route.DenseRoutes && !ReferenceEquals(step, lastStep) && previous.Any(p => p.Floor == stage.FloorKey && p.Stage != stage.Number
+                    && MapExplorationRouteChannels.Crowded(p.Points, step.Points, topology.Floors.Single(f => f.FloorKey == stage.FloorKey))))
+                    throw new InvalidOperationException("路线间距不足，无法并排容纳路线，未写入地图。");
+                previous.Add((stage.FloorKey, stage.Number, step.Points));
                 foreach (var point in step.Points)
                     if (points.Count == 0 || !MapNavigationRules.Same(points[^1], point)) points.Add(point.Clone());
             }
-            if (!MapExplorationRouteGeometry.IsSimple(points)) throw new InvalidOperationException("路线发生了回头或自交，未写入地图。");
+            if (MapExplorationRouteGeometry.HasCrossing([points], token))
+                throw new InvalidOperationException("同一阶段路线存在穿越或十字交叉，未写入地图。");
+            if (!route.DenseRoutes && !MapExplorationRouteGeometry.IsSimple(points)) throw new InvalidOperationException("路线发生了回头或自交，未写入地图。");
             if (points.Count >= 2)
                 result[stage.FloorKey].Add(new() { Type = MapAnnotationType.Route, ColorHex = stage.Color,
                     Start = points[0].Clone(), End = points[^1].Clone(), Points = points, Text = $"阶段 {stage.Number}" });

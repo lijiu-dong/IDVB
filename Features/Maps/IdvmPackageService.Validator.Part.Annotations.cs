@@ -12,9 +12,15 @@ public sealed partial class IdvmPackageService
             ValidatePoint(annotation.Start, "annotation.start"); ValidatePoint(annotation.End, "annotation.end");
             var first = annotation.Points[0]; var last = annotation.Points[^1];
             if (first.X != annotation.Start!.X || first.Y != annotation.Start.Y
-                || last.X != annotation.End!.X || last.Y != annotation.End.Y
-                || Math.Abs(first.X - last.X) <= 1e-6 && Math.Abs(first.Y - last.Y) <= 1e-6)
+                || last.X != annotation.End!.X || last.Y != annotation.End.Y)
                 throw new InvalidDataException("自动路线阶段端点与折线不一致。");
+            if (Math.Abs(first.X - last.X) <= 1e-6 && Math.Abs(first.Y - last.Y) <= 1e-6)
+            {
+                var points = annotation.Points.Select(p => new NormalizedPoint { X = p.X, Y = p.Y }).ToArray();
+                if (points.Length < 3
+                    || !points.Any(p => Math.Abs(p.X - first.X) > 1e-6 || Math.Abs(p.Y - first.Y) > 1e-6))
+                    throw new InvalidDataException("闭合路线必须包含有效的通行路径。");
+            }
             return;
         }
         if (annotation.Points is not null) throw new InvalidDataException("普通标注不能包含路线折线。");

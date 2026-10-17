@@ -42,7 +42,7 @@ public sealed partial class MapListPage
                     {
                         var metadata = await ReadRoutePlanningMetadataAsync(map, cancellation.Token);
                         specialTeleportFloors.UnionWith(metadata.TeleportFloors);
-                        if (metadata.Gates.Count >= 2 && choices is null) choices = metadata.Gates;
+                        if (metadata.Gates.Count > (choices?.Count ?? 0)) choices = metadata.Gates;
                     }
                     catch (OperationCanceledException) { throw; }
                     catch (Exception exception)
@@ -84,9 +84,9 @@ public sealed partial class MapListPage
                 // The independent task closes the dialog only after it stops.
                 args.Cancel = true;
                 if (running) return;
-                var from = (MapRouteGateEndpoint)controls.Entrance.SelectedItem;
-                var to = (MapRouteGateEndpoint)controls.Exit.SelectedItem;
-                if (from.Id == to.Id)
+                if (controls.Entrance.SelectedItem is not MapRouteGateEndpoint from
+                    || controls.Exit.SelectedItem is not MapRouteGateEndpoint to
+                    || controls.DenseRoutes.IsChecked is not true && from.Id == to.Id)
                 {
                     controls.Status.Text = "请选择不同的入口和出口。";
                     return;

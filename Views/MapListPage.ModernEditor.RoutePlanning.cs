@@ -38,10 +38,10 @@ public sealed partial class MapListPage
             if (cancellation.IsCancellationRequested || !ReferenceEquals(draft, _draft) || !_modernEditorActive) return;
             var navigation = loaded.Clone();
             var gates = MapRouteGateEndpoint.FromDraft(draft, navigation);
-            if (gates.Count < 2) throw new InvalidOperationException("至少需要两个已标记的 1F 大门、侧门或 2F 单门才能规划路线。");
+            if (gates.Count == 0) throw new InvalidOperationException("至少需要一个已标记的 1F 大门、侧门或 2F 单门才能规划路线。");
             var controls = CreateRoutePlanningControls(gates, navigation.Floors.Select(f => f.FloorKey),
                 MapSpecialRoomTeleports.RequiredFloors(navigation));
-            var content = controls.Content; var entrance = controls.Entrance; var exit = controls.Exit;
+            var content = controls.Content;
             var coverage = controls.Coverage; var preference = controls.Preference;
             var floors = controls.Floors; var status = controls.Status;
             var progressHost = new ContentControl { Visibility = Visibility.Collapsed };
@@ -58,7 +58,6 @@ public sealed partial class MapListPage
                 progressHost.Visibility = Visibility.Visible;
                 try
                 {
-                    if (entrance.SelectedItem is not MapRouteGateEndpoint from || exit.SelectedItem is not MapRouteGateEndpoint to) return;
                     var options = controls.ReadOptions(navigation, gates);
                     status.Text = "正在检查连通性并搜索主路线、短支路和房间标记…";
                     var progress = new Progress<double>(fraction => operationProgress.Report(
