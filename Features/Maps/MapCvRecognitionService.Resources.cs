@@ -5,6 +5,12 @@ namespace IDVBuff.Features.Maps;
 
 public sealed partial class MapCvRecognitionService
 {
+    /// <summary>
+    /// 开局时等待对齐索引的最长时间。超过就让它在后台继续，先把对局状态开起来
+    /// （一个模式几十张图时，逐张从 prebuilt 线图现算索引实测要 7 秒）。
+    /// </summary>
+    private const int Vpsg3StartupWaitMilliseconds = 1200;
+
     internal IReadOnlyList<MapVariantGroup> CatalogVariantGroups { get; private set; } = [];
     private IReadOnlyList<MapRecord> ResidentMaps(IReadOnlyList<MapRecord> maps) =>
         !_matchScopedResources ? maps : string.IsNullOrWhiteSpace(_residentMapClass)
@@ -67,7 +73,21 @@ public sealed partial class MapCvRecognitionService
                     using var memory = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("Match.PrepareAlignment", mapClass);
                     using var progress = MapOperationProgress.Begin(new MatchResourceProgress(update => ReportBranch(false, update)));
                     InvalidateAndTriggerVpsg3Rebuild(maps, maps.Select(map => map.Id).ToHashSet(), MapOperationProgress.Capture());
-                    await Volatile.Read(ref _vpsg3Preparation);
+                    // 对齐索引是按 prebuilt 线图现算的（无磁盘缓存），一个模式下有几十张图时
+                    // 实测要 7 秒。这里最多等 1.2 秒：超时就让它在后台继续跑，先把对局开起来，
+                    // 否则「按一下进入对局」会被这 7 秒卡住。真正要做对齐时，
+                    // PrepareSelectedMapFloorsAsync 会为该图补建，不会拿到空索引。
+                    var preparation = Volatile.Read(ref _vpsg3Preparation);
+                    if (!preparation.IsCompleted)
+                    {
+                        await Task.WhenAny(preparation, Task.Delay(Vpsg3StartupWaitMilliseconds));
+                        // 超时后不再等；观察它的异常，避免后台任务的异常没人接。
+                        _ = preparation.ContinueWith(
+                            faulted => _ = faulted.Exception,
+                            CancellationToken.None,
+                            TaskContinuationOptions.OnlyOnFaulted,
+                            TaskScheduler.Default);
+                    }
                     MapOperationProgress.Report(1, "对齐资源已就绪");
                 });
                 // These owners prepare independent caches. Drain both before
