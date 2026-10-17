@@ -43,10 +43,16 @@ public static partial class MapExplorationRoutePlanner
         && (string.IsNullOrWhiteSpace(topology.LootEvidence) || module.ChestCandidateCount > 0);
     private sealed record Edge(string From, string To, string? ModuleId,
         IReadOnlyList<NormalizedPoint> Points, double Length, int Turns, int First, int Last, ulong TransferRooms,
-        BigInteger Occupied, BigInteger Conflicts, BigInteger Crossings, bool SpecialTeleport, bool UsesSideLane, string? SourceLinkId);
+        BigInteger Occupied, BigInteger Conflicts, BigInteger Crossings, bool SpecialTeleport, bool UsesSideLane, string? SourceLinkId,
+        BigInteger Overlaps = default);
     private readonly record struct State(string Node, int Heading, ulong TransferRooms, uint Floors);
     private sealed record SearchLabel(State State, double Length, int Turns, BigInteger Occupied, SearchLabel? Previous, Edge? Edge,
-        BigInteger Rooms = default, int Transfers = 0, BigInteger StageOccupied = default);
+        BigInteger Rooms = default, int Transfers = 0, BigInteger StageOccupied = default, Spur? Spur = null, bool Returning = false);
+    // Forward edges of the current stage which a dense walk may still retrace.
+    private sealed record Spur(Edge Edge, Spur? Next);
+    // A dense stage turns around only in a room and walks back at most this
+    // many other modules. Longer returns hide the walk under its own line.
+    private const int MaxReturnModules = 2;
     private sealed record PathResult(IReadOnlyList<Edge> Edges, double Length, int Turns);
 
     public static MapExplorationRoute Find(MapNavigationTopology topology, MapExplorationOptions options,
@@ -75,7 +81,19 @@ public static partial class MapExplorationRoutePlanner
         var sideLanes = options.DenseRoutes ? MapExplorationRouteChannels.Add(topology, nodes, linksForRoute, token) : [];
         var nodeBits = nodes.Keys.Select((id, index) => (id, bit: BigInteger.One << index)).ToDictionary(n => n.id, n => n.bit);
         var linkBits = linksForRoute.Select((link, index) => (link.Id, bit: BigInteger.One << (nodes.Count + index))).ToDictionary(l => l.Id, l => l.bit);
-        var (conflicts, crossings) = ChannelConflicts(topology, modules, linksForRoute, linkBits, exit.Id, options.DenseRoutes, token);
+        var (conflicts, crossings, overlaps) = ChannelConflicts(topology, modules, linksForRoute, linkBits, exit.Id, options.DenseRoutes, token);
+        // Side lanes of one channel are the same channel for the stage using it.
+        var nodeGroups = new Dictionary<string, BigInteger>();
+        foreach (var group in nodes.Keys.GroupBy(Original))
+        {
+            var mask = group.Aggregate(BigInteger.Zero, (m, id) => m | nodeBits[id]);
+            foreach (var id in group) nodeGroups[id] = mask;
+        }
+        foreach (var group in linksForRoute.GroupBy(l => Original(l.Id)))
+        {
+            var mask = group.Aggregate(BigInteger.Zero, (m, l) => m | overlaps[l.Id]);
+            foreach (var link in group) overlaps[link.Id] = mask;
+        }
         if (topology.Floors.Count > 32) throw new InvalidOperationException("楼层超过当前路线规划支持的数量。");
         var floorBits = topology.Floors.Select((floor, index) => (floor.FloorKey, Bit: 1u << index)).ToDictionary(f => f.FloorKey, f => f.Bit);
         var connectorBits = new Dictionary<string, ulong>();
@@ -104,7 +122,8 @@ public static partial class MapExplorationRoutePlanner
                 nodeBits[to] | (linkId is null ? BigInteger.Zero : linkBits[linkId]),
                 nodeBits[to] | (linkId is null ? BigInteger.Zero : conflicts[linkId]),
                 linkId is null ? BigInteger.Zero : crossings[linkId],
-                specialTeleport, linkId is not null && sideLanes.Contains(linkId), linkId is null ? null : Original(linkId)));
+                specialTeleport, linkId is not null && sideLanes.Contains(linkId), linkId is null ? null : Original(linkId),
+                nodeGroups[to] | (linkId is null ? BigInteger.Zero : overlaps[linkId])));
         }
         foreach (var link in linksForRoute)
         {
@@ -172,18 +191,64 @@ public static partial class MapExplorationRoutePlanner
             ? (turns, length) : (length, turns);
         var transit = new TransitTurns(adjacent, modules, nodes);
         Func<State, BigInteger, BigInteger>? retainOccupation = null;
-        // A stage is one route, including its return trips. Only other stages
-        // occupy a competing lane. With dense mode off retain simple paths.
-        bool Blocks(BigInteger occupied, BigInteger stageOccupied, Edge edge) =>
+        // A stage is one route, including its short dead-end returns. Only
+        // other stages occupy a competing lane, but a stage never runs over
+        // its own channel except to retrace a spur. With dense mode off retain
+        // simple paths.
+        bool Blocks(BigInteger occupied, BigInteger stageOccupied, Edge edge, bool returning = false) =>
             ((options.DenseRoutes ? occupied & ~stageOccupied : occupied) & edge.Conflicts) != BigInteger.Zero
-            || options.DenseRoutes && (stageOccupied & edge.Crossings) != BigInteger.Zero;
-        SearchLabel Advance(SearchLabel label, State state, Edge edge, double length, int turns, BigInteger rooms = default)
+            || options.DenseRoutes && ((stageOccupied & edge.Crossings) != BigInteger.Zero
+                || !returning && (stageOccupied & edge.Overlaps) != BigInteger.Zero);
+        // The current return run: its turnaround room and the other modules
+        // it has walked back through. No run can start outside a room.
+        (string Room, HashSet<string> Walked)? ReturnRun(SearchLabel label)
+        {
+            if (!options.DenseRoutes) return null;
+            var walked = new HashSet<string>(); var turn = label;
+            for (; turn.Returning; turn = turn.Previous!) walked.Add(turn.Edge!.ModuleId!);
+            if (!centerRooms.TryGetValue(turn.State.Node, out var room) || !IsRoom(modules[room])) return null;
+            walked.Remove(room);
+            return (room, walked);
+        }
+        static bool Retraces(Edge edge, Edge forward) => edge.ModuleId is not null && edge.Points.Count == forward.Points.Count
+            && edge.Points.Zip(forward.Points.Reverse()).All(p => MapNavigationRules.Same(p.First, p.Second));
+        bool Returns(SearchLabel label, Edge edge)
+        {
+            if (label.Spur is not { } spur || !Retraces(edge, spur.Edge) || ReturnRun(label) is not var (room, walked)) return false;
+            if (edge.ModuleId != room) walked.Add(edge.ModuleId);
+            return walked.Count <= MaxReturnModules;
+        }
+        // Nodes from which a label can still continue: its own node and every
+        // spur node a permitted return can reach. A label which has not turned
+        // yet may still turn in a room ahead, so bound that return optimistically.
+        IEnumerable<string> Continuations(SearchLabel label)
+        {
+            yield return label.State.Node;
+            if (!options.DenseRoutes) yield break;
+            var run = label.Returning ? ReturnRun(label)
+                : (centerRooms.GetValueOrDefault(label.State.Node) ?? "", new HashSet<string>());
+            if (run is not var (room, walked)) yield break;
+            // Distinct graph terminals can share a retraced geometry, such as
+            // the exit copy of a same-gate entrance.
+            IReadOnlyList<string> reached = [label.State.Node];
+            for (var spur = label.Spur; spur is not null && reached.Count > 0; spur = spur.Next)
+            {
+                if (spur.Edge.ModuleId != room) walked.Add(spur.Edge.ModuleId!);
+                if (walked.Count > MaxReturnModules) yield break;
+                reached = reached.SelectMany(node => adjacent.GetValueOrDefault(node) ?? [])
+                    .Where(edge => Retraces(edge, spur.Edge)).Select(edge => edge.To).Distinct().ToArray();
+                foreach (var node in reached) yield return node;
+            }
+        }
+        SearchLabel Advance(SearchLabel label, State state, Edge edge, double length, int turns, BigInteger rooms = default,
+            bool returning = false)
         {
             var occupied = label.Occupied | edge.Occupied;
             if (retainOccupation is not null) occupied = retainOccupation(state, occupied);
             return new(state, length, turns, occupied, label, edge, label.Rooms | rooms,
                 label.Transfers + (edge.ModuleId is null ? 1 : 0),
-                edge.ModuleId is null ? edge.Occupied : label.StageOccupied | edge.Occupied);
+                edge.ModuleId is null ? edge.Occupied : label.StageOccupied | edge.Occupied,
+                edge.ModuleId is null ? null : returning ? label.Spur!.Next : new(edge, label.Spur), returning);
         }
         var cache = new Dictionary<(string, string, int, ulong, BigInteger, BigInteger, bool, BigInteger), PathResult?>();
         PathResult? Path(string from, string to, int heading, ulong usedTransfers, BigInteger occupied,
@@ -392,7 +457,8 @@ public static partial class MapExplorationRoutePlanner
                 token.ThrowIfCancellationRequested();
                 if (edge.SpecialTeleport) continue;
                 if (transit.Redundant(label.Edge, edge)) continue;
-                if (Blocks(label.Occupied, label.StageOccupied, edge) || (label.State.TransferRooms & edge.TransferRooms) != 0) continue;
+                var returning = Returns(label, edge);
+                if (Blocks(label.Occupied, label.StageOccupied, edge, returning) || (label.State.TransferRooms & edge.TransferRooms) != 0) continue;
                 var nextRooms = label.Rooms | roomMasks[edge];
                 var repeated = false;
                 // Returning after visiting a new room is useful. Circling an
@@ -409,7 +475,7 @@ public static partial class MapExplorationRoutePlanner
                 var turns = label.Turns + edge.Turns + Bend(label.State.Heading, edge.First);
                 var candidate = Advance(label, new(edge.To, edge.Last, label.State.TransferRooms | edge.TransferRooms,
                     label.State.Floors | floorBits[nodes[edge.To].FloorKey]),
-                    edge, length, turns, roomMasks[edge]);
+                    edge, length, turns, roomMasks[edge], returning);
                 if (edge.To != exit.Id) { next.Add(candidate); continue; }
                 if (closed && length <= 1e-9) continue;
                 var quality = Quality(candidate.Rooms, length, turns);
@@ -426,7 +492,7 @@ public static partial class MapExplorationRoutePlanner
                 // they reach the drop: upper floors collect rooms sooner. Keep
                 // a bounded beam per floor history and current floor instead.
                 .GroupBy(label => (label.State.Floors, nodes[label.State.Node].FloorKey))
-                .SelectMany(group => group.Where(exitReachability.CanFinish).Take(160)).ToList();
+                .SelectMany(group => group.Where(label => exitReachability.CanFinishFrom(label, Continuations(label))).Take(160)).ToList();
         }
         if (currentRoute is null)
             throw new InvalidOperationException("未找到阶段间不重叠、不重复使用转接房间的完整路线。请更换入口或出口。");

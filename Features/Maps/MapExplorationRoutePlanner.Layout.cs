@@ -63,7 +63,15 @@ public static partial class MapExplorationRoutePlanner
                 {
                     var b = candidate[j];
                     if (b.ModuleId is null || modules[b.ModuleId].FloorKey != floor) continue;
-                    if (stageIds[i] == stageIds[j]) continue;
+                    // A stage may still retrace its searched spurs, but a
+                    // restored center line must not run over its own walk.
+                    if (stageIds[i] == stageIds[j])
+                    {
+                        if ((!ReferenceEquals(a, edges[i]) || !ReferenceEquals(b, edges[j]))
+                            && MapExplorationRouteGeometry.Conflicts(a.Points, b.Points)
+                            && !MapExplorationRouteGeometry.Conflicts(edges[i].Points, edges[j].Points)) return false;
+                        continue;
+                    }
                     var joint = j == i + 1 && MapNavigationRules.Same(a.Points[^1], b.Points[0]);
                     var closure = closed && i == 0 && j == candidate.Count - 1 && MapNavigationRules.Same(a.Points[0], b.Points[^1]);
                     if (MapExplorationRouteGeometry.Conflicts(a.Points, b.Points, joint || closure)) return false;

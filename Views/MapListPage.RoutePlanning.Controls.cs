@@ -60,7 +60,7 @@ public sealed partial class MapListPage
         content.Children.Add(entrance); content.Children.Add(exit);
         var denseRoutes = new CheckBox { Content = "密集路线", IsChecked = true, Tag = "dense-routes" };
         content.Children.Add(denseRoutes);
-        content.Children.Add(new TextBlock { Text = "仅不同颜色阶段共用通道时安排最多两条并行路线；同一阶段可沿原通道返回，但不能穿越已有线条形成十字交叉。不同阶段不能重叠或交错，须保持墙体和边缘间距，宽度不足时不挤入第二条。允许同点进出；最后接向出口的一段只放宽阶段间距。关闭后必须选择不同出入口。",
+        content.Children.Add(new TextBlock { Text = "仅不同颜色阶段共用通道时安排最多两条并行路线；同一阶段只能在房间内掉头、沿原通道退出最多两个模块的短死胡同，不会长距离折返或穿越已有线条。不同阶段不能重叠或交错，须保持墙体和边缘间距，宽度不足时不挤入第二条。允许同点进出；最后接向出口的一段只放宽阶段间距。关闭后必须选择不同出入口。",
             TextWrapping = TextWrapping.Wrap });
         void SeparateGates()
         {
@@ -91,7 +91,7 @@ public sealed partial class MapListPage
         var preference = new ComboBox { Header = "路线偏好", ItemsSource = new[] { "最短优先", "最简优先（更少的转弯、掉头）" },
             SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
         content.Children.Add(preference);
-        content.Children.Add(new TextBlock { Text = "自动识别高价值房间和楼梯、下落通路。不同阶段使用不同颜色；同一阶段可复用通道，但不能穿越自己的路线。短支路最多经过两个走廊并进入一个房间，只能在分叉点接入主线，游玩时可原路返回。房间按进入顺序编号，⇅ 表示跨层、★ 表示高价值；其他楼层的同一房间只作通道。无法覆盖的房间会在生成后列出。",
+        content.Children.Add(new TextBlock { Text = "自动识别高价值房间和楼梯、下落通路。不同阶段使用不同颜色；同一阶段只在短死胡同内原路退出，不会沿已画线条长距离折返，也不能穿越自己的路线。短支路最多经过两个走廊并进入一个房间，只能在分叉点接入主线，游玩时可原路返回。房间按进入顺序编号，⇅ 表示跨层、★ 表示高价值；其他楼层的同一房间只作通道。无法覆盖的房间会在生成后列出。",
             TextWrapping = TextWrapping.Wrap });
 
         var status = new TextBlock { TextWrapping = TextWrapping.Wrap };

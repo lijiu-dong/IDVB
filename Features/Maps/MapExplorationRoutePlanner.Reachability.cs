@@ -10,7 +10,7 @@ public static partial class MapExplorationRoutePlanner
     private sealed class ExitReachability
     {
         private readonly record struct Arc(int To, Edge Edge);
-        private readonly record struct Witness(BigInteger Before, BigInteger After, BigInteger Crossings, ulong Transfers);
+        private readonly record struct Witness(BigInteger Before, BigInteger After, BigInteger Stage, ulong Transfers);
         private readonly Dictionary<string, int> _ids;
         private readonly Arc[][] _adjacent;
         private readonly List<Witness>?[] _witnesses;
@@ -32,45 +32,55 @@ public static partial class MapExplorationRoutePlanner
             _parents = new int[count]; _pending = new int[count]; _parentEdges = new Edge?[count];
         }
 
-        public bool CanFinish(SearchLabel label)
+        public bool CanFinish(SearchLabel label) => CanFinishFrom(label, [label.State.Node]);
+
+        // A dense stage cannot walk over its own channel, except by retracing
+        // its spur. The caller lists the nodes such a retrace can still reach.
+        public bool CanFinishFrom(SearchLabel label, IEnumerable<string> starts)
         {
             _token.ThrowIfCancellationRequested();
             var past = _dense ? label.Occupied & ~label.StageOccupied : label.Occupied;
             bool Fits(Witness witness) => (witness.Transfers & label.State.TransferRooms) == 0
                 && (past & witness.Before) == BigInteger.Zero && (label.Occupied & witness.After) == BigInteger.Zero
-                && (!_dense || (label.StageOccupied & witness.Crossings) == BigInteger.Zero);
-            var start = _ids[label.State.Node] * 2;
-            if (_witnesses[start]?.Any(Fits) == true) return true;
-            if (++_generation == int.MaxValue) { Array.Clear(_seen); _generation = 1; }
-            _seen[start] = _generation; _parents[start] = -1; _pending[0] = start;
-            var count = 1;
-            while (count > 0)
-            {
-                _token.ThrowIfCancellationRequested();
-                var current = _pending[--count];
-                if (_witnesses[current] is { } cached)
-                    foreach (var witness in cached)
-                        if (Fits(witness)) { Remember(current, witness); return true; }
-                var changed = (current & 1) != 0;
-                foreach (var arc in _adjacent[current / 2])
-                {
-                    var edge = arc.Edge;
-                    if ((edge.TransferRooms & label.State.TransferRooms) != 0
-                        || ((changed ? label.Occupied : past) & edge.Conflicts) != BigInteger.Zero
-                        || _dense && !changed && (label.StageOccupied & edge.Crossings) != BigInteger.Zero) continue;
-                    var next = arc.To * 2 + (changed || edge.ModuleId is null ? 1 : 0);
-                    if (arc.To == _exit) { Remember(current, Prepend(current, edge, default)); return true; }
-                    if (_seen[next] == _generation) continue;
-                    _seen[next] = _generation; _parents[next] = current; _parentEdges[next] = edge;
-                    _pending[count++] = next;
-                }
-            }
+                && (!_dense || (label.StageOccupied & witness.Stage) == BigInteger.Zero);
+            foreach (var node in starts)
+                if (_ids[node] == _exit || From(_ids[node] * 2)) return true;
             return false;
+
+            bool From(int start)
+            {
+                if (_witnesses[start]?.Any(Fits) == true) return true;
+                if (++_generation == int.MaxValue) { Array.Clear(_seen); _generation = 1; }
+                _seen[start] = _generation; _parents[start] = -1; _pending[0] = start;
+                var count = 1;
+                while (count > 0)
+                {
+                    _token.ThrowIfCancellationRequested();
+                    var current = _pending[--count];
+                    if (_witnesses[current] is { } cached)
+                        foreach (var witness in cached)
+                            if (Fits(witness)) { Remember(current, witness); return true; }
+                    var changed = (current & 1) != 0;
+                    foreach (var arc in _adjacent[current / 2])
+                    {
+                        var edge = arc.Edge;
+                        if ((edge.TransferRooms & label.State.TransferRooms) != 0
+                            || ((changed ? label.Occupied : past) & edge.Conflicts) != BigInteger.Zero
+                            || _dense && !changed && (label.StageOccupied & (edge.Crossings | edge.Overlaps)) != BigInteger.Zero) continue;
+                        var next = arc.To * 2 + (changed || edge.ModuleId is null ? 1 : 0);
+                        if (arc.To == _exit) { Remember(current, Prepend(current, edge, default)); return true; }
+                        if (_seen[next] == _generation) continue;
+                        _seen[next] = _generation; _parents[next] = current; _parentEdges[next] = edge;
+                        _pending[count++] = next;
+                    }
+                }
+                return false;
+            }
         }
 
         private static Witness Prepend(int state, Edge edge, Witness suffix) => (state & 1) != 0
             ? new(0, edge.Conflicts | suffix.After, 0, edge.TransferRooms | suffix.Transfers)
-            : new(edge.Conflicts | suffix.Before, suffix.After, edge.Crossings | suffix.Crossings, edge.TransferRooms | suffix.Transfers);
+            : new(edge.Conflicts | suffix.Before, suffix.After, edge.Crossings | edge.Overlaps | suffix.Stage, edge.TransferRooms | suffix.Transfers);
 
         private void Remember(int state, Witness witness)
         {

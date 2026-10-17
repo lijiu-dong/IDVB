@@ -4,12 +4,14 @@ namespace IDVBuff.Features.Maps;
 
 public static partial class MapExplorationRoutePlanner
 {
-    private static (Dictionary<string, BigInteger> Conflicts, Dictionary<string, BigInteger> Crossings) ChannelConflicts(
+    private static (Dictionary<string, BigInteger> Conflicts, Dictionary<string, BigInteger> Crossings,
+        Dictionary<string, BigInteger> Overlaps) ChannelConflicts(
         MapNavigationTopology topology, IReadOnlyDictionary<string, MapNavigationModule> modules, IReadOnlyList<MapNavigationLink> source,
         IReadOnlyDictionary<string, BigInteger> bits, string exit, bool dense, CancellationToken token)
     {
         var conflicts = source.ToDictionary(l => l.Id, l => bits[l.Id]);
         var crossings = source.ToDictionary(l => l.Id, _ => BigInteger.Zero);
+        var overlaps = source.ToDictionary(l => l.Id, l => bits[l.Id]);
         foreach (var group in source.GroupBy(l => modules[l.ModuleId].FloorKey))
         {
             var links = group.ToArray(); var floor = topology.Floors.Single(f => f.FloorKey == group.Key);
@@ -30,11 +32,12 @@ public static partial class MapExplorationRoutePlanner
                 {
                     crossings[links[i].Id] |= bits[links[j].Id]; crossings[links[j].Id] |= bits[links[i].Id];
                 }
+                if (intersects) { overlaps[links[i].Id] |= bits[links[j].Id]; overlaps[links[j].Id] |= bits[links[i].Id]; }
                 if (!intersects && (!dense || finalAccess || !MapExplorationRouteChannels.Crowded(links[i].Points, links[j].Points, floor))) continue;
                 conflicts[links[i].Id] |= bits[links[j].Id]; conflicts[links[j].Id] |= bits[links[i].Id];
             }
         }
-        return (conflicts, crossings);
+        return (conflicts, crossings, overlaps);
     }
 
     private sealed class TransitTurns(IReadOnlyDictionary<string, List<Edge>> adjacent,
