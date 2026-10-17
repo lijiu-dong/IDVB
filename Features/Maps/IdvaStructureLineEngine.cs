@@ -29,7 +29,8 @@ public sealed partial class IdvaStructureLineEngine
 {
     // Persisted separately from the IDVA package hash: execution semantics can change
     // without changing a user-supplied algorithm package.
-    public const int CurrentRevision = 1;
+    // 2: hole filling keeps holes that are mostly explicit source void.
+    public const int CurrentRevision = 2;
     private const int MaximumPackageBytes = 1024 * 1024;
     private const int MaximumStages = 64;
     private static readonly HashSet<string> SupportedStages =
@@ -240,7 +241,8 @@ public sealed partial class IdvaStructureLineEngine
                 break;
             case "fill_holes":
                 RequireString(stage, "mode", "all_enclosed");
-                ReplaceMasks(state, FillAllHoles(state.Room), FillAllHoles(state.Corridor));
+                ReplaceMasks(state, FillAllHoles(state.Room, state.SourceVoid),
+                    FillAllHoles(state.Corridor, state.SourceVoid));
                 break;
             case "directional_bridge":
                 state.ProtectSourceBackground();
@@ -252,8 +254,8 @@ public sealed partial class IdvaStructureLineEngine
                 break;
             case "fill_small_holes":
                 ReplaceMasks(state,
-                    FillSmallHoles(state.Room, ReadBoundedInt(stage, "room_max_hole_area", 1, int.MaxValue)),
-                    FillSmallHoles(state.Corridor, ReadBoundedInt(stage, "corridor_max_hole_area", 1, int.MaxValue)));
+                    FillSmallHoles(state.Room, ReadBoundedInt(stage, "room_max_hole_area", 1, int.MaxValue), state.SourceVoid),
+                    FillSmallHoles(state.Corridor, ReadBoundedInt(stage, "corridor_max_hole_area", 1, int.MaxValue), state.SourceVoid));
                 break;
             case "contours":
                 state.RoomRetrieval = ReadRetrieval(stage);
