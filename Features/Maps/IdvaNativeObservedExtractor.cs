@@ -57,6 +57,7 @@ public sealed class IdvaNativeObservedExtractor
         Cv2.CvtColor(bgr, hsv, ColorConversionCodes.BGR2HSV);
 
         using var exclusion = DetectDynamicExclusion(bgr, hsv);
+        NativeStructureTextureMask.Exclude(bgr, exclusion);
         var (room, corridor) = ClassifyStructure(hsv, exclusion);
         using (room)
         using (corridor)
@@ -269,8 +270,8 @@ public sealed class IdvaNativeObservedExtractor
         var room = new Mat();
         using var room1 = new Mat();
         using var room2 = new Mat();
-        Cv2.InRange(hsv, new Scalar(0, 18, 82), new Scalar(25, 165, 200), room1);
-        Cv2.InRange(hsv, new Scalar(170, 18, 82), new Scalar(179, 165, 200), room2);
+        Cv2.InRange(hsv, new Scalar(0, 18, SemanticStructureContours.MinimumWarmFloorValue), new Scalar(25, 165, 200), room1);
+        Cv2.InRange(hsv, new Scalar(170, 18, SemanticStructureContours.MinimumWarmFloorValue), new Scalar(179, 165, 200), room2);
         Cv2.BitwiseOr(room1, room2, room);
 
         var corridor = new Mat();

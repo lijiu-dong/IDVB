@@ -95,6 +95,7 @@
     <Compile Include="..\Features\Maps\GameFrameStream.Readback.cs" Link="Production\GameFrameStream.Readback.cs" />
     <Compile Include="..\Features\Maps\MapViewportPresenceDetector.cs" Link="Production\MapViewportPresenceDetector.cs" />
     <Compile Include="..\Features\Maps\Vpsg3\SemanticStructureContours.cs" />
+    <Compile Include="..\Features\Maps\Vpsg3\NativeStructureTextureMask.cs" />
     <Compile Include="..\Features\Maps\Vpsg3\Vpsg3SemanticPoints.cs" />
     <Compile Include="..\Features\Maps\Vpsg3\Vpsg3LiveObservation.cs" Link="Production\Vpsg3LiveObservation.cs" />
     <Compile Include="..\Features\Maps\Vpsg3\Vpsg3FastLiveExtractor.cs" Link="Production\Vpsg3FastLiveExtractor.cs" />

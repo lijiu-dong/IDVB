@@ -11,6 +11,10 @@ public static class SemanticStructureContours
     public const byte Cool = 255;
     public const byte Warm = 127;
     public static readonly Scalar OrangeBgr = new(0, 140, 255);
+    // Native room hatching keeps the floor hue/saturation but darkens its fill
+    // below 82. It is still room interior, not a hole bounded by a new wall.
+    // Photometric edge support independently rejects smooth fog frontiers.
+    internal const int MinimumWarmFloorValue = 55;
 
     public static Mat Decode(Mat image) => Decode(image, geometry: false);
 

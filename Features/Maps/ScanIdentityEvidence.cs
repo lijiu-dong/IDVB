@@ -270,27 +270,36 @@ internal static class ScanIdentityVerifier
     {
         if (!retrievalComplete) return new(null, "retrieval-incomplete");
         if (!withinBudget) return new(null, "execution-unavailable");
-        if (candidates.Any(c => c.IdentityEvidence.State == ScanIdentityState.Unverified))
-            return new(null, "unverified-identities");
         var supported = candidates.Where(c => c.IdentityEvidence.State == ScanIdentityState.Supported)
             .OrderBy(c => FitCost(c.IdentityEvidence))
             .ThenByDescending(c => c.IdentityEvidence.SupportedFraction)
             .ThenBy(c => c.Map.SequenceNumber).ThenBy(c => c.Map.Id).ToArray();
-        var verified = supported.Where(c => c.Disposition == SideEntranceCandidateDisposition.Reliable).ToArray();
-        if (verified.Length == 0) return new(null, supported.Length == 0
-            ? "all-identities-excluded" : "supported-without-confirmed-alignment");
+        Guid[] FamilyOf(Guid id)
+        {
+            var declared = (variantGroups ?? []).Where(group => group.Contains(id)).ToArray();
+            return declared.Length == 1 ? declared[0] : new[] { id };
+        }
+        var verified = supported.Where(c => c.Disposition == SideEntranceCandidateDisposition.Reliable)
+            .Select(c => (Candidate: c, Family: FamilyOf(c.Map.Id)))
+            .Select(item => (item.Candidate, item.Family,
+                Cost: supported.Where(c => item.Family.Contains(c.Map.Id)).Min(c => FitCost(c.IdentityEvidence))))
+            .OrderBy(item => item.Cost).ToArray();
+        if (verified.Length == 0) return new(null,
+            candidates.Any(c => c.IdentityEvidence.State == ScanIdentityState.Unverified) ? "unverified-identities"
+            : supported.Length == 0 ? "all-identities-excluded" : "supported-without-confirmed-alignment");
         // Compare identities at the user-selectable family boundary. Only the
         // selected member needs a confirmed alignment; a fully compared losing
         // identity must not force a dialog merely because it was not aligned.
-        var winnerId = verified[0].Map.Id;
-        var winnerCost = FitCost(verified[0].IdentityEvidence);
-        // Do not transitively merge overlapping groups. Each declared family has
-        // to beat every supported identity outside that one family independently.
-        var families = (variantGroups ?? []).Where(group => group.Contains(winnerId))
-            .Append(new[] { winnerId });
-        var selected = families.Any(family => supported.Where(c => !family.Contains(c.Map.Id)).All(c =>
+        var winnerId = verified[0].Candidate.Map.Id;
+        var family = verified[0].Family;
+        // A declared family is one identity. Unknown siblings cannot veto its
+        // aligned member; unknown outside families must still prevent selection.
+        if (candidates.Any(c => c.IdentityEvidence.State == ScanIdentityState.Unverified && !family.Contains(c.Map.Id)))
+            return new(null, "unverified-identities");
+        var winnerCost = verified[0].Cost;
+        var selected = supported.Where(c => !family.Contains(c.Map.Id)).All(c =>
             selectionPolicy == ScanIdentitySelectionPolicy.AllowDominantSupport
-            && FitCost(c.IdentityEvidence) - winnerCost >= DominantFitMargin));
+            && FitCost(c.IdentityEvidence) - winnerCost >= DominantFitMargin);
         return new(selected ? winnerId : null, selected ? "selected" : "competing-supported-identities");
     }
     internal const double DominantFitMargin = .35;

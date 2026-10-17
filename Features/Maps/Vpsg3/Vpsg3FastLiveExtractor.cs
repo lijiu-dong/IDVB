@@ -59,12 +59,14 @@ public static class Vpsg3FastLiveExtractor
 
             // 3. Fast dynamic exclusion (HUD and top glyph exclusion without connected components)
             ComputeFastDynamicExclusion(s.Hsv, s);
+            NativeStructureTextureMask.Exclude(bgr, s.Exclusion);
 
             // 4. Classify room and corridor semantic areas with pure morphological filtering
             ClassifyStructurePureMorphology(s);
 
             // 5. Semantic candidate edge extraction via contour approximation
             ExtractSemanticCandidateEdges(s);
+            RemoveWarmTextureBoundaries(s);
             // Clearing HUD pixels before contour extraction creates artificial boundaries.
             // Keep those boundaries out of both edge streams, including their drawn rim,
             // before photometric support can promote them back to valid observations.
@@ -224,6 +226,25 @@ public static class Vpsg3FastLiveExtractor
                 thickness: 2,
                 lineType: LineTypes.Link8);
         }
+    }
+
+    private static void RemoveWarmTextureBoundaries(Vpsg3LiveExtractorScratch s)
+    {
+        using var originalEdges = s.CandidateEdges.Clone();
+        Cv2.InRange(s.Hsv, new Scalar(0, 18, SemanticStructureContours.MinimumWarmFloorValue), new Scalar(25, 165, 200), s.Room1);
+        Cv2.InRange(s.Hsv, new Scalar(170, 18, SemanticStructureContours.MinimumWarmFloorValue), new Scalar(179, 165, 200), s.Room2);
+        Cv2.BitwiseOr(s.Room1, s.Room2, s.Room);
+        s.Room.SetTo(Scalar.Black, s.Exclusion);
+        Cv2.MorphologyEx(s.Room, s.Room, MorphTypes.Open, s.K5);
+        Cv2.MorphologyEx(s.Room, s.Room, MorphTypes.Close, s.K3);
+        s.ApproxContourBatch.Clear();
+        s.CandidateEdges.SetTo(Scalar.Black);
+        ExtractSemanticCandidateEdges(s);
+        // The extended floor fill disproves interior texture boundaries only.
+        // Keep original wall coordinates: moving the brightness contour changes
+        // scale/translation estimates even when it follows the same physical rim.
+        Cv2.Dilate(s.CandidateEdges, s.NotSupport, s.K5);
+        Cv2.BitwiseAnd(originalEdges, s.NotSupport, s.CandidateEdges);
     }
 
     private static void AppendApproximatedContours(Mat mask, List<Point[]> batch)
