@@ -7,8 +7,9 @@ namespace IDVBuff.Features.Maps;
 public sealed partial class MapCvRecognitionService : IDisposable
 {
     // Each build owns full-resolution native distance-transform scratch space.
-    // Keep one builder to bound the peak, rather than multiplying it by cores.
-    private const int Vpsg3RebuildWorkerCount = 1;
+    // Share the bounded floor-preparation worker count: a single builder made
+    // match start wait for every floor in sequence.
+    private static int Vpsg3RebuildWorkerCount => MapCvRecognitionHelpers.FloorPreparationWorkerCount;
 
     private readonly Vpsg3PreparedIndexRegistry _vpsg3Registry = new();
     private readonly CancellationTokenSource _vpsg3RebuildCts = new();

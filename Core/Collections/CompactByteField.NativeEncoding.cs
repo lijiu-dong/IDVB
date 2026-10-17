@@ -39,19 +39,11 @@ public sealed partial class CompactByteField
         Span<byte> tile = stackalloc byte[64];
         Span<byte> previous = stackalloc byte[64];
         using var metadata = TileDedupWorkspace.Rent(resource);
-        var unique = metadata.Workspace.Dictionary;
-        long length = 0, compactLength = 0;
-        for (var i = 0; i < count; i++)
-        {
-            ReadTile(source, width, height, i, tile, sourceStride);
-            if (FindTile(unique, source, width, height, tile, previous, out var signature, sourceStride) >= 0) continue;
-            if (unique.Count < 32768) metadata.Workspace.Add(signature, i);
-            var plan = Plan(tile); length += plan.Length;
-            if (preferCompactDirectory && !CanInline(plan)) compactLength += plan.Length;
-        }
+        var (length, compactLength, uniqueCount) = PlanTiles(source, width, height, count,
+            metadata.Workspace, tile, previous, sourceStride, preferCompactDirectory);
         var raw = length + 4L * count >= packedLength || length >= 1 << 28;
         var compact = !raw && preferCompactDirectory && BitConverter.IsLittleEndian
-            && compactLength < 1 << 20 && length <= unique.Count * 32L;
+            && compactLength < 1 << 20 && length <= uniqueCount * 32L;
         var dataLength = raw ? packedLength : checked((int)(compact ? compactLength : length));
         var owner = new NativeEncodedByteField(new NativeEncodedByteField.EncodedShape(width, height, _tileColumns, dataLength,
             raw || compact ? 0 : count, compact ? checked(count * 3 + 1) : 0, false), resource, afterAllocation);
@@ -64,7 +56,7 @@ public sealed partial class CompactByteField
                 else for (var y = 0; y < height; y++)
                     source.Slice(y * sourceStride, width).CopyTo(target.Data.Slice(y * width, width));
             }
-            else WriteNativeTiles(source, target, compact, count, unique, tile, previous, sourceStride);
+            else WriteNativeTiles(source, target, compact, count, metadata.Workspace, tile, sourceStride);
             owner.CompleteEncoding();
             return owner;
         }
@@ -72,13 +64,15 @@ public sealed partial class CompactByteField
     }
 
     private unsafe void WriteNativeTiles(ReadOnlySpan<byte> source, NativeEncodedByteField.WritableEncoding target,
-        bool compact, int count, Dictionary<ulong, int> unique, Span<byte> tile, Span<byte> previous, int sourceStride)
+        bool compact, int count, TileDedupWorkspace planned, Span<byte> tile, int sourceStride)
     {
         // Layout lengths and every emitted tile are checked before raw writes.
         // The new owner is private to this constructor until CompleteEncoding.
         if (compact ? target.Compact.Length != checked(count * 3 + 1) : target.Tiles.Length != count)
             throw new InvalidOperationException("Native directory length does not match the tile plan.");
         var width = _width; var height = _height; var dataLength = target.Data.Length;
+        var owners = planned.Owners;
+        var plans = planned.Plans;
         fixed (byte* data = target.Data)
         fixed (uint* tiles = target.Tiles)
         fixed (byte* directory = target.Compact)
@@ -86,15 +80,15 @@ public sealed partial class CompactByteField
             var offset = 0;
             for (var i = 0; i < count; i++)
             {
-                ReadTile(source, width, height, i, tile, sourceStride);
-                var shared = FindTile(unique, source, width, height, tile, previous, out _, sourceStride);
-                if (shared >= 0 && shared < i)
+                var shared = owners[i];
+                if (shared != i)
                 {
                     if (!compact) tiles[i] = tiles[shared];
                     else WriteNativeDescriptor(directory, i, ReadNativeDescriptor(directory, shared));
                     continue;
                 }
-                var plan = Plan(tile);
+                ReadTile(source, width, height, i, tile, sourceStride);
+                var plan = plans[i];
                 var mode = plan.Mode; var dx = plan.Dx; var dy = plan.Dy;
                 var minimum = plan.Minimum; var length = plan.Length; var first = tile[0];
                 if (compact && mode == 9)

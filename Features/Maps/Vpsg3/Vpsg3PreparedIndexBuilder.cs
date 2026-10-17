@@ -131,13 +131,16 @@ public static class Vpsg3PreparedIndexBuilder
         for (var y = 0; !deriveGeometryK3 && y < height; y++)
         {
             var rowOffset = y * wordsPerRow;
+            // Borrow each row once; a per-pixel Mat.At is a native call.
+            var k5 = MemoryMarshal.CreateReadOnlySpan(ref dilatedK5.At<byte>(y, 0), width);
+            var k3 = MemoryMarshal.CreateReadOnlySpan(ref dilatedK3.At<byte>(y, 0), width);
             for (var x = 0; x < width; x++)
             {
-                if (dilatedK5.At<byte>(y, x) > 128)
+                if (k5[x] > 128)
                 {
                     bitsetK5[rowOffset + (x >> 6)] |= 1UL << (x & 63);
                 }
-                if (!deriveGeometryK3 && dilatedK3.At<byte>(y, x) > 128)
+                if (k3[x] > 128)
                 {
                     bitsetK3[rowOffset + (x >> 6)] |= 1UL << (x & 63);
                 }
@@ -353,18 +356,19 @@ public static class Vpsg3PreparedIndexBuilder
         var width = edgeMask.Width;
         var height = edgeMask.Height;
 
+        // Counts are exact in double regardless of summation order, so walk
+        // rows once instead of issuing a native Mat.At call for every pixel.
         if (axis == 0) // Column projection along X
         {
             var proj = new double[width];
-            for (var x = 0; x < width; x++)
+            for (var y = 0; y < height; y++)
             {
-                var sum = 0.0;
-                for (var y = 0; y < height; y++)
+                var row = MemoryMarshal.CreateReadOnlySpan(ref edgeMask.At<byte>(y, 0), width);
+                for (var x = 0; x < width; x++)
                 {
-                    if (edgeMask.At<byte>(y, x) > 128)
-                        sum++;
+                    if (row[x] > 128)
+                        proj[x]++;
                 }
-                proj[x] = sum;
             }
             return proj;
         }
@@ -373,10 +377,11 @@ public static class Vpsg3PreparedIndexBuilder
             var proj = new double[height];
             for (var y = 0; y < height; y++)
             {
+                var row = MemoryMarshal.CreateReadOnlySpan(ref edgeMask.At<byte>(y, 0), width);
                 var sum = 0.0;
                 for (var x = 0; x < width; x++)
                 {
-                    if (edgeMask.At<byte>(y, x) > 128)
+                    if (row[x] > 128)
                         sum++;
                 }
                 proj[y] = sum;

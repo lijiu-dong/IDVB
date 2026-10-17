@@ -77,19 +77,9 @@ public sealed partial class CompactByteField
         // and empty regions. Share their encoded bytes, retaining exact random
         // access. Verify all 64 bytes on a hash hit; collisions cannot change a
         // pixel. Bound temporary metadata even for incompressible images.
-        const int maximumUniqueTiles = 32768;
         using var metadata = TileDedupWorkspace.Rent(resource);
-        var uniqueTiles = metadata.Workspace.Dictionary;
-        long length = 0, compactLength = 0;
-        for (var i = 0; i < count; i++)
-        {
-            ReadTile(source, width, height, i, tile, sourceStride);
-            if (FindTile(uniqueTiles, source, width, height, tile, previousTile, out var signature, sourceStride) >= 0) continue;
-            if (uniqueTiles.Count < maximumUniqueTiles) metadata.Workspace.Add(signature, i);
-            var plan = Plan(tile);
-            length += plan.Length;
-            if (preferCompactDirectory && !CanInline(plan)) compactLength += plan.Length;
-        }
+        var (length, compactLength, uniqueCount) = PlanTiles(source, width, height, count,
+            metadata.Workspace, tile, previousTile, sourceStride, preferCompactDirectory);
         if (length + 4L * count >= packedLength || length >= 1 << 28)
         {
             var rawRequest = original is null ? MemoryJournal.Request(resource + ".Raw", packedLength) : 0;
@@ -107,7 +97,7 @@ public sealed partial class CompactByteField
         // Large/incompressible fields retain their direct uint directory. The
         // fourth padding byte makes every checked unaligned read fully bounded.
         var compact = preferCompactDirectory && BitConverter.IsLittleEndian
-            && compactLength < (1 << 20) && length <= uniqueTiles.Count * 32L;
+            && compactLength < (1 << 20) && length <= uniqueCount * 32L;
         if (compact) length = compactLength;
         var request = MemoryJournal.Request(resource + ".Tiles", compact ? 3L * count + 1 : 4L * count);
         if (compact)
@@ -123,18 +113,20 @@ public sealed partial class CompactByteField
         request = MemoryJournal.Request(resource + ".Payload", length);
         _data = new byte[(int)length];
         MemoryJournal.ObserveManagedArray(_data, resource + ".Payload", request);
+        var owners = metadata.Workspace.Owners;
+        var plans = metadata.Workspace.Plans;
         var offset = 0;
         for (var i = 0; i < count; i++)
         {
-            ReadTile(source, width, height, i, tile, sourceStride);
-            var shared = FindTile(uniqueTiles, source, width, height, tile, previousTile, out _, sourceStride);
-            if (shared >= 0 && shared < i)
+            var shared = owners[i];
+            if (shared != i)
             {
                 if (_tiles is not null) _tiles[i] = _tiles[shared];
                 else WriteCompactDescriptor(i, ReadCompactDescriptor(shared));
                 continue;
             }
-            var plan = Plan(tile);
+            ReadTile(source, width, height, i, tile, sourceStride);
+            var plan = plans[i];
             if (compact && plan.Mode == 9)
             {
                 WriteCompactDescriptor(i, tile[0] | (9u << 20));
@@ -212,9 +204,43 @@ public sealed partial class CompactByteField
     public bool HasSameConstantPixelsAs(byte value, int width, int height) =>
         _width == width && _height == height && _constant && _data[0] == value;
 
+    // One signature/dedup and affine-fit pass for every tile. Writers replay its
+    // owners and plans in the same order instead of hashing and fitting again.
+    // A tile's owner is the earlier equal tile FindTile resolved, else itself.
+    private (long Length, long CompactLength, int UniqueCount) PlanTiles(ReadOnlySpan<byte> source,
+        int width, int height, int count, TileDedupWorkspace workspace, Span<byte> tile, Span<byte> previous,
+        int sourceStride, bool preferCompactDirectory)
+    {
+        const int maximumUniqueTiles = 32768;
+        var unique = workspace.Dictionary;
+        workspace.EnsureTiles(count);
+        var owners = workspace.Owners;
+        var plans = workspace.Plans;
+        long length = 0, compactLength = 0;
+        for (var i = 0; i < count; i++)
+        {
+            ReadTile(source, width, height, i, tile, sourceStride);
+            var shared = FindTile(unique, source, width, height, tile, previous, out var signature, sourceStride);
+            if (shared >= 0) { owners[i] = shared; continue; }
+            if (unique.Count < maximumUniqueTiles) workspace.Add(signature, i);
+            var plan = plans[i] = Plan(tile);
+            owners[i] = i;
+            length += plan.Length;
+            if (preferCompactDirectory && !CanInline(plan)) compactLength += plan.Length;
+        }
+        return (length, compactLength, unique.Count);
+    }
+
     private void ReadTile(ReadOnlySpan<byte> source, int width, int height, int index, Span<byte> tile, int sourceStride)
     {
         var left = index % _tileColumns * 8; var top = index / _tileColumns * 8;
+        if (left + 8 <= width && top + 8 <= height)
+        {
+            // Interior tiles need no edge clamping: copy eight contiguous rows.
+            for (var y = 0; y < 8; y++)
+                source.Slice((top + y) * sourceStride + left, 8).CopyTo(tile.Slice(y * 8, 8));
+            return;
+        }
         for (var y = 0; y < 8; y++)
         for (var x = 0; x < 8; x++)
             tile[y * 8 + x] = source[Math.Min(top + y, height - 1) * sourceStride + Math.Min(left + x, width - 1)];
@@ -271,17 +297,23 @@ public sealed partial class CompactByteField
     }
 
     // Only numeric hash/index metadata is retained; no raster, source span or
-    // map object can escape construction. One cached workspace bounds retained
-    // capacity. Concurrent constructors rent independent dictionaries.
+    // map object can escape construction. A few cached workspaces bound retained
+    // capacity; concurrent constructors rent independent dictionaries, and
+    // parallel floor preparation reuses one per worker instead of reallocating.
     private sealed class TileDedupWorkspace
     {
         private const string Resource = "CompactByteField.TileDedupMetadata";
+        private const int MaximumCached = 4;
         private static readonly object CacheGate = new();
-        private static TileDedupWorkspace? _cached;
+        private static readonly Stack<TileDedupWorkspace> Cached = new(MaximumCached);
         private static long _generation;
         internal Dictionary<ulong, int> Dictionary { get; } = new();
+        // Per-tile planning results, written for every index before any read.
+        internal int[] Owners { get; private set; } = [];
+        internal TilePlan[] Plans { get; private set; } = [];
         private int _capacity;
         private IDisposable? _ownership;
+        private IDisposable? _tileOwnership;
 
         private TileDedupWorkspace() => MemoryJournal.ObserveManagedObject(Dictionary, Resource);
 
@@ -294,8 +326,7 @@ public sealed partial class CompactByteField
             long generation;
             lock (CacheGate)
             {
-                workspace = _cached;
-                _cached = null;
+                Cached.TryPop(out workspace);
                 generation = _generation;
             }
             lease.Attach(workspace ?? new TileDedupWorkspace(), generation);
@@ -304,16 +335,16 @@ public sealed partial class CompactByteField
 
         internal static void ReleaseSharedScratch()
         {
-            TileDedupWorkspace? retired;
+            TileDedupWorkspace[] retired;
             lock (CacheGate)
             {
                 ++_generation;
-                retired = _cached;
-                _cached = null;
+                retired = Cached.ToArray();
+                Cached.Clear();
             }
-            retired?.RetireOwnership();
+            foreach (var workspace in retired) workspace.RetireOwnership();
             MemoryJournal.Current?.Record("workspace-retired", new { resource = Resource,
-                capacity = retired?._capacity ?? 0,
+                capacity = retired.Sum(workspace => (long)workspace._capacity),
                 meaning = "idle managed construction metadata detached; GC/allocator release is observed separately" });
         }
 
@@ -321,6 +352,20 @@ public sealed partial class CompactByteField
         {
             _ownership?.Dispose();
             _ownership = null;
+            _tileOwnership?.Dispose();
+            _tileOwnership = null;
+        }
+
+        internal void EnsureTiles(int count)
+        {
+            if (Owners.Length >= count) return;
+            var bytes = checked(count * (sizeof(int) + (long)Unsafe.SizeOf<TilePlan>()));
+            var request = MemoryJournal.Request(Resource + ".Tiles", bytes);
+            Owners = new int[count];
+            Plans = new TilePlan[count];
+            var ownership = MemoryJournal.Own(Resource + ".Tiles", bytes, requestId: request);
+            _tileOwnership?.Dispose(); // Ownership retirement; managed GC free is recorded separately.
+            _tileOwnership = ownership;
         }
 
         internal void Add(ulong signature, int index)
@@ -345,8 +390,8 @@ public sealed partial class CompactByteField
             bool cached;
             lock (CacheGate)
             {
-                cached = generation == _generation && _cached is null;
-                if (cached) _cached = this;
+                cached = generation == _generation && Cached.Count < MaximumCached;
+                if (cached) Cached.Push(this);
             }
             if (!cached) RetireOwnership();
             MemoryJournal.Current?.Record("workspace-returned", new { resource = Resource, consumer,
