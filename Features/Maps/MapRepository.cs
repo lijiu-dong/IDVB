@@ -100,13 +100,18 @@ public sealed partial class MapRepository
             record.Source = string.Equals(draft.Source, "survey", StringComparison.Ordinal)
                 ? "survey"
                 : "manual";
-            record.AcquisitionKind = draft.AcquisitionKind;
-            record.SubscriptionId = draft.SubscriptionId;
-            record.SubscriptionPublisherHandle = draft.SubscriptionPublisherHandle;
-            record.SubscriptionPublisherIsOfficial = draft.SubscriptionPublisherIsOfficial;
-            record.SubscriptionPublisherIsBuilder = draft.SubscriptionPublisherIsBuilder;
-            record.SubscriptionPublisherKeyId = draft.SubscriptionPublisherKeyId;
-            record.SubscriptionVersion = draft.SubscriptionVersion;
+            // An open editor may predate publication or legacy-copy repair.
+            // Existing catalog provenance is authoritative when saving edits.
+            if (existing is null)
+            {
+                record.AcquisitionKind = draft.AcquisitionKind;
+                record.SubscriptionId = draft.SubscriptionId;
+                record.SubscriptionPublisherHandle = draft.SubscriptionPublisherHandle;
+                record.SubscriptionPublisherIsOfficial = draft.SubscriptionPublisherIsOfficial;
+                record.SubscriptionPublisherIsBuilder = draft.SubscriptionPublisherIsBuilder;
+                record.SubscriptionPublisherKeyId = draft.SubscriptionPublisherKeyId;
+                record.SubscriptionVersion = draft.SubscriptionVersion;
+            }
             record.SourceProjectId = draft.SourceProjectId;
             record.SourceProjectRevision = draft.SourceProjectRevision;
             record.SourceVisualSha256 = draft.SourceVisualSha256;

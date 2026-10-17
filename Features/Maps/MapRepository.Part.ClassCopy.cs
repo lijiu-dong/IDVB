@@ -30,6 +30,7 @@ public sealed partial class MapRepository
                 var copy = map.Clone();
                 copy.Id = idMapping[map.Id];
                 copy.Class = copyName;
+                copy.DetachSubscription();
                 return copy;
             }).ToArray();
             var files = new List<(string Source, string Target, long Length)>();

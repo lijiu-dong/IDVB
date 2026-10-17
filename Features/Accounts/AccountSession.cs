@@ -16,7 +16,7 @@ internal sealed record AccountIdentity(
     bool IsOfficial,
     bool IsBuilder);
 
-internal static class AccountSession
+internal static partial class AccountSession
 {
     private const string CredentialResource = "IdentityVisionBridge.Account";
     private const string CredentialUserName = "current";

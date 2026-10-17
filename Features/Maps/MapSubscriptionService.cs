@@ -16,9 +16,9 @@ public sealed record MapSubscriptionReconciliationResult(
     int RemovedSubscriptionCount,
     int IncompleteSubscriptionCount);
 
-public sealed class MapSubscriptionService
+public sealed partial class MapSubscriptionService
 {
-    private static readonly SemaphoreSlim OperationGate = new(1, 1);
+    private static readonly SemaphoreSlim OperationGate = MapSubscriptionOperations.Gate;
     private readonly string _rootDirectory;
     private readonly MapSubscriptionStore _store;
     private readonly MapRepository _repository;
@@ -58,7 +58,7 @@ public sealed class MapSubscriptionService
             record.IsOfficialPublisher = publication.IsOfficialPublisher;
             record.IsBuilderPublisher = publication.IsBuilderPublisher;
             record.PackageName = publication.PackageName;
-            record.CoverPath = publication.CoverPath;
+            record.CoverPath = publication.UsesAutomaticCover ? null : publication.CoverPath;
             record.LastAppliedVersion = publication.Version;
             var envelope = JsonSerializer.Deserialize<SignedMapPublicationEnvelope>(
                 await File.ReadAllBytesAsync(Path.Combine(publication.OutputDirectory, "feed.json"), cancellationToken),
@@ -87,6 +87,7 @@ public sealed class MapSubscriptionService
         try
         {
             var records = _store.Load().ToList();
+            await _repository.DetachUnregisteredSubscriptionCopiesAsync(records, cancellationToken);
             var installedMapIds = (await _repository.GetTagCatalogSnapshotAsync())
                 .Maps.Select(map => map.Id).ToHashSet();
             var removed = 0;

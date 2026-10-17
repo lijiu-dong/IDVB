@@ -20,13 +20,15 @@ public sealed partial class MapListPage
         var exportPackage = CreateTeachingTipChoiceButton("导出地图包");
         var updating = GetOwnedPublication() is not null;
         var publishWebsite = CreateTeachingTipChoiceButton(updating ? "更新到官网" : "发布到官网");
+        var editMetadata = updating ? CreateTeachingTipChoiceButton("修改社区资料") : null;
         var choices = new StackPanel { Spacing = 8 };
         choices.Children.Add(exportPackage);
         choices.Children.Add(publishWebsite);
+        if (editMetadata is not null) choices.Children.Add(editMetadata);
         var tip = CreatePackageActionTeachingTip(
             publishButton,
             updating ? "更新" : "发布",
-            updating ? "请选择导出普通 IDVM 地图包，或更新官网地图包。"
+            updating ? "更新地图内容会上传地图包；只改名称或封面请选择“修改社区资料”。"
                 : "请选择导出普通 IDVM 地图包，或生成官网签名发布目录。",
             choices);
         var choosing = false;
@@ -50,6 +52,17 @@ public sealed partial class MapListPage
             {
                 await CloseTeachingTipAsync(tip);
                 await ShowWebsitePublishDialogAsync(importButton, publishButton);
+            }
+            finally { choosing = false; }
+        };
+        if (editMetadata is not null) editMetadata.Click += async (_, _) =>
+        {
+            if (choosing || _packagePromptBusy || _isPackageOperation) return;
+            choosing = true;
+            try
+            {
+                await CloseTeachingTipAsync(tip);
+                await ShowPublicationMetadataDialogAsync(importButton, publishButton);
             }
             finally { choosing = false; }
         };
@@ -153,6 +166,7 @@ public sealed partial class MapListPage
         var isUpdate = previous is not null;
         var packageNameText = previous?.PackageName ?? _selectedClass;
         var coverPath = previous?.CoverPath;
+        if (coverPath is not null && _repository.IsGeneratedPublicationCover(coverPath)) coverPath = null;
         var selectedScope = currentCount > 0 ? IdvmExportScope.CurrentClass : IdvmExportScope.AllClasses;
         var validationMessage = string.Empty;
         while (true)
@@ -206,13 +220,14 @@ public sealed partial class MapListPage
             if (!string.IsNullOrWhiteSpace(packageNameText)) break;
             validationMessage = "请填写地图包名称。";
         }
+        var usesAutomaticCover = string.IsNullOrWhiteSpace(coverPath);
         try { coverPath = ResolvePublicationCoverPath(coverPath, selectedScope); }
         catch (Exception exception) { await ShowMessageAsync("无法读取发布封面", exception.Message); return; }
         await PublishMapsAsync(
             isUpdate ? IdvmExportScope.CurrentClass : selectedScope,
             identity.DisplayName,
             intendedForWebsite: true,
-            packageNameText, coverPath, previous?.Id,
+            packageNameText, coverPath, usesAutomaticCover, previous?.Id,
             previous is null ? null : MapSubscriptionLink.Parse(previous.Link).ContentKey,
             importButton,
             publishButton);
@@ -274,6 +289,7 @@ public sealed partial class MapListPage
         bool intendedForWebsite,
         string packageName,
         string coverPath,
+        bool usesAutomaticCover,
         Guid? publicationId,
         byte[]? existingContentKey,
         Button importButton,
@@ -335,7 +351,8 @@ public sealed partial class MapListPage
                     packageName,
                     coverPath,
                     publicationId,
-                    existingContentKey)));
+                    existingContentKey,
+                    usesAutomaticCover: usesAutomaticCover)));
                 MapOperationProgress.Report(.6, "正在上传地图……");
                 var linkText = intendedForWebsite
                     ? await MapOperationProgress.RunAsync(.6, .9, () => AccountSession.UploadPublicationAsync(publication))
@@ -391,7 +408,7 @@ public sealed partial class MapListPage
         var identity = AccountSession.Identity;
         return identity is null ? null : _mapSubscriptionService.GetSubscriptions()
             .SingleOrDefault(record => record.Id == id
-                && string.Equals(record.PublisherHandle, identity.PublisherHandle, StringComparison.OrdinalIgnoreCase));
+                && MapPublicationRules.CanUpdate(maps, record, identity.PublisherHandle));
     }
 
     private string GetWebsiteActionText() => GetOwnedPublication() is null ? "发布" : "更新";

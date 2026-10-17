@@ -16,12 +16,15 @@ public sealed record MapPublicationResult(
     string PackageName,
     string CoverPath,
     string PackagePath,
-    IReadOnlyList<MapRecord> ExportedMaps);
+    IReadOnlyList<MapRecord> ExportedMaps,
+    bool UsesAutomaticCover = false);
 
-public sealed class MapPublicationService
+public sealed partial class MapPublicationService
 {
     private readonly IdvmPackageService _packages;
     private readonly MapPublisherCredentialStore _credentials;
+    private readonly MapRepository _repository;
+    private readonly MapSubscriptionStore _subscriptions;
 
     public MapPublicationService(
         MapRepository repository,
@@ -29,6 +32,8 @@ public sealed class MapPublicationService
     {
         _packages = new IdvmPackageService(repository);
         _credentials = new MapPublisherCredentialStore(dataRoot);
+        _repository = repository;
+        _subscriptions = new MapSubscriptionStore(Path.Combine(dataRoot ?? AppDataPaths.RootDirectory, "MapSubscriptions"));
     }
 
     public async Task<MapPublicationResult> PublishAsync(
@@ -44,15 +49,29 @@ public sealed class MapPublicationService
         string coverPath,
         Guid? publicationId = null,
         byte[]? existingContentKey = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool usesAutomaticCover = false)
     {
-        var snapshot = await _packages.GetExportSnapshotAsync(scope, className, cancellationToken);
-        using var protection = AppDataPaths.ProtectCachePath(outputParentDirectory);
-        if (snapshot.Maps.Any(map => map.AcquisitionKind == MapAcquisitionKind.Subscription
-            && (publicationId is null || map.SubscriptionId != publicationId)))
-            throw new InvalidOperationException("只有发布者自己的已发布地图类可以更新。");
-
         var handle = MapSubscriptionProtocol.NormalizePublisherHandle(publisherHandle);
+        MapCatalogSnapshot snapshot;
+        // Promotion replaces map IDs before committing its subscription record.
+        // Share its gate so that intermediate IDs cannot be mistaken for copies.
+        await MapSubscriptionOperations.Gate.WaitAsync(cancellationToken);
+        try
+        {
+            var subscriptions = _subscriptions.Load();
+            await _repository.DetachUnregisteredSubscriptionCopiesAsync(subscriptions, cancellationToken);
+            snapshot = await _packages.GetExportSnapshotAsync(scope, className, cancellationToken);
+            if (snapshot.Maps.Any(map => map.AcquisitionKind == MapAcquisitionKind.Subscription
+                && (publicationId is null || map.SubscriptionId != publicationId)))
+                throw new InvalidOperationException("只有发布者自己的已发布地图类可以更新。");
+            if (publicationId is { } updatingId && !subscriptions.Any(record => record.Id == updatingId
+                && MapPublicationRules.CanUpdate(snapshot.Maps, record, handle)))
+                throw new InvalidOperationException("当前地图不属于此发布记录，请刷新后重新发布。");
+        }
+        finally { MapSubscriptionOperations.Gate.Release(); }
+        using var protection = AppDataPaths.ProtectCachePath(outputParentDirectory);
+
         var officialPublicKeyPem = MapSubscriptionTrust.LoadOfficialPublicKey(AppContext.BaseDirectory);
         var credential = _credentials.GetOrCreate(handle, officialPublicKeyPem);
         var isOfficial = string.Equals(
@@ -134,7 +153,7 @@ public sealed class MapPublicationService
                 new Uri(feedPath), contentKey, credential.KeyId).ToUriString();
             return new MapPublicationResult(
                 publicationId.Value, version, handle, publisherDisplayName.Trim(), isOfficialPublisher, isBuilderPublisher, output, link,
-                packageName.Trim(), coverPath, packagePath, snapshot.Maps);
+                packageName.Trim(), coverPath, packagePath, snapshot.Maps, usesAutomaticCover);
         }
         finally
         {
