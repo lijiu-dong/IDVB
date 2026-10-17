@@ -190,11 +190,11 @@ public sealed class NotificationMetrics
     {
         if (!double.IsFinite(width) || !double.IsFinite(height) || width <= 0 || height <= 0)
             return Default;
-        // Use both axes so ultrawide screens do not inflate the card beyond their height.
-        // Keep an 18px readability floor on 720p/768p displays.
-        var scale = Math.Max(1d, Math.Min(width / 1920d, height / 1080d));
-        scale = Math.Min(scale, width / (OverlayNotificationTheme.CardWidth + 40d));
-        return new NotificationMetrics((float)scale);
+        // 固定 1.0 倍：提示卡片永远是 520px 宽、18px 字（1080p 下的大小）。
+        // 以前这里按 Math.Max(1, min(W/1920, H/1080)) 随分辨率放大——2K 屏 1.33 倍、
+        // 4K 屏 2 倍，一张卡片能吃掉四分之一屏宽，玩家反馈「比之前大很多」。
+        // 保持恒定尺寸后，任何分辨率、任何游戏窗口都是同一个小方块，定位仍按游戏窗口居中。
+        return new NotificationMetrics(1f);
     }
 
     public NotificationMetrics(float scale = 1.0f)
