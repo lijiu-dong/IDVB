@@ -22,7 +22,7 @@ namespace IDVBuff.Plugins.MatchHotkeys;
     MatchHotkeysOptions.PluginId,
     DisplayName = "对局快捷键",
     Description = "两个可自定义的快捷键，各自一键进入/结束指定地图模式的对局；地图模式在插件设置里选。",
-    Version = "1.2.0",
+    Version = "1.2.1",
     AlwaysActive = true)]
 public sealed partial class MatchHotkeysPlugin
     : PluginBase, IPluginSettingsProvider, IHandle<MatchStateChangedMessage>
@@ -33,7 +33,7 @@ public sealed partial class MatchHotkeysPlugin
     /// <summary>首次渲染设置描述符时，同步等地图库的上限（见 EnsureMapClassesForFirstRender）。</summary>
     private const int MapClassSyncWaitMilliseconds = 3000;
 
-    private const int OperationPollMilliseconds = 80;
+    private const int OperationPollMilliseconds = 30;
 
     private static readonly TimeSpan OperationTimeout = TimeSpan.FromSeconds(10);
 
@@ -51,6 +51,11 @@ public sealed partial class MatchHotkeysPlugin
     private bool _loaded;
     private bool _enabled;
     private int _switching;
+    /// <summary>
+    /// 被「上一次切换还没结束」挡下来的按键，只保留最后一次（0 = 无，1 = 快捷键一，2 = 快捷键二）。
+    /// 正在跑的那次一结束就自动补执行，避免玩家在几秒的切换窗口里连按十几次却一次都不生效。
+    /// </summary>
+    private int _pendingSlot;
     /// <summary>最近一次对局快照里的地图模式；只在 IsMatchStarted 为真时用于判定「是否就是本快捷键的目标」。</summary>
     private string? _activeMatchClass;
 
@@ -101,6 +106,7 @@ public sealed partial class MatchHotkeysPlugin
     public override void OnDisable()
     {
         _enabled = false;
+        Interlocked.Exchange(ref _pendingSlot, 0);
         if (_input is not null)
         {
             _input.BindingInvoked -= OnBindingInvoked;
@@ -111,6 +117,7 @@ public sealed partial class MatchHotkeysPlugin
     public override void OnUnload()
     {
         _enabled = false;
+        Interlocked.Exchange(ref _pendingSlot, 0);
         if (_input is not null)
             _input.BindingInvoked -= OnBindingInvoked;
     }
@@ -146,10 +153,17 @@ public sealed partial class MatchHotkeysPlugin
     {
         if (!string.Equals(args.PluginId, Id, StringComparison.Ordinal) || !args.IsDown)
             return;
+        bool slotA;
         if (string.Equals(args.BindingKey, MatchHotkeysOptions.HotkeyAKey, StringComparison.Ordinal))
-            _ = ToggleMatchAsync(slotA: true);
+            slotA = true;
         else if (string.Equals(args.BindingKey, MatchHotkeysOptions.HotkeyBKey, StringComparison.Ordinal))
-            _ = ToggleMatchAsync(slotA: false);
+            slotA = false;
+        else
+            return;
+        // 宿主把这个事件投递到 UI 线程（DispatcherQueue）。一次对局切换的耗时几乎全在宿主侧
+        // （同步地图库、重建识别索引，实测可达数秒），同步前段还包括前台窗口查询和日志落盘；
+        // 直接在 UI 线程上跑会把界面和后续按键的派发一起堵住。放到线程池，立刻放行派发线程。
+        _ = Task.Run(() => ToggleMatchAsync(slotA));
     }
 
     private async Task ToggleMatchAsync(bool slotA)
@@ -177,9 +191,15 @@ public sealed partial class MatchHotkeysPlugin
         }
         if (Interlocked.Exchange(ref _switching, 1) != 0)
         {
-            LogInfo($"{slotName}：上一次对局切换还没结束，已忽略这次按键。");
+            // latest-wins：不再静默丢弃。记下这一次，正在跑的那次一结束就补执行。
+            Volatile.Write(ref _pendingSlot, slotA ? 1 : 2);
+            LogInfo($"{slotName}：上一次对局切换还没结束，已排队，结束后自动执行。");
             return;
         }
+
+        // 立刻给可见反馈：真正的开局要等宿主同步地图库 / 重建识别索引，实测可达数秒，
+        // 这期间屏幕上什么都不变，按下去像是没反应（老版本只在最终结果时才提示）。
+        Toast(warning: false, $"{slotName}：正在切换对局…");
 
         try
         {
@@ -224,6 +244,11 @@ public sealed partial class MatchHotkeysPlugin
         {
             Volatile.Write(ref _switching, 0);
         }
+
+        // 补执行排队的那一次按键（只保留最后一次，不会因为连按而反复触发）。
+        var pending = Interlocked.Exchange(ref _pendingSlot, 0);
+        if (pending != 0 && _enabled)
+            _ = Task.Run(() => ToggleMatchAsync(pending == 1));
     }
 
     /// <summary>宿主的开局/结束是「先受理、后执行」，必须轮询到最终结果才知道成没成。</summary>

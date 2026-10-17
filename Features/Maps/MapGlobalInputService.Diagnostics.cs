@@ -1,4 +1,5 @@
 using IDVBuff.Core.Contracts;
+using Microsoft.UI.Dispatching;
 
 namespace IDVBuff.Features.Maps;
 
@@ -79,7 +80,12 @@ public sealed partial class MapGlobalInputService
     {
         try
         {
-            _ = _dispatcher.TryEnqueue(() => PluginInputInvoked?.Invoke(this, input));
+            // 插件热键走 High 优先级：Normal/Low 队列里排着地图渲染、识别结果、进度更新时，
+            // 一次按键会被压到几十毫秒甚至数秒之后才被插件看到（实测 6 秒级别）。
+            // 这里只投递一个事件转发，工作量极小，提优先级不会饿死渲染。
+            _ = _dispatcher.TryEnqueue(
+                DispatcherQueuePriority.High,
+                () => PluginInputInvoked?.Invoke(this, input));
         }
         catch
         {

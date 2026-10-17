@@ -21,11 +21,16 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
 
     public async Task RefreshMapCacheAsync(Guid? changedMapId = null)
     {
-        await MapOperationProgress.RunAsync(0, .98, () => _recognition.RefreshCacheAsync(changedMapId));
+        // 这两段是纯 IO/计算（读地图目录、重建识别缓存、失效参考缓存），实测可达数秒。
+        // 过去它们直接在调用方线程上执行；当调用方是 DispatcherQueue（插件开局、快捷扫描）
+        // 时会把 UI 线程连同全局热键派发一起压住。这里下移到线程池，await 语义不变，
+        // 后续的 StateChanged 仍在原调用线程上触发，订阅方无需改线程模型。
+        await MapOperationProgress.RunAsync(0, .98,
+            () => Task.Run(() => _recognition.RefreshCacheAsync(changedMapId)));
         MapOperationProgress.Report(.98, "正在同步地图会话……");
         if (_learningEngineInitialized)
-            await _learningEngine.InvalidateReferenceCacheAsync(
-                _lifetimeCts.Token);
+            await Task.Run(() => _learningEngine.InvalidateReferenceCacheAsync(
+                _lifetimeCts.Token));
         StateChanged?.Invoke(this, EventArgs.Empty);
         MapOperationProgress.Report(1, "地图刷新完成");
     }

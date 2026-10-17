@@ -39,7 +39,10 @@ public sealed partial class MapGlobalInputService : IDisposable
     private const uint MouseeventfXup = 0x0100;
     private static readonly IntPtr ReleaseInputMarker =
         new(InputInjectionMarkers.HostGeneratedInput);
-    private const int KeyboardPollIntervalMilliseconds = 15;
+    // 提权游戏（UIPI）下低级键盘钩子常常收不到按键（实测 keyboardCount=0），
+    // 轮询是唯一可靠的通道。15ms 在 UI/线程池繁忙时会漏掉短按，收紧到 8ms：
+    // 每轮只是对少量虚拟键调 GetAsyncKeyState，开销可以忽略。
+    private const int KeyboardPollIntervalMilliseconds = 8;
     private const uint CapsLockVirtualKey = 0x14;
 
     private readonly DispatcherQueue _dispatcher;

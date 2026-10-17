@@ -45,6 +45,7 @@ public sealed partial class MapGlobalInputService
         ArgumentException.ThrowIfNullOrWhiteSpace(bindingKey);
         ArgumentNullException.ThrowIfNull(binding);
 
+        var monitoringMissing = false;
         lock (_keyboardStateLock)
         {
             if (!_pluginBindings.TryGetValue(pluginId, out var bindings))
@@ -55,8 +56,14 @@ public sealed partial class MapGlobalInputService
             }
             bindings[bindingKey] = binding.Clone();
             _keyboardPollKeysDirty = true;
+            monitoringMissing = !_keyboardBindingsActive;
         }
-        RestartMonitoring();
+        // 全局钩子本来就在监听所有按键，新增或修改一条插件绑定只需要重建轮询键集。
+        // 过去这里无条件 RestartMonitoring()：卸载钩子（清空 _keyboardEdges、并且要
+        // Join 钩子线程最多 2 秒）→ 重装钩子 → 重建轮询 Timer。宿主回填设置、插件启用、
+        // 设置页每改一项都会走到这里，实测十几秒内重装 40 次；每次重装都是一个按键丢失窗口。
+        if (monitoringMissing)
+            RestartMonitoring();
     }
 
     public void ClearPluginBindings(string pluginId)
@@ -68,10 +75,16 @@ public sealed partial class MapGlobalInputService
             _pluginBindings.Remove(pluginId);
             _keyboardPollKeysDirty = true;
         }
-        if (HasAnyBinding())
-            RestartMonitoring();
-        else
+        if (!HasAnyBinding())
+        {
             UnregisterBindings();
+            return;
+        }
+        bool monitoringMissing;
+        lock (_keyboardStateLock)
+            monitoringMissing = !_keyboardBindingsActive;
+        if (monitoringMissing)
+            RestartMonitoring();
     }
 
     public bool IsPluginBindingPressed(string pluginId, string bindingKey)
