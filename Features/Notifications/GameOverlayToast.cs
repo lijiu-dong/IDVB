@@ -44,7 +44,14 @@ public sealed class GameOverlayToast : IGameOverlayToast
                 && bounds.IsValid)
             {
                 OverlayNotificationCenter.UpdateGameBounds(bounds);
+                return;
             }
+            // 拿不到游戏客户区时必须清掉旧的定位值，不能沿用上一次的矩形。
+            // 旧逻辑失败就直接 return，通知窗口会继续用很久以前记下的坐标
+            // （例如窗口化时的位置），表现就是提示跑到屏幕右上方、不再居中。
+            // 清空后 OverlayNotificationWindow.GetTargetBounds 会退回当前前台窗口，
+            // 拿到的是这一局的真实位置。
+            OverlayNotificationCenter.UpdateGameBounds(default);
         }
         catch
         {
