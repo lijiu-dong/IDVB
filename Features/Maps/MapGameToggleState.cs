@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace IDVBuff.Features.Maps;
 
 public readonly record struct MapGameToggleTransition(bool IsOpen, int Version);
@@ -13,9 +15,16 @@ public sealed class MapGameToggleState
     public bool IsOpen { get; private set; }
     public int Version { get; private set; }
 
+    /// <summary>
+    /// <see cref="Stopwatch"/> timestamp of the latest closed-to-open transition.
+    /// The game's opening animation follows it, so callers can tell a settled
+    /// open map from one still fading in.
+    /// </summary>
+    public long OpenedAtTimestamp { get; private set; }
+
     public MapGameToggleTransition Toggle()
     {
-        IsOpen = !IsOpen;
+        SetOpen(!IsOpen);
         Version++;
         if (!IsOpen)
             _openPipelineVersion = -1;
@@ -24,7 +33,7 @@ public sealed class MapGameToggleState
 
     public void MarkOpen()
     {
-        IsOpen = true;
+        SetOpen(true);
         Version++;
         // An explicit scan already owns the scan/alignment pipeline for this
         // open map. The game-map binding must only close it next.
@@ -46,7 +55,7 @@ public sealed class MapGameToggleState
     /// </summary>
     public MapGameToggleTransition SetOpenForExternalController(bool isOpen)
     {
-        IsOpen = isOpen;
+        SetOpen(isOpen);
         Version++;
         _openPipelineVersion = -1;
         return new MapGameToggleTransition(IsOpen, Version);
@@ -54,7 +63,7 @@ public sealed class MapGameToggleState
 
     public void Reset()
     {
-        IsOpen = false;
+        SetOpen(false);
         Version++;
         _openPipelineVersion = -1;
     }
@@ -65,6 +74,13 @@ public sealed class MapGameToggleState
     /// transition; the next close/reopen cycle can claim a fresh pipeline.
     /// </summary>
     public void ReleaseOpenPipeline() => _openPipelineVersion = -1;
+
+    private void SetOpen(bool isOpen)
+    {
+        if (isOpen && !IsOpen)
+            OpenedAtTimestamp = Stopwatch.GetTimestamp();
+        IsOpen = isOpen;
+    }
 
     public bool IsCurrent(MapGameToggleTransition transition) =>
         transition.Version == Version && transition.IsOpen == IsOpen;

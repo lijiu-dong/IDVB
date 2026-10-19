@@ -152,6 +152,28 @@ public static class MapViewportPresenceDetector
             requireBlueGrayBrightnessStability: false);
 
     /// <summary>
+    /// Conservative closed-map test for a probe the player's own click caused.
+    /// The map counts as gone only when neither the aligned floor's reference
+    /// nor the blue-gray fallback still finds it; a bluish scene that fools the
+    /// fallback merely skips the probe instead of closing an open map.
+    /// Pass a signature built without structure: neither check reads it.
+    /// </summary>
+    public static bool IsMapAbsent(
+        MapViewportColorSignature candidate,
+        MapViewportColorSignature? reference)
+    {
+        ArgumentNullException.ThrowIfNull(candidate);
+        if (candidate.Histogram.Count == 0)
+            return false;
+        bool IsPresent(MapViewportColorSignature? against) =>
+            EvaluateCore(candidate, against, previousFrame: null,
+                MinimumReferenceSimilarity, MinimumBlueGrayFraction,
+                brightnessTolerance: double.MaxValue,
+                requireBlueGrayBrightnessStability: false).IsPresent;
+        return !IsPresent(null) && (reference is null || !IsPresent(reference));
+    }
+
+    /// <summary>
     /// 画面就绪判定（仅对齐放宽稳定等待专用）：与 Evaluate 同构，但阈值更高，
     /// 用于「已锁定地图重新开图」时逐帧判断画面是否已从动画过渡到完整地图。
     /// 参考签名优先（reference 非 null 时只走 reference-hsv，低分也不落 blue），

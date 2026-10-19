@@ -28,7 +28,9 @@ public sealed partial class MapGlobalInputService
         var mouse = configured
             .Where(binding => binding.Kind == MapInputBindingKind.Mouse)
             .Select(binding => TryMouseVirtualKey(binding.MouseButton, out var key) ? key : 0u);
-        _keyboardPollKeys = keyboard.Concat(mouse).Where(key => key != 0).Distinct().ToArray();
+        var close = _gameMapToggle.IsConfigured ? new[] { EscapeVirtualKey } : [];
+        _keyboardPollKeys = keyboard.Concat(mouse).Concat(close)
+            .Where(key => key != 0).Distinct().ToArray();
         _keyboardPollKeysDirty = false;
         return _keyboardPollKeys;
     }

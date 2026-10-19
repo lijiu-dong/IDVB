@@ -16,6 +16,8 @@ public sealed class NoopGlobalInput : IGlobalInput
     public event EventHandler<object>? OverlayToggleInvoked;
     public event EventHandler<object>? ManualRecognitionInvoked;
     public event EventHandler<object>? GameMapToggleInvoked;
+    public event EventHandler<object>? GameMapCloseInvoked;
+    public event EventHandler<object>? GameMapClickObserved;
     public event EventHandler<object>? ControlPanelToggleInvoked;
     public event EventHandler<object>? SwitchFloorInvoked;
     public event EventHandler<object>? SaveMapCacheInvoked;
@@ -43,6 +45,7 @@ public sealed class NoopGlobalInput : IGlobalInput
     }
 
     public void ClearBindings() { }
+    public void SetGameMapClickWatch(Func<bool>? isArmed) { }
     public void ApplyPluginBinding(string pluginId, string bindingKey, object binding) { }
     public void ClearPluginBindings(string pluginId) { }
     public bool IsPluginBindingPressed(string pluginId, string bindingKey) => false;

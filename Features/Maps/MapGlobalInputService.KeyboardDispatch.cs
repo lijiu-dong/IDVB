@@ -9,7 +9,8 @@ public sealed partial class MapGlobalInputService
     // Keep it out of idle polling: only an observed edge reaches this method.
     private void DispatchKeyboardEdge(
         bool invokeQuickScan, bool invokeOverlayToggle, bool invokeManualRecognition,
-        bool invokeGameMapToggle, bool invokeControlPanelToggle, bool invokeSwitchFloor,
+        bool invokeGameMapToggle, bool invokeGameMapClose, bool invokeControlPanelToggle,
+        bool invokeSwitchFloor,
         bool invokeSaveMapCache, bool invokeRestMapDisplay, bool invokeMatchStateToggle,
         bool invokeHideAlignmentResult, bool invokeAlt,
         List<(string PluginId, string BindingKey, MapInputBinding Binding, bool IsDown)>? pluginMatches)
@@ -32,6 +33,9 @@ public sealed partial class MapGlobalInputService
             DispatchInput(invoked, Device(_gameMapToggle), _gameMapToggle.DisplayName,
                 "game-map-toggle", () => GameMapToggleInvoked?.Invoke(this, invoked));
         }
+        if (invokeGameMapClose)
+            DispatchInput(invoked, "keyboard", "Esc",
+                "game-map-close", () => GameMapCloseInvoked?.Invoke(this, invoked));
         if (invokeControlPanelToggle)
         {
             DispatchInput(invoked, Device(_controlPanelToggle), _controlPanelToggle.DisplayName,

@@ -41,6 +41,9 @@ public sealed partial class MapGlobalInputService : IDisposable
         new(InputInjectionMarkers.HostGeneratedInput);
     private const int KeyboardPollIntervalMilliseconds = 15;
     private const uint CapsLockVirtualKey = 0x14;
+    // The game closes its own map on Escape. This fixed key may only close the
+    // runtime map state; opening stays exclusive to the game-map binding.
+    internal const uint EscapeVirtualKey = 0x1B;
 
     private readonly DispatcherQueue _dispatcher;
     private readonly LowLevelKeyboardProc _keyboardProc;
@@ -83,6 +86,7 @@ public sealed partial class MapGlobalInputService : IDisposable
     public event EventHandler<MapInputInvokedEventArgs>? OverlayToggleInvoked;
     public event EventHandler<MapInputInvokedEventArgs>? ManualRecognitionInvoked;
     public event EventHandler<MapInputInvokedEventArgs>? GameMapToggleInvoked;
+    public event EventHandler<MapInputInvokedEventArgs>? GameMapCloseInvoked;
     public event EventHandler<MapInputInvokedEventArgs>? ControlPanelToggleInvoked;
     public event EventHandler<MapInputInvokedEventArgs>? SwitchFloorInvoked;
     public event EventHandler<MapInputInvokedEventArgs>? SaveMapCacheInvoked;
@@ -331,6 +335,7 @@ public sealed partial class MapGlobalInputService : IDisposable
         var invokeOverlayToggle = false;
         var invokeManualRecognition = false;
         var invokeGameMapToggle = false;
+        var invokeGameMapClose = false;
         var invokeControlPanelToggle = false;
         var invokeSwitchFloor = false;
         var invokeSaveMapCache = false;
@@ -364,6 +369,7 @@ public sealed partial class MapGlobalInputService : IDisposable
             invokeOverlayToggle = MatchesBinding(_overlayToggle, key);
             invokeManualRecognition = MatchesBinding(_manualRecognition, key);
             invokeGameMapToggle = MatchesBinding(_gameMapToggle, key);
+            invokeGameMapClose = IsGameMapCloseKey(key) && !invokeGameMapToggle;
             invokeControlPanelToggle = MatchesBinding(_controlPanelToggle, key);
             invokeSwitchFloor = MatchesBinding(_switchFloor, key);
             invokeSaveMapCache = MatchesBinding(_saveMapCache, key);
@@ -377,9 +383,16 @@ public sealed partial class MapGlobalInputService : IDisposable
 
     Dispatch:
         DispatchKeyboardEdge(invokeQuickScan, invokeOverlayToggle, invokeManualRecognition,
-            invokeGameMapToggle, invokeControlPanelToggle, invokeSwitchFloor, invokeSaveMapCache,
-            invokeRestMapDisplay, invokeMatchStateToggle, invokeHideAlignmentResult, invokeAlt, pluginMatches);
+            invokeGameMapToggle, invokeGameMapClose, invokeControlPanelToggle, invokeSwitchFloor,
+            invokeSaveMapCache, invokeRestMapDisplay, invokeMatchStateToggle, invokeHideAlignmentResult,
+            invokeAlt, pluginMatches);
     }
+
+    // Escape only follows a configured game-map binding: without one the
+    // runtime never tracks the game's map as open, so there is nothing to close.
+    // Caller holds _keyboardStateLock.
+    private bool IsGameMapCloseKey(uint key) =>
+        key == EscapeVirtualKey && _gameMapToggle.IsConfigured;
 
     // Keep the poll fast path allocation-free. A capturing local predicate in
     // HandleKeyboardState creates a display object even when no edge is seen.

@@ -210,6 +210,11 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
                     RunManualRecognitionAsync);
             _input.GameMapToggleInvoked += (_, _) =>
                 StartInputOperation("game-map-toggle", HandleGameMapToggleAsync);
+            _input.GameMapCloseInvoked += (_, _) =>
+                StartInputOperation("game-map-close", HandleGameMapCloseAsync);
+            _input.GameMapClickObserved += (_, _) =>
+                StartInputOperation("game-map-click", HandleGameMapClickAsync);
+            _input.SetGameMapClickWatch(() => _gameMapToggleState.IsOpen);
             _input.ControlPanelToggleInvoked += (_, _) =>
                 ToggleControlPanel();
             _input.SwitchFloorInvoked += (_, _) =>

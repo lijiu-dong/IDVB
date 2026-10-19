@@ -106,6 +106,17 @@ public interface IGlobalInput : IDisposable
     event EventHandler</* MapInputInvokedEventArgs */ object>? GameMapToggleInvoked;
 
     /// <summary>
+    /// 游戏地图关闭键（Esc）被按下。只用于同步关图，不会打开地图。
+    /// </summary>
+    event EventHandler</* MapInputInvokedEventArgs */ object>? GameMapCloseInvoked;
+
+    /// <summary>
+    /// 地图打开期间松开了鼠标左键（可能点中了游戏自带的关图按钮）。
+    /// 仅在 <see cref="SetGameMapClickWatch"/> 的判定返回 true 时触发。
+    /// </summary>
+    event EventHandler</* MapInputInvokedEventArgs */ object>? GameMapClickObserved;
+
+    /// <summary>
     /// 控制面板热键被触发。
     /// </summary>
     event EventHandler</* MapInputInvokedEventArgs */ object>? ControlPanelToggleInvoked;
@@ -155,6 +166,12 @@ public interface IGlobalInput : IDisposable
     /// 清除所有按键绑定并释放钩子。
     /// </summary>
     void ClearBindings();
+
+    /// <summary>
+    /// 设置是否上报 <see cref="GameMapClickObserved"/> 的判定；它在底层钩子线程上执行，
+    /// 必须立即返回。传 null 停止上报。
+    /// </summary>
+    void SetGameMapClickWatch(Func<bool>? isArmed);
 
     /// <summary>应用或替换一个插件级绑定。</summary>
     void ApplyPluginBinding(string pluginId, string bindingKey, object binding);

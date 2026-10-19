@@ -189,6 +189,7 @@ public sealed partial class MapGlobalInputService : IDisposable
         if (TryGetMouseButton(message, lParam, out var button, out var isDown)
             && TryMouseVirtualKey(button, out var mouseKey))
         {
+            ObserveGameMapClick(mouse, button, isDown);
             if (_gameMapToggle.Kind == MapInputBindingKind.Mouse && _gameMapToggle.MouseButton == button)
             {
                 if (IsMarkedInjectedMouse(mouse)) Interlocked.Increment(ref _gameMapHostMouse);
