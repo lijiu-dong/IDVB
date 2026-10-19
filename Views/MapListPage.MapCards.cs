@@ -115,7 +115,7 @@ public sealed partial class MapListPage : UserControl
         return card;
     }
 
-    private static Border CreateMapOriginBadge(MapRecord map)
+    private Border CreateMapOriginBadge(MapRecord map)
     {
         var badge = new Border
         {
@@ -128,7 +128,7 @@ public sealed partial class MapListPage : UserControl
         return badge;
     }
 
-    private static void BindMapOriginBadge(Border badge, MapRecord map)
+    private void BindMapOriginBadge(Border badge, MapRecord map)
     {
         var label = map.AcquisitionKind switch
         {
@@ -139,8 +139,8 @@ public sealed partial class MapListPage : UserControl
         };
         var name = map.SubscriptionPublisherHandle;
         if (name?.StartsWith("@u_", StringComparison.OrdinalIgnoreCase) == true
-            && string.Equals(name, AccountSession.Identity?.PublisherHandle, StringComparison.OrdinalIgnoreCase))
-            name = AccountSession.Identity!.DisplayName;
+            && string.Equals(name, _accountService.Identity?.PublisherHandle, StringComparison.OrdinalIgnoreCase))
+            name = _accountService.Identity!.DisplayName;
         else if (string.IsNullOrWhiteSpace(name) || name.StartsWith("@u_", StringComparison.OrdinalIgnoreCase))
             name = "未知作者";
         if (map.AcquisitionKind == MapAcquisitionKind.Subscription)

@@ -18,6 +18,7 @@ public sealed class OverlayWindowAdapter : IOverlayWindow
 #endif
     public void SetNativeMiniMapHeading(double? degrees) => _window.SetNativeMiniMapHeading(degrees);
     public bool HasMap => _window.HasMap;
+    public bool IsMapContentVisible(Guid mapId, string floorKey) => _window.IsMapContentVisible(mapId, floorKey);
     public double? CurrentMiniMapScale => _window.CurrentMiniMapScale;
     public double? CurrentMiniMapWidth => _window.CurrentMiniMapWidth;
     public double? CurrentMiniMapHeight => _window.CurrentMiniMapHeight;

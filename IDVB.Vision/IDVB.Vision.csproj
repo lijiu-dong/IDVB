@@ -33,6 +33,8 @@
     <Compile Include="..\Diagnostics\StartupTimeline.cs" Link="Production\Diagnostics\StartupTimeline.cs" />
   </ItemGroup>
   <ItemGroup>
+    <!-- Online orchestration ports and installation adapters belong to the desktop host. -->
+    <Compile Remove="..\Features\Maps\MapOnlineContracts.cs;..\Features\Maps\SubscriptionMapInstallation.cs" />
     <Compile Remove="..\Features\Maps\ExperimentalAlgorithmRegistry.cs;..\Features\Maps\MapFloorRecognitionWorker.cs;..\Features\Maps\MapOverlayStatusCoordinator.cs" />
     <!-- Contact-sheet rendering belongs to the desktop shell and its theme palette. -->
     <Compile Remove="..\Features\Maps\MapClassOverviewExporter.cs" />

@@ -77,7 +77,8 @@ public sealed partial class MapRepository
                             floor.RecognitionFileLength,
                             floor.RecognitionLastWriteUtcTicks,
                             floor.ImageSha256,
-                            requiresFile: needsIndependentRecognition);
+                            requiresFile: needsIndependentRecognition,
+                            out var recognitionMetadata);
                         recognitionMatches &= string.Equals(
                             floor.RecognitionSourceSha256,
                             floor.ImageSha256,
@@ -90,11 +91,27 @@ public sealed partial class MapRepository
                             floor.OverlayFileLength,
                             floor.OverlayLastWriteUtcTicks,
                             floor.RecognitionSha256,
-                            requiresFile: true)
+                            requiresFile: true,
+                            out var overlayMetadata)
                             && string.Equals(
                                 floor.OverlaySourceSha256,
                                 floor.RecognitionSha256,
                                 StringComparison.OrdinalIgnoreCase);
+                        // A byte-identical file can acquire a new timestamp when
+                        // copied/restored. Persist its fully verified stamp once,
+                        // so later matches do not decompress the same PNG again.
+                        if (recognitionMatches && recognitionMetadata is { } refreshedRecognition)
+                        {
+                            floor.RecognitionFileLength = refreshedRecognition.FileLength;
+                            floor.RecognitionLastWriteUtcTicks = refreshedRecognition.LastWriteUtcTicks;
+                            changed = true;
+                        }
+                        if (overlayMatches && overlayMetadata is { } refreshedOverlay)
+                        {
+                            floor.OverlayFileLength = refreshedOverlay.FileLength;
+                            floor.OverlayLastWriteUtcTicks = refreshedOverlay.LastWriteUtcTicks;
+                            changed = true;
+                        }
                         if (!recognitionMatches
                             || !overlayMatches
                             || floor.RecognitionWidth != profile.RecognitionPixelWidth

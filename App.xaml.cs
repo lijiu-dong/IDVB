@@ -70,6 +70,7 @@ namespace IDVBuff
             try
             {
                 WriteStartupTrace("OnLaunched entered; parsing launch options.");
+                Features.Accounts.DesktopSecurityRuntimeHost.Runtime.Start();
                 var cliOptions = CliLaunchOptions.Parse(Environment.GetCommandLineArgs());
                 if (cliOptions.IsCli)
                 {

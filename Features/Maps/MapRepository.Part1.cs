@@ -312,12 +312,7 @@ public sealed partial class MapRepository
         return Path.Combine(GetMapDirectory(record.Id), GetFloorThumbnailFileName(floorKey));
     }
     public MapCatalogRevision GetCatalogRevision()
-    {
-        if (!File.Exists(CatalogPath))
-            return MapCatalogRevision.Empty;
-        var info = new FileInfo(CatalogPath);
-        return new MapCatalogRevision(info.LastWriteTimeUtc.Ticks, info.Length);
-    }
+        => ReadCatalogFileRevision(CatalogPath);
     public static bool IsSupportedImage(string? path)
     {
         var extension = Path.GetExtension(path ?? string.Empty);

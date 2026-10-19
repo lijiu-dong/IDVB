@@ -36,7 +36,7 @@ public sealed partial class SqliteSurveyProjectRepository : ISurveyProjectReposi
         await using var connection = await OpenAsync(projectId, create: true, cancellationToken).ConfigureAwait(false);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         var now = DateTimeOffset.UtcNow;
-        var projectCommand = connection.CreateCommand();
+        using var projectCommand = connection.CreateCommand();
         projectCommand.Transaction = (SqliteTransaction)transaction;
         projectCommand.CommandText = """
             INSERT INTO projects(
@@ -59,7 +59,7 @@ public sealed partial class SqliteSurveyProjectRepository : ISurveyProjectReposi
         projectCommand.Parameters.AddWithValue("$floor_key", NormalizeFloorKey(request.FloorKey));
         await projectCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
-        var floorCommand = connection.CreateCommand();
+        using var floorCommand = connection.CreateCommand();
         floorCommand.Transaction = (SqliteTransaction)transaction;
         floorCommand.CommandText = """
             INSERT INTO floors(
@@ -205,7 +205,7 @@ public sealed partial class SqliteSurveyProjectRepository : ISurveyProjectReposi
             .ConfigureAwait(false);
         if (current.IsDeleted != updated.IsDeleted)
         {
-            var root = connection.CreateCommand();
+            using var root = connection.CreateCommand();
             root.Transaction = (SqliteTransaction)transaction;
             root.CommandText = updated.IsDeleted
                 ? """
@@ -231,7 +231,7 @@ public sealed partial class SqliteSurveyProjectRepository : ISurveyProjectReposi
         {
             if (updated.IsDeleted)
                 throw new InvalidOperationException("A deleted layer cannot be the floor root.");
-            var setRoot = connection.CreateCommand();
+            using var setRoot = connection.CreateCommand();
             setRoot.Transaction = (SqliteTransaction)transaction;
             setRoot.CommandText = """
                 UPDATE floors SET root_layer_id = $layer_id
@@ -274,7 +274,7 @@ public sealed partial class SqliteSurveyProjectRepository : ISurveyProjectReposi
             request.ProjectId,
             cancellationToken).ConfigureAwait(false);
         EnsureRevision(request.ProjectId, request.ExpectedRevision, currentRevision);
-        var command = connection.CreateCommand();
+        using var command = connection.CreateCommand();
         command.Transaction = (SqliteTransaction)transaction;
         command.CommandText = """
             UPDATE projects SET state = $state, revision = $revision, updated_utc = $updated_utc,

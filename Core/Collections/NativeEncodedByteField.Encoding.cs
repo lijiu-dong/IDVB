@@ -11,7 +11,7 @@ public sealed partial class NativeEncodedByteField
         ValidateEncoding(storage.Width, storage.Height, storage.TileColumns, storage.Constant,
             storage.Data, storage.Tiles, storage.CompactTiles, storage.Tiles is not null, storage.CompactTiles is not null);
 
-    private static void ValidateEncoding(int width, int height, int columns, bool constant,
+    internal static void ValidateEncoding(int width, int height, int columns, bool constant,
         ReadOnlySpan<byte> data, ReadOnlySpan<uint> tiles, ReadOnlySpan<byte> compactTiles, bool hasTiles, bool hasCompact)
     {
         if (width <= 0 || height <= 0

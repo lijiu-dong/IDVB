@@ -26,7 +26,7 @@ internal static class SqliteSurveyProjectReader
         Guid projectId,
         CancellationToken cancellationToken)
     {
-        var command = connection.CreateCommand();
+        using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT schema_version, name, map_class, state, created_utc, updated_utc,
                    revision, config_digest, algorithm_version, active_floor_key,
@@ -58,7 +58,7 @@ internal static class SqliteSurveyProjectReader
         CancellationToken cancellationToken)
     {
         var result = new List<SurveyFloor>();
-        var command = connection.CreateCommand();
+        using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT floor_id, floor_key, display_name, sort_order, root_layer_id,
                    world_x, world_y, world_width, world_height
@@ -96,7 +96,7 @@ internal static class SqliteSurveyProjectReader
             connection,
             projectId,
             cancellationToken).ConfigureAwait(false);
-        var command = connection.CreateCommand();
+        using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT observation_id, floor_id, idempotency_key, match_id, operation_epoch,
                    map_toggle_version, captured_utc, client_width, client_height, dpi,
@@ -160,7 +160,7 @@ internal static class SqliteSurveyProjectReader
             CancellationToken cancellationToken)
     {
         var result = new Dictionary<(Guid, string), SurveyAssetReference>();
-        var command = connection.CreateCommand();
+        using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT observation_id, asset_kind, sha256, relative_path, media_type,
                    byte_length, pixel_width, pixel_height
@@ -187,7 +187,7 @@ internal static class SqliteSurveyProjectReader
         CancellationToken cancellationToken)
     {
         var result = new List<SurveyMapLayer>();
-        var command = connection.CreateCommand();
+        using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT l.layer_id, l.floor_id, l.observation_id, l.name, l.z_order, l.is_visible,
                    l.is_locked, l.is_deleted, l.opacity, l.brightness, l.blend_mode, l.auto_tx, l.auto_ty,
@@ -253,7 +253,7 @@ internal static class SqliteSurveyProjectReader
         CancellationToken cancellationToken)
     {
         var result = new List<SurveyConstraint>();
-        var command = connection.CreateCommand();
+        using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT constraint_id, floor_id, source_layer_id, target_layer_id,
                    tx, ty, rotation, sx, sy, confidence, residual, inlier_count,

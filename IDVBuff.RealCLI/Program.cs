@@ -49,6 +49,8 @@ if (args.Length == 0 || args[0] is "-h" or "--help" or "help")
 }
 
 var command = args[0].ToLowerInvariant();
+using var securityRuntime = IDVBuff.Features.Accounts.DesktopSecurityRuntimeHost.Runtime;
+securityRuntime.Start();
 return command switch
 {
     "run" => await RunSingleAsync(args[1..], dispatcher),

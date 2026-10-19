@@ -3,7 +3,8 @@ namespace IDVBuff.Diagnostics;
 /// <summary>Plans are read-only snapshots. Execution never discovers extra files to delete.</summary>
 internal static partial class LocalCacheCleanup
 {
-    internal sealed record FileSnapshot(string Path, long Length, DateTime WrittenUtc, DateTime CreatedUtc);
+    internal sealed record FileSnapshot(string Path, long Length, DateTime WrittenUtc, DateTime CreatedUtc,
+        DateTime AccessedUtc = default);
     internal sealed record Entry(string Category, string Path, bool IsDirectory,
         DateTime WrittenUtc, IReadOnlyList<FileSnapshot> Files, bool Obsolete = false)
     {
@@ -185,7 +186,9 @@ internal static partial class LocalCacheCleanup
     }
 
     private static FileSnapshot Snapshot(FileInfo info) =>
-        new(info.FullName, info.Length, info.LastWriteTimeUtc, info.CreationTimeUtc);
+        new(info.FullName, info.Length, info.LastWriteTimeUtc, info.CreationTimeUtc,
+            string.Equals(info.Directory?.Name, ".appearance", StringComparison.OrdinalIgnoreCase)
+                ? info.LastAccessTimeUtc : default);
 
     private static List<FileSnapshot> ReadFiles(string root, string directory)
     {

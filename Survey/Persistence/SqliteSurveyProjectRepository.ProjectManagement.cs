@@ -24,7 +24,7 @@ public sealed partial class SqliteSurveyProjectRepository
             cancellationToken).ConfigureAwait(false);
         EnsureRevision(request.ProjectId, request.ExpectedRevision, revision);
 
-        var rename = connection.CreateCommand();
+        using var rename = connection.CreateCommand();
         rename.Transaction = sqlite;
         rename.CommandText = "UPDATE projects SET name = $name WHERE project_id = $project_id;";
         rename.Parameters.AddWithValue("$name", request.Name.Trim());
@@ -76,7 +76,7 @@ public sealed partial class SqliteSurveyProjectRepository
                 create: false,
                 cancellationToken).ConfigureAwait(false))
             {
-                var revision = connection.CreateCommand();
+                using var revision = connection.CreateCommand();
                 revision.CommandText = "SELECT revision FROM projects WHERE project_id = $project_id;";
                 revision.Parameters.AddWithValue("$project_id", request.ProjectId.ToString("N"));
                 var value = await revision.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);

@@ -12,6 +12,11 @@ public sealed partial class MapOverlayWindow
     private long _mapLayerBitmapBuildCount;
     private long _mapLayerTransformMoveCount;
 
+    public bool IsMapContentVisible(Guid mapId, string floorKey) =>
+        !_disposed && _map is not null && _mapNativeWindow.IsVisible
+        && _showMainContent && _showMapContent && _mapOpacity > 0
+        && _mapId == mapId && string.Equals(_mapFloorKey, floorKey, StringComparison.OrdinalIgnoreCase);
+
     public bool IsCaptureExclusionEnabled => _nativeWindow.IsCaptureExclusionEnabled
         && (_map is null || _mapNativeWindow.IsCaptureExclusionEnabled);
     internal long MapLayerBitmapBuildCount => Interlocked.Read(ref _mapLayerBitmapBuildCount);

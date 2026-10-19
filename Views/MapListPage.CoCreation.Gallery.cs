@@ -73,9 +73,9 @@ public sealed partial class MapListPage
         return button;
     }
 
-    private static string CoCreationPublisherLabel(string? handle, string? publishedName)
+    private string CoCreationPublisherLabel(string? handle, string? publishedName)
     {
-        if (IsCoCreationOwner(handle) && AccountSession.Identity is { DisplayName: { } displayName }
+        if (IsCoCreationOwner(handle) && _accountService.Identity is { DisplayName: { } displayName }
             && !string.IsNullOrWhiteSpace(displayName)) return displayName.Trim();
         return !string.IsNullOrWhiteSpace(publishedName) ? publishedName.Trim() : "地图作者";
     }

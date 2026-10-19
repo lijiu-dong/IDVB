@@ -108,7 +108,7 @@ public static class SemanticStructureContours
 
 /// <summary>Immutable per-floor class support. Native readers own independent
 /// leases; managed readers retain their original shared lifetime.</summary>
-public sealed class SemanticStructureIndex : IDisposable
+public sealed partial class SemanticStructureIndex : IDisposable
 {
     private readonly SemanticDistanceField? _warm, _cool;
     private readonly NativeSemanticField? _nativeWarm, _nativeCool;
@@ -144,6 +144,10 @@ public sealed class SemanticStructureIndex : IDisposable
 
     public SemanticStructureIndex(Mat labels, bool prepareCorrelationBits = true,
         SemanticStructureIndex? reuseDistancesFrom = null, bool nativeStorage = false)
+        : this(labels, prepareCorrelationBits, reuseDistancesFrom, nativeStorage, 0) { }
+
+    private SemanticStructureIndex(Mat labels, bool prepareCorrelationBits,
+        SemanticStructureIndex? reuseDistancesFrom, bool nativeStorage, byte unchangedKinds)
     {
         Width = labels.Width; Height = labels.Height;
         var source = reuseDistancesFrom is { } candidate && candidate.Width == Width && candidate.Height == Height
@@ -151,9 +155,11 @@ public sealed class SemanticStructureIndex : IDisposable
         try
         {
             _warm = BuildSupport(labels, SemanticStructureContours.Warm, prepareCorrelationBits,
-                source?._warm, out _warmK3, nativeStorage, source?._nativeWarm, out _nativeWarm);
+                source?._warm, out _warmK3, nativeStorage, source?._nativeWarm, out _nativeWarm,
+                (unchangedKinds & 1) != 0);
             _cool = BuildSupport(labels, SemanticStructureContours.Cool, prepareCorrelationBits,
-                source?._cool, out _coolK3, nativeStorage, source?._nativeCool, out _nativeCool);
+                source?._cool, out _coolK3, nativeStorage, source?._nativeCool, out _nativeCool,
+                (unchangedKinds & 2) != 0);
         }
         catch { _nativeWarm?.Dispose(); _nativeCool?.Dispose(); _warmK3?.Dispose(); _coolK3?.Dispose(); throw; }
         // The scan mask can erase a gate region. Never assume a common source
@@ -226,12 +232,17 @@ public sealed class SemanticStructureIndex : IDisposable
     private static SemanticDistanceField? BuildSupport(Mat labels, byte kind, bool prepareBits,
         SemanticDistanceField? reuse,
         out SemanticCorrelationBits bits, bool nativeStorage,
-        NativeSemanticField? nativeReuse, out NativeSemanticField? nativeField)
+        NativeSemanticField? nativeReuse, out NativeSemanticField? nativeField, bool unchanged = false)
     {
         var resource = kind == SemanticStructureContours.Warm ? "Semantic.Warm.Distance" : "Semantic.Cool.Distance";
         var bitResource = kind == SemanticStructureContours.Warm ? "Semantic.Warm.K3" : "Semantic.Cool.K3";
         bits = SemanticCorrelationBits.Empty;
         nativeField = null;
+        if (unchanged && !prepareBits)
+        {
+            if (nativeStorage && nativeReuse is not null) { nativeField = nativeReuse.Clone(); return null; }
+            if (!nativeStorage && reuse is not null) return reuse;
+        }
         ScanDistanceRaster.EncodedRaster? encoded = null;
         try
         {
@@ -370,7 +381,7 @@ public sealed record SemanticStructureEvidence(bool Accepted, int Tested, int Hi
 
 /// <summary>An independent reader of exact immutable semantic correlation words.
 /// Native readers share storage through leases; the managed fallback remains available.</summary>
-internal sealed class SemanticCorrelationBits : IDisposable
+internal sealed partial class SemanticCorrelationBits : IDisposable
 {
     private readonly IDVBuff.Core.Collections.CompactBitWords? _managed;
     private readonly NativeCompactBitWords? _native;

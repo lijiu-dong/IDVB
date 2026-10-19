@@ -15,7 +15,17 @@ public sealed partial class SessionOrchestrator
         _provisionalRecognition = Refresh(_provisionalRecognition);
         _optimisticPresentationRecognition = Refresh(_optimisticPresentationRecognition);
         _pendingBackgroundIdentity = Refresh(_pendingBackgroundIdentity);
-        _pendingOrbTrackingRecognition = Refresh(_pendingOrbTrackingRecognition);
+        var pendingTracking = Volatile.Read(ref _pendingOrbTrackingCommit);
+        while (pendingTracking is not null)
+        {
+            var refreshed = pendingTracking with
+            {
+                Recognition = Refresh(pendingTracking.Recognition) ?? pendingTracking.Recognition
+            };
+            var observed = Interlocked.CompareExchange(ref _pendingOrbTrackingCommit, refreshed, pendingTracking);
+            if (ReferenceEquals(observed, pendingTracking)) break;
+            pendingTracking = observed;
+        }
         RefreshMiniMapForCurrentFloor();
         var active = _optimisticPresentationRecognition ?? _lastRecognition;
         if (_gameMapToggleState.IsOpen && _overlay.HasMap && active is not null

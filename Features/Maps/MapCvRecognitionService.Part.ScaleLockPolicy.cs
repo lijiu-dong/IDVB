@@ -9,7 +9,7 @@ public sealed partial class MapCvRecognitionService
     internal Func<bool> ScaleLockingAllowed { get; set; } = static () => true;
     private readonly object _scalePolicyGate = new();
     private readonly Dictionary<AdaptiveScaleKey, AdaptiveScaleCoverageMilestones> _coverageMilestones = [];
-    private readonly Dictionary<AdaptiveScaleKey, AdaptiveScaleCoverageReference> _coverageReferences = [];
+    private readonly Dictionary<(Guid MapId, string Floor, string Source), AdaptiveScaleCoverageReference> _coverageReferences = [];
     private readonly ConditionalWeakTable<CapturedGameFrame, ScaleRefreshFrame> _scaleRefreshFrames = new();
     private readonly ConditionalWeakTable<CapturedGameFrame, CoverageFrame> _alignmentCoverage = new();
     private sealed record CoverageFrame(AdaptiveScaleKey Key, long Generation, int Hits, int Total,
@@ -93,6 +93,9 @@ public sealed partial class MapCvRecognitionService
         if (recognition.Result.OverlayTransform is not { } transform)
             return null;
         var key = AdaptiveScaleKey.Create(recognition.Map, recognition.Result.Floor, frame.ClientBounds, frame.ViewportBounds);
+        var sourceFloor = recognition.Map.Floors.FirstOrDefault(f => f.Key == recognition.Result.Floor);
+        var referenceKey = (recognition.Map.Id, recognition.Result.Floor,
+            sourceFloor?.PrebuiltStructureLine is { } source ? Vpsg3IndexCacheKey.CreatePrebuiltGenerationIdentity(source) : string.Empty);
         long generation;
         AdaptiveScaleCoverageReference.Lease lease;
         lock (_scalePolicyGate)
@@ -105,7 +108,7 @@ public sealed partial class MapCvRecognitionService
                 && cached.Key == key && cached.Generation == generation
                 && ReferenceEquals(cached.Transform, transform))
                 return cached;
-            if (!_coverageReferences.TryGetValue(key, out var reference))
+            if (!_coverageReferences.TryGetValue(referenceKey, out var reference))
             {
                 // Coverage is an advisory post-alignment measurement.  A resident VPSG3 index
                 // may still be valid while its on-disk source is being repaired or has changed;
@@ -123,12 +126,12 @@ public sealed partial class MapCvRecognitionService
                 }
                 if (string.IsNullOrWhiteSpace(path) || !System.IO.File.Exists(path))
                     return null;
-                using var input = Cv2.ImRead(path, ImreadModes.Unchanged);
+                using var input = ReadCoverageReference(recognition.Map, recognition.Result.Floor);
                 using var lines = SemanticStructureContours.Geometry(input);
                 if (lines.Empty())
                     return null;
                 reference = AdaptiveScaleCoverageReference.Create(lines);
-                try { _coverageReferences.Add(key, reference); }
+                try { _coverageReferences.Add(referenceKey, reference); }
                 catch { reference.Dispose(); throw; }
             }
             lease = reference.Borrow();

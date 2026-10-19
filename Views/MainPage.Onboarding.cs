@@ -1,6 +1,8 @@
 using IDVBuff.Features.Maps;
 using IDVBuff.Helps;
 using IDVBuff.Modules;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.UI.Xaml.Controls;
 
 namespace IDVBuff.Views;
 
@@ -8,7 +10,18 @@ public sealed partial class MainPage
 {
     private async Task ShowMapSubscriptionGuideAsync()
     {
-        var subscriptions = new MapSubscriptionService(new MapRepository());
+        var subscriptions = App.Services.GetRequiredService<IMapSubscriptionService>();
+        if (!subscriptions.Available)
+        {
+            await new ContentDialog
+            {
+                XamlRoot = XamlRoot,
+                Title = "在线服务未配置",
+                Content = "当前构建未包含地图订阅服务，请使用包含在线服务的完整构建。",
+                CloseButtonText = "关闭"
+            }.ShowAsync();
+            return;
+        }
         await NavigateToCoCreationCommunityAsync();
         if (ModuleContentHost.Content is not MapListPage communityPage)
             return;
@@ -193,8 +206,8 @@ public sealed partial class MainPage
             ? EmphasisGuideCheckResult.Passed
             : EmphasisGuideCheckResult.TryAgain("请先打开总开关。"));
 
-    private static string TutorialVideoUri(string fileName) =>
-        $"https://download.xgflee.com/guides/onboarding/{fileName}";
+    private static string? TutorialVideoUri(string fileName) =>
+        IDVBuff.UpdateCore.OnlineServiceLinks.TryResolve("downloads.guide", ("file", fileName))?.AbsoluteUri;
 
     private static Task<EmphasisGuideCheckResult> RequireVideoOpenedAsync(bool wasOpened) =>
         Task.FromResult(wasOpened

@@ -42,19 +42,55 @@ public sealed partial class SessionOrchestrator
     [DllImport("winmm.dll", EntryPoint = "timeEndPeriod")]
     private static extern uint TimeEndPeriod(uint milliseconds);
 
-    private void HandleWeakTrackingFrame(
+    private async Task RunVpsg3_5InputLoopAsync(
         OrbTrackingContext context,
-        ref RuntimeMapRecognition currentRecognition,
-        double lockedScale,
-        ref double priorTx,
-        ref double priorTy,
-        ref double velTx,
-        ref double velTy,
-        ref int weakFrames)
+        double scale,
+        Vpsg3_5DragMotion motion,
+        CancellationToken cancellationToken)
     {
-        // A weak frame must never extrapolate the last accepted translation.
-        velTx = 0.0d;
-        velTy = 0.0d;
+        var gameWindow = IntPtr.Zero;
+        var publishedRevision = -1L;
+        while (!cancellationToken.IsCancellationRequested
+            && context.Generation == Volatile.Read(ref _orbTrackingGeneration))
+        {
+            bool foreground;
+            bool pressed;
+            bool hasCursor;
+            NativePoint cursor;
+#if IDVB_DEVELOPMENT_BUILD
+            if (IDVBuff.Lifecycle.BackgroundTestRuntime.Enabled)
+            {
+                foreground = IDVBuff.Lifecycle.BackgroundTestRuntime.TryInput(
+                    out var x, out var y, out pressed, out _);
+                cursor = new NativePoint { X = x, Y = y };
+                hasCursor = foreground;
+            }
+            else
+#endif
+            {
+                foreground = gameWindow != IntPtr.Zero && GetForegroundWindow() == gameWindow;
+                if (!foreground && _captureSvc.TryGetForegroundClientBounds(out _, out var window, out _))
+                {
+                    gameWindow = window;
+                    foreground = true;
+                }
+                pressed = (GetAsyncKeyState(VkLButton) & 0x8000) != 0;
+                hasCursor = TryGetTrackingCursor(out cursor);
+            }
+            var snapshot = motion.SampleInput(foreground && pressed, foreground && hasCursor,
+                cursor.X, cursor.Y, SystemRelativeClock.GetTicks());
+            if (snapshot.Revision != publishedRevision)
+            {
+                publishedRevision = snapshot.Revision;
+                PublishRealtimeMapTransform(context, scale, snapshot.Tx, snapshot.Ty,
+                    snapshot.Timestamp, snapshot.Confidence);
+            }
+            await Task.Delay(2, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private void HandleWeakTrackingFrame(int weakFrames)
+    {
         if (weakFrames >= 5)
             _alignmentTrackingMode = MapAlignmentTrackingMode.HoldingLastTransform;
         if (weakFrames >= 30)
@@ -122,34 +158,6 @@ public sealed partial class SessionOrchestrator
         }
     }
 
-    private static async Task DisposePendingCaptureAsync(
-        Task<object?>? pendingCapture,
-        CancellationTokenSource? cancellation)
-    {
-        if (cancellation is null)
-            return;
-        try
-        {
-            cancellation.Cancel();
-            if (pendingCapture is not null)
-            {
-                var frame = await pendingCapture.ConfigureAwait(false);
-                (frame as IDisposable)?.Dispose();
-            }
-        }
-        catch (OperationCanceledException)
-        {
-        }
-        catch
-        {
-            // Session teardown must still release the timer period and tracking state.
-        }
-        finally
-        {
-            cancellation.Dispose();
-        }
-    }
-
     private void LogVpsg3_5SessionEnd(
         OrbTrackingContext context,
         double sessionDurationMs,
@@ -166,9 +174,11 @@ public sealed partial class SessionOrchestrator
         double preprocessTotalMs,
         double trackTotalMs,
         double endToEndTotalMs,
-        List<double> solveSamples)
+        List<double> solveSamples,
+        Vpsg3_5DragMotion motion)
     {
         var realtime = _realtimeMapTransformPublisher.Snapshot(reset: false);
+        var input = motion.Telemetry();
         _logCollector.Append(
             MapLogCategory.StructureRegistration,
             MapLogLevel.Info,
@@ -185,6 +195,13 @@ public sealed partial class SessionOrchestrator
                 ["avgSolveMs"] = solveSamples.Count > 0 ? solveSamples.Average() : 0d,
                 ["p95SolveMs"] = Percentile95(solveSamples),
                 ["dragDurationMs"] = dragDurationMs,
+                ["inputSamples"] = input.InputSamples,
+                ["maximumInputGapMs"] = input.MaximumInputGapMs,
+                ["mouseGainX"] = input.MouseGainX,
+                ["mouseGainY"] = input.MouseGainY,
+                ["nativeInputDelayMs"] = input.NativeInputDelayMs,
+                ["nativeFrameErrorPixels"] = input.NativeFrameErrorPixels,
+                ["maximumNativeFrameErrorPixels"] = input.MaximumNativeFrameErrorPixels,
                 ["captureAgeMs"] = Average(captureAgeTotalMs, captureCount),
                 ["readbackMs"] = Average(readbackTotalMs, captureCount),
                 ["preprocessMs"] = Average(preprocessTotalMs, Math.Max(1, opticalAttempts + visualAttempts)),

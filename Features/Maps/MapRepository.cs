@@ -5,6 +5,7 @@ namespace IDVBuff.Features.Maps;
 public readonly record struct MapCatalogRevision(long LastWriteUtcTicks, long Length)
 {
     public static MapCatalogRevision Empty { get; } = new(0, 0);
+    internal string? ContentVersion { get; init; }
 }
 
 /// <summary>
@@ -44,6 +45,7 @@ public sealed partial class MapRepository
     }
 
     private string CatalogPath => Path.Combine(_rootDirectory, "maps.json");
+    internal string PreparedFloorCacheDirectory => Path.Combine(_rootDirectory, ".prepared-floor-cache");
 
 
     public Task<MapRecord> SaveAsync(MapDraft draft) =>

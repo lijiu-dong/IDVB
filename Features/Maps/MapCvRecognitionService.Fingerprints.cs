@@ -43,6 +43,7 @@ public sealed partial class MapCvRecognitionService
         var recognitionImagePath = _repository.GetFloorRecognitionPath(map, floorKey);
 
         var (iconWidth, iconHeight) = GetReferenceGateIconSize(map, floorKey, recognitionImagePath, mainRefBounds, sideRefBounds);
+        var repository = _repository;
 
         return new MapGeometryFingerprint
         {
@@ -55,7 +56,7 @@ public sealed partial class MapCvRecognitionService
             ReferenceWidth = profile.RecognitionPixelWidth,
             ReferenceHeight = profile.RecognitionPixelHeight,
             RecognitionImagePath = recognitionImagePath,
-            OverlayImagePath = _repository.GetFloorOverlayPath(map, floorKey),
+            OverlayImagePathFactory = () => repository.GetFloorOverlayPath(map, floorKey),
             ReferenceGateIconWidth = iconWidth,
             ReferenceGateIconHeight = iconHeight
         };
@@ -409,8 +410,7 @@ public sealed partial class MapCvRecognitionService
                     return;
                 }
                 if (ct.IsCancellationRequested) return;
-                var path = GetAlignmentReferencePath(map, floorKey, tuning);
-                using var image = Cv2.ImRead(path, ImreadModes.Unchanged);
+                using var image = ReadAlignmentReference(map, floorKey, tuning);
                 if (image.Empty() || ct.IsCancellationRequested) return;
                 using var preparedFloorLease = profile == MapStructurePreprocessingProfile.PrebuiltStructureLine
                     && TryGetVpsg3FloorLease(map, floorKey, out var floorLease) ? floorLease : null;

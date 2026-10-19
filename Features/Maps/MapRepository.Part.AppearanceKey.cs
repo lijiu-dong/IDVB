@@ -6,9 +6,8 @@ namespace IDVBuff.Features.Maps;
 
 public sealed partial class MapRepository
 {
-    // Preserve the exact appearance-v2 byte stream. Cache hits used to create
-    // a profile JSON string, a combined string, and a full UTF-8 copy, including
-    // every freehand crop point and annotation. Hash that same stream directly.
+    // Only inputs consumed by rendering participate. Cropped overlays already
+    // have their final region; anchors and annotations never recolor pixels.
     internal static string ComputeAppearanceCacheKey(string sourceStamp, MapAppearancePalette palette,
         string? croppedFloor, bool thumbnail,
         IEnumerable<(string Stamp, FloorRecognitionProfile? Profile)> floors)
@@ -16,7 +15,7 @@ public sealed partial class MapRepository
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         using var stream = new AppearanceHashStream(hash);
         using var text = new StreamWriter(stream, new UTF8Encoding(false), 1024, leaveOpen: true);
-        text.Write("appearance-v2|");
+        text.Write("appearance-v3|");
         text.Write(sourceStamp);
         text.Flush();
         JsonSerializer.Serialize(stream, palette);
@@ -26,7 +25,7 @@ public sealed partial class MapRepository
         {
             text.Write(stamp);
             text.Flush();
-            JsonSerializer.Serialize(stream, profile);
+            if (croppedFloor is null) JsonSerializer.Serialize(stream, profile?.GetEffectiveRecognitionRegion());
         }
         text.Flush();
         return Convert.ToHexString(hash.GetHashAndReset());

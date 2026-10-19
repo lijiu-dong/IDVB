@@ -209,7 +209,8 @@ public sealed partial class Vpsg3PreparedFloor : IDisposable
     public int EdgePixelCount { get; }
     public Vpsg3ScalePrior ScalePrior { get; }
     public int WordsPerRow { get; }
-    public long MemoryBytes => _baseMemoryBytes + DerivedGeometryK3Bytes + DerivedGeometryK5Bytes + (SemanticIndex?.MemoryBytes ?? 0) + (_precisionDistance?.MemoryBytes ?? 0L);
+    internal IDVBuff.Core.Collections.CompactBitWords? ReferenceSeeds { get; set; }
+    public long MemoryBytes => _baseMemoryBytes + DerivedGeometryK3Bytes + DerivedGeometryK5Bytes + (SemanticIndex?.MemoryBytes ?? 0) + (_precisionDistance?.MemoryBytes ?? 0L) + (ReferenceSeeds?.MemoryBytes ?? 0);
 
     public bool IsDisposed => Volatile.Read(ref _disposed) != 0;
 
@@ -337,7 +338,7 @@ public sealed partial class Vpsg3PreparedFloor : IDisposable
 
             try
             {
-                using var input = Cv2.ImRead(linePath, ImreadModes.Unchanged);
+                using var input = CreateReferenceImage() ?? Cv2.ImRead(linePath, ImreadModes.Unchanged);
                 using var edgeImage = SemanticStructureContours.Geometry(input);
                 if (edgeImage.Empty() || edgeImage.Width != ReferenceWidth || edgeImage.Height != ReferenceHeight)
                     return false;
@@ -419,6 +420,7 @@ public sealed partial class Vpsg3PreparedFloor : IDisposable
             {
                 _dilatedBitsetK5 = null;
                 _dilatedBitsetK3 = null;
+                ReferenceSeeds = null;
                 _derivedGeometryK3Ownership?.Dispose();
                 _derivedGeometryK3Ownership = null;
                 _derivedGeometryK5Ownership?.Dispose();

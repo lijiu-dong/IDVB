@@ -481,6 +481,7 @@ public sealed partial class MapCvRecognitionService
                     ["diagnosticSemanticWriteMs"] = diagnosticTiming.SemanticWriteMs,
                     ["diagnosticOverlayMs"] = diagnosticTiming.OverlayMs,
                     ["diagnosticFitnessWriteMs"] = diagnosticTiming.FitnessWriteMs,
+                    ["diagnosticEnqueueMs"] = diagnosticTiming.EnqueueMs, ["diagnosticDeferred"] = diagnosticTiming.Deferred,
                     ["precisionWallMs"] = precisionWallMs,
                     ["semanticWallMs"] = semanticWallMs,
                     ["resultBuildWallMs"] = resultBuildWallMs,

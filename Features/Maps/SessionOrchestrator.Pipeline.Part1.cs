@@ -46,13 +46,34 @@ using IDVBuff.Core.Contracts; using IDVBuff.Core.Diagnostics; using IDVBuff.Core
             var initialViewport = ResolveMapViewportForCurrentWindow();
             autoFloor.LogMonitoringStarted(initialViewport, "仅对齐开图");
         }
-        var initialPrewarmTuning = CreateStructureTuningForFloor(             locked.Map,             targetFloorKey,             CreateInitialAlignmentStructureTuning());         var initialPrewarmTask = _recognition.WarmFloorStructureCacheAsync(
-            locked.Map, targetFloorKey, initialPrewarmTuning);
+        var initialPrewarmTuning = CreateStructureTuningForFloor(             locked.Map,             targetFloorKey,             CreateInitialAlignmentStructureTuning());         var allowFrameReuse = !recoveringSelectedIdentity && !independentAlignment
+            && _mapOpenFrameReuseCache.HasEntry;
+        var initialPrewarmTask = allowFrameReuse ? Task.CompletedTask
+            : _recognition.WarmFloorStructureCacheAsync(
+                locked.Map, targetFloorKey, initialPrewarmTuning);
         // Presence detection selects the first frame that belongs to the map;
         // no second screenshot is taken after readiness is confirmed.
-        var captureResult = await CaptureMapOpenViewportAsync(toggle, locked, targetFloorKey, initialPrewarmTuning, cancellationToken, autoFloor); CapturedGameFrame? frame = captureResult.Frame; var stableViewportWaitMs = captureResult.StableViewportWaitMilliseconds; var stableViewportMode = captureResult.StableViewportMode; var stableViewportFallback = captureResult.StableViewportFallback; var precomputedVpsg3Attempt = captureResult.PrecomputedVpsg3Attempt;         if (!_gameMapToggleState.IsCurrent(toggle) || !IsMapOpenOperationCurrent(context))         {             trace?.SetTerminal("superseded", "map-operation-version-changed");             frame?.Dispose();             return;         }         try         {             cancellationToken.ThrowIfCancellationRequested();         }         catch         {             frame?.Dispose();             throw;         }         if (frame is null)         {             trace?.SetTerminal("failed", "stable-viewport-capture-failed");             _statusMessage = string.IsNullOrWhiteSpace(_lastStableCaptureFailureReason)                 ? "地图截图失败。"                 : _lastStableCaptureFailureReason;             _logCollector.Append(                 MapLogCategory.ViewportCapture,                 MapLogLevel.Warning,                 _statusMessage,                 elapsedMs: alignmentWallClock.Elapsed.TotalMilliseconds);             var failureOverlay = trace?.StartTopLevel(                 "overlay_publish",                 MapOperationWaitKind.Compute,                 mapId: locked.Map.Id.ToString("D"),                 floorKey: targetFloorKey);             try             {                 _overlay.ClearMap();                 if (_lastGameBounds.IsValid && _lastGameWindowHandle != IntPtr.Zero)                 {                     ShowTransientOverlayStatus(                         MapOverlayStatusLevel.Failure,                         "地图重新对齐失败",                         _statusMessage,                         "请保持游戏完整地图打开且画面稳定，然后重新打开地图重试。",                         _lastGameBounds,                         _lastGameWindowHandle);                     _overlay.Show();                 }                 RestorePendingVariantStatusAfterTransient(                     _statusMessage,                     locked,                     targetFloorKey);             }             finally             {                 failureOverlay?.Complete();             }             StateChanged?.Invoke(this, EventArgs.Empty);
+        var captureResult = await CaptureMapOpenViewportAsync(toggle, locked, targetFloorKey, initialPrewarmTuning, cancellationToken, autoFloor, allowFrameReuse); CapturedGameFrame? frame = captureResult.Frame; var stableViewportWaitMs = captureResult.StableViewportWaitMilliseconds; var stableViewportMode = captureResult.StableViewportMode; var stableViewportFallback = captureResult.StableViewportFallback; var precomputedVpsg3Attempt = captureResult.PrecomputedVpsg3Attempt;         if (!_gameMapToggleState.IsCurrent(toggle) || !IsMapOpenOperationCurrent(context))         {             trace?.SetTerminal("superseded", "map-operation-version-changed");             frame?.Dispose();             return;         }         try         {             cancellationToken.ThrowIfCancellationRequested();         }         catch         {             frame?.Dispose();             throw;         }         if (frame is null)         {             trace?.SetTerminal("failed", "stable-viewport-capture-failed");             _statusMessage = string.IsNullOrWhiteSpace(_lastStableCaptureFailureReason)                 ? "地图截图失败。"                 : _lastStableCaptureFailureReason;             _logCollector.Append(                 MapLogCategory.ViewportCapture,                 MapLogLevel.Warning,                 _statusMessage,                 elapsedMs: alignmentWallClock.Elapsed.TotalMilliseconds);             var failureOverlay = trace?.StartTopLevel(                 "overlay_publish",                 MapOperationWaitKind.Compute,                 mapId: locked.Map.Id.ToString("D"),                 floorKey: targetFloorKey);             try             {                 _overlay.ClearMap();                 if (_lastGameBounds.IsValid && _lastGameWindowHandle != IntPtr.Zero)                 {                     ShowTransientOverlayStatus(                         MapOverlayStatusLevel.Failure,                         "地图重新对齐失败",                         _statusMessage,                         "请保持游戏完整地图打开且画面稳定，然后重新打开地图重试。",                         _lastGameBounds,                         _lastGameWindowHandle);                     _overlay.Show();                 }                 RestorePendingVariantStatusAfterTransient(                     _statusMessage,                     locked,                     targetFloorKey);             }             finally             {                 failureOverlay?.Complete();             }             StateChanged?.Invoke(this, EventArgs.Empty);
             return;
         }
+
+        if (captureResult.ReusedFrame is { } reusedFrame)
+        {
+            try
+            {
+                await PublishUnchangedMapOpenFrameAsync(
+                    reusedFrame, frame, context, stableViewportWaitMs);
+            }
+            finally
+            {
+                frame.Dispose();
+            }
+            return;
+        }
+        _mapOpenFrameReuseCache.Reset();
+        if (allowFrameReuse)
+            initialPrewarmTask = _recognition.WarmFloorStructureCacheAsync(
+                locked.Map, targetFloorKey, initialPrewarmTuning);
 
         // 截帧已成功完成，底层大地图图像已完全保存在 frame 内存中。
         // 若当前处于稳态开图且已有可信的基准地图变换，立即恢复前台 Overlay 大地图呈现，

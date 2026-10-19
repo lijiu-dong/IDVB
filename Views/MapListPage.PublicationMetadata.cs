@@ -13,7 +13,7 @@ public sealed partial class MapListPage
         var uploaded = false;
         try
         {
-            var identity = await AccountSession.RequirePublishAccessAsync();
+            var identity = await _accountService.RequirePublishAccessAsync();
             var previous = GetOwnedPublication()
                 ?? throw new InvalidOperationException("请选择当前账号已发布的地图类。");
             var name = previous.PackageName ?? _selectedClass;
@@ -46,7 +46,9 @@ public sealed partial class MapListPage
             {
                 var update = await _mapPublicationService.PrepareMetadataAsync(previous.Id, identity.PublisherHandle,
                     identity.DisplayName, identity.IsOfficial, identity.IsBuilder, name, coverPath);
-                await AccountSession.UpdatePublicationMetadataAsync(update);
+                await _communityService.UpdateMetadataAsync(new(update.PublicationId, update.PublisherHandle,
+                    update.SubscriptionLink, update.PackageName, update.CoverPath, update.FeedBytes,
+                    update.ExpectedFeedSha256), CancellationToken.None);
                 uploaded = true;
                 await _mapSubscriptionService.RegisterMetadataAsync(update);
                 await ShowListAsync();

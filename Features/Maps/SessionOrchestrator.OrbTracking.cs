@@ -16,7 +16,7 @@ public sealed partial class SessionOrchestrator
     private long _lastOrbRenderMetricsTimestamp;
     private int _orbCommitQueued;
     private int _orbCaptureExclusionWarningLogged;
-    private RuntimeMapRecognition? _pendingOrbTrackingRecognition;
+    private OrbTrackingCommit? _pendingOrbTrackingCommit;
 
     private sealed record OrbTrackingContext(
         long Generation,
@@ -367,83 +367,6 @@ public sealed partial class SessionOrchestrator
             return null;
         }
         return corrected;
-    }
-
-    private void EnqueueOrbTrackingCommit(
-        OrbTrackingContext context,
-        RuntimeMapRecognition recognition,
-        double maximumBaselineScaleChangeRatio)
-    {
-        Volatile.Write(ref _pendingOrbTrackingRecognition, recognition);
-        if (Interlocked.CompareExchange(ref _orbCommitQueued, 1, 0) != 0)
-            return;
-
-        void DrainPendingCommits()
-        {
-            try
-            {
-                while (Interlocked.Exchange(ref _pendingOrbTrackingRecognition, null) is { } pending)
-                {
-                    ApplyOrbTrackingCommit(context, pending, maximumBaselineScaleChangeRatio);
-                }
-            }
-            finally
-            {
-                Volatile.Write(ref _orbCommitQueued, 0);
-                if (Volatile.Read(ref _pendingOrbTrackingRecognition) is not null
-                    && Interlocked.CompareExchange(ref _orbCommitQueued, 1, 0) == 0)
-                {
-                    _dispatcher.TryEnqueue(DrainPendingCommits);
-                }
-            }
-        }
-
-        if (!_dispatcher.TryEnqueue(DrainPendingCommits))
-        {
-            Volatile.Write(ref _orbCommitQueued, 0);
-        }
-    }
-
-    private void ApplyOrbTrackingCommit(
-        OrbTrackingContext context,
-        RuntimeMapRecognition recognition,
-        double maximumBaselineScaleChangeRatio)
-    {
-        try
-        {
-            if (!IsOrbTrackingContextCurrent(context) || recognition.Result.OverlayTransform is not { } transform || _lastAlignmentSession is not { } session)
-                return;
-            var effectiveScaleLimit = IsAdaptiveTransformConfirmed(context, transform) ? 0.50d : maximumBaselineScaleChangeRatio;
-            var advanced = session.Advance(recognition.Map, recognition.Result, effectiveScaleLimit);
-            _lastRecognition = recognition;
-            _mapLease.Bind(_matchSession.Snapshot, recognition.Map.Id);
-            _lastAlignmentSession = advanced;
-            if (CanUseAdaptiveReliableSession(advanced, context.AdaptiveKey))
-                RememberPrimaryFloorSession(recognition, advanced);
-            _alignmentTrackingMode = recognition.Result.Source switch
-            {
-                MapRecognitionSource.VpsgTracking => MapAlignmentTrackingMode.VpsgTracking,
-                MapRecognitionSource.OrbTracking => MapAlignmentTrackingMode.OrbTracking,
-                _ => MapAlignmentTrackingMode.StructureMatched
-            };
-            var renderTimer = Stopwatch.StartNew();
-            _overlay.UpdateMapTransform(transform, preservePlayer: true);
-            renderTimer.Stop();
-            var previousRenderLog = Volatile.Read(ref _lastOrbRenderMetricsTimestamp);
-            if (ElapsedMilliseconds(previousRenderLog) >= 5000)
-            {
-                Volatile.Write(ref _lastOrbRenderMetricsTimestamp, Stopwatch.GetTimestamp());
-                _logCollector.Append(MapLogCategory.OrbTracking, MapLogLevel.Info, "ORB tracking render sample",
-                    elapsedMs: renderTimer.Elapsed.TotalMilliseconds,
-                    details: new() { ["generation"] = context.Generation, ["renderMs"] = renderTimer.Elapsed.TotalMilliseconds, ["overlayVisible"] = _overlay.IsVisible });
-            }
-        }
-        catch (InvalidOperationException exception)
-        {
-            _logCollector.Append(MapLogCategory.OrbTracking, MapLogLevel.Warning,
-                "A continuous tracking observation was rejected by the alignment session.",
-                details: new() { ["generation"] = context.Generation, ["failureReason"] = exception.Message });
-        }
     }
 
     private bool IsOrbTrackingContextCurrent(OrbTrackingContext context)

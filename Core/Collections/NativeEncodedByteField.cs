@@ -50,6 +50,11 @@ public sealed partial class NativeEncodedByteField : IDisposable
         public long PayloadBytes => GetStorage().PayloadBytes;
         public long CommittedBytes => GetStorage().CommittedBytes;
         public long ReservedBytes => GetStorage().ReservedBytes;
+        public void WriteTo(BinaryWriter writer)
+        {
+            GetStorage().WriteTo(writer);
+            GC.KeepAlive(this);
+        }
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ReadView Borrow() => new(this, GetStorage().Pixels);
         /// <summary>Read one byte while keeping this independently owned reader alive.</summary>
@@ -149,6 +154,11 @@ public sealed partial class NativeEncodedByteField : IDisposable
         {
             var target = BorrowEncodingTarget();
             ValidateEncoding(_width, _height, _columns, _constant, target.Data, target.Tiles, target.Compact, _hasTiles, _hasCompact);
+        }
+        internal void WriteTo(BinaryWriter writer)
+        {
+            var target = BorrowEncodingTarget();
+            EncodedRasterPersistence.Write(writer, _width, _height, _constant, target.Data, target.Tiles, target.Compact);
         }
         internal bool TryRetain()
         {

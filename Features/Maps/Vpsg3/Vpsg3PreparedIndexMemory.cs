@@ -65,9 +65,9 @@ public sealed partial class Vpsg3PreparedFloor
         }
     }
 
-    // RGB geometry is the union of the two semantic classes. Their immutable
-    // Chebyshev <=1 bitsets are exactly the original 3x3 dilation, including
-    // clipped image borders and zero padding in the final word of each row.
+    // RGB geometry is the union of the two semantic K3 bitsets. Gray geometry
+    // dilates this floor's exact compressed seeds. Both preserve clipped image
+    // borders and zero padding in the final word of each row.
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     private ulong[]? GetGeometryK3()
     {
@@ -82,20 +82,52 @@ public sealed partial class Vpsg3PreparedFloor
         {
             if (IsDisposed) return null;
             if (_dilatedBitsetK3 is { Length: > 0 } ready) return ready;
-            var semantic = SemanticIndex ?? throw new InvalidOperationException("RGB 楼层缺少已准备的语义索引。");
             var count = checked(WordsPerRow * ReferenceHeight);
-            var warm = semantic.BitsK3(SemanticStructureContours.Warm);
-            var cool = semantic.BitsK3(SemanticStructureContours.Cool);
-            if (warm.Length != count || cool.Length != count)
-                throw new InvalidOperationException("语义位图尺寸与本楼层几何位图不一致。");
             var request = IDVBuff.Core.Diagnostics.MemoryJournal.Request($"VPSG3.DerivedK3/{CacheKey}", (long)count * sizeof(ulong));
             var words = new ulong[count];
-            for (var i = 0; i < count; i++) words[i] = warm[i] | cool[i];
+            if (SemanticIndex is { } semantic)
+            {
+                var warm = semantic.BitsK3(SemanticStructureContours.Warm);
+                var cool = semantic.BitsK3(SemanticStructureContours.Cool);
+                if (warm.Length != count || cool.Length != count)
+                    throw new InvalidOperationException("语义位图尺寸与本楼层几何位图不一致。");
+                for (var i = 0; i < count; i++) words[i] = warm[i] | cool[i];
+            }
+            else
+            {
+                var seeds = ReferenceSeeds ?? throw new InvalidOperationException("本楼层缺少原始几何种子。");
+                if (seeds.Length != count) throw new InvalidOperationException("本楼层几何种子尺寸不一致。");
+                DilateSeeds(seeds, words);
+            }
             IDVBuff.Core.Diagnostics.MemoryJournal.ObserveManagedArray(words, "VPSG3.DerivedK3", request);
             _derivedGeometryK3Ownership = IDVBuff.Core.Diagnostics.MemoryJournal.Own($"VPSG3.DerivedK3/{CacheKey}",
                 words.LongLength * sizeof(ulong), requestId: request);
             _dilatedBitsetK3 = words;
             return words;
+        }
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
+    private void DilateSeeds(IDVBuff.Core.Collections.CompactBitWords seeds, Span<ulong> words)
+    {
+        var stride = WordsPerRow;
+        var padding = ReferenceWidth & 63;
+        var lastMask = padding == 0 ? ulong.MaxValue : (1UL << padding) - 1;
+        for (var y = 0; y < ReferenceHeight; y++)
+        {
+            var row = y * stride;
+            var top = y > 0 ? row - stride : row;
+            var bottom = y + 1 < ReferenceHeight ? row + stride : row;
+            var previous = 0UL;
+            var center = seeds[row] | seeds[top] | seeds[bottom];
+            for (var column = 0; column < stride; column++)
+            {
+                var next = column + 1 < stride
+                    ? seeds[row + column + 1] | seeds[top + column + 1] | seeds[bottom + column + 1] : 0UL;
+                words[row + column] = center | (center << 1) | (center >> 1) | (previous >> 63) | (next << 63);
+                previous = center; center = next;
+            }
+            words[row + stride - 1] &= lastMask;
         }
     }
 
@@ -223,11 +255,13 @@ public sealed partial class Vpsg3PreparedFloor
     public SemanticStructureIndex? SemanticIndex
     {
         get => _semanticIndex;
-        init
-        {
-            _semanticIndex = value;
-            if (value is not null)
-                _semanticOwnership = IDVBuff.Core.Diagnostics.MemoryJournal.Own($"VPSG3.Semantic/{CacheKey}", value.MemoryBytes);
-        }
+        init => SetSemanticIndex(value);
+    }
+
+    private void SetSemanticIndex(SemanticStructureIndex? value)
+    {
+        _semanticIndex = value;
+        if (value is not null)
+            _semanticOwnership = IDVBuff.Core.Diagnostics.MemoryJournal.Own($"VPSG3.Semantic/{CacheKey}", value.MemoryBytes);
     }
 }

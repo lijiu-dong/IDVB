@@ -6,7 +6,7 @@ namespace IDVBuff.Core.Imaging;
 
 /// <summary>Immutable process-local semantic distance pixels. A bounded patch
 /// can borrow a same-floor field without duplicating its complete directory.</summary>
-public sealed class SemanticDistanceField
+public sealed partial class SemanticDistanceField
 {
     private readonly CompactByteField.EncodedStorage _storage, _patch;
     private readonly SemanticDistanceField? _basis;

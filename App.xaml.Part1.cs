@@ -249,6 +249,7 @@ namespace IDVBuff
                 return;
 
             applicationExitRequested = true;
+            Features.Accounts.DesktopSecurityRuntimeHost.Stop();
             try { Program.StopMemoryDiagnostics(); } catch { }
             try { _trayIcon?.Dispose(); } catch { }
             _trayIcon = null;

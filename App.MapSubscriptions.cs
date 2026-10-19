@@ -1,6 +1,7 @@
 using IDVBuff.Diagnostics;
 using IDVBuff.Features.Maps;
 using IDVBuff.Lifecycle;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace IDVBuff;
 
@@ -25,7 +26,8 @@ public partial class App
         try
         {
             if (IsApplicationStopping) return;
-            var service = new MapSubscriptionService(new MapRepository());
+            var service = Services.GetRequiredService<IMapSubscriptionService>();
+            if (!service.Available) return;
             if (!service.GetSubscriptions().Any(item => item.Enabled)) return;
             var result = await service.CheckAndApplyAsync(_startupPresentationCancellation.Token);
             if (IsApplicationStopping) return;

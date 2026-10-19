@@ -9,7 +9,8 @@ namespace IDVBuff.Features.Maps;
 /// 直接复用对齐阶段已提取的实时结构线（observation.ObservedEdges），
 /// 仅在诊断模式开启时按需生成参考预制线的仿射投影贴合重叠图。
 /// </summary>
-internal readonly record struct Vpsg3DiagnosticTiming(double InputWriteMs, double SemanticWriteMs, double OverlayMs, double FitnessWriteMs);
+internal readonly record struct Vpsg3DiagnosticTiming(double InputWriteMs, double SemanticWriteMs,
+    double OverlayMs, double FitnessWriteMs, double EnqueueMs = 0d, bool Deferred = false);
 
 internal static class Vpsg3DiagnosticCapture
 {
@@ -26,36 +27,18 @@ internal static class Vpsg3DiagnosticCapture
         if (!MapDiagnosticModeCapture.IsAlignmentCaptureActive || observation is null || result is null)
             return default;
 
+        var started = Stopwatch.GetTimestamp();
         try
         {
-            // 1. 结构配准图：直接复用对齐时提取出的 ObservedEdges，严禁重新提取
-            var stageStarted = Stopwatch.GetTimestamp();
-            MapDiagnosticModeCapture.WriteInputs(
-                observation.ObservedEdges,
-                observation.ObservedEdges,
-                attemptId,
-                tag);
-            var inputMs = Stopwatch.GetElapsedTime(stageStarted).TotalMilliseconds;
-            stageStarted = Stopwatch.GetTimestamp();
-
-            if (observation.SemanticLabels is { } labels)
-            {
-                using var semantic = SemanticStructureContours.Encode(labels);
-                MapDiagnosticModeCapture.WriteInputs(semantic, semantic, attemptId,
-                    string.IsNullOrWhiteSpace(tag) ? "semantic" : tag + "_semantic");
-            }
-
-            // 2. 贴合重叠图：仅在诊断模式开启时按需生成仿射变换图
-            var semanticMs = Stopwatch.GetElapsedTime(stageStarted).TotalMilliseconds;
-            stageStarted = Stopwatch.GetTimestamp();
-            using var overlay = CreateFittedOverlay(observation, referencePath, result, preparedFloor);
-            var overlayMs = Stopwatch.GetElapsedTime(stageStarted).TotalMilliseconds;
-            stageStarted = Stopwatch.GetTimestamp();
-            if (overlay is not null)
-            {
-                MapDiagnosticModeCapture.WriteFitness(overlay, attemptId, tag);
-            }
-            return new(inputMs, semanticMs, overlayMs, Stopwatch.GetElapsedTime(stageStarted).TotalMilliseconds);
+            CaptureSnapshot? snapshot = null;
+            var deferred = MapDiagnosticModeCapture.QueueAlignmentCapture(attemptId, (directory, id) =>
+                snapshot = CaptureSnapshot.Create(directory, id, tag, observation, referencePath, result, preparedFloor));
+            if (deferred is null) return default;
+            // Background stage timings are not alignment-thread timings. Only a
+            // full queue executes them here, preserving the existing overflow policy.
+            var timing = deferred.Value ? default : snapshot!.Timing;
+            return timing with { EnqueueMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+                Deferred = deferred.Value };
         }
         catch
         {
@@ -75,13 +58,25 @@ internal static class Vpsg3DiagnosticCapture
     {
         if (observation.ObservedEdges.Empty())
             return null;
+        try
+        {
+            using var reference = !string.IsNullOrEmpty(referencePath) && File.Exists(referencePath)
+                ? ReadReferenceEdges(referencePath, preparedFloor) : null;
+            return CreateFittedOverlay(observation.ObservedEdges, observation.ViewportBounds, reference, result);
+        }
+        catch { return null; }
+    }
 
-        var size = observation.ObservedEdges.Size();
+    private static Mat? CreateFittedOverlay(Mat observedEdges, MapScreenRect bounds,
+        Mat? referenceEdges, Vpsg3BootstrapResult result)
+    {
+        if (observedEdges.Empty()) return null;
+        var size = observedEdges.Size();
 
-        if (string.IsNullOrEmpty(referencePath) || !File.Exists(referencePath))
+        if (referenceEdges is null)
         {
             var missingVisual = new Mat(size, MatType.CV_8UC3, Scalar.Black);
-            missingVisual.SetTo(new Scalar(0, 170, 0), observation.ObservedEdges);
+            missingVisual.SetTo(new Scalar(0, 170, 0), observedEdges);
             Cv2.PutText(
                 missingVisual,
                 $"VPSG3: Reference line missing ({result.FallbackReason})",
@@ -95,15 +90,14 @@ internal static class Vpsg3DiagnosticCapture
 
         try
         {
-            using var referenceEdges = ReadReferenceEdges(referencePath, preparedFloor);
             if (referenceEdges.Empty())
                 return null;
 
             if (result.ScaleResult.Success)
             {
                 var scale = result.Scale;
-                var tx = result.OffsetX - observation.ViewportBounds.X;
-                var ty = result.OffsetY - observation.ViewportBounds.Y;
+                var tx = result.OffsetX - bounds.X;
+                var ty = result.OffsetY - bounds.Y;
 
                 using var matrix = new Mat(2, 3, MatType.CV_64FC1);
                 matrix.Set(0, 0, scale);
@@ -125,10 +119,10 @@ internal static class Vpsg3DiagnosticCapture
                 Cv2.Threshold(projected, projected, 127d, 255d, ThresholdTypes.Binary);
 
                 var visual = new Mat(size, MatType.CV_8UC3, Scalar.Black);
-                visual.SetTo(new Scalar(0, 170, 0), observation.ObservedEdges); // 实时边缘：绿
+                visual.SetTo(new Scalar(0, 170, 0), observedEdges); // 实时边缘：绿
                 visual.SetTo(new Scalar(0, 0, 220), projected);                // 投影参考：红
                 using var overlap = new Mat();
-                Cv2.BitwiseAnd(observation.ObservedEdges, projected, overlap);
+                Cv2.BitwiseAnd(observedEdges, projected, overlap);
                 visual.SetTo(new Scalar(0, 255, 255), overlap);                 // 重叠区域：黄
 
                 var statusText = result.IsAccepted
@@ -149,7 +143,7 @@ internal static class Vpsg3DiagnosticCapture
             else
             {
                 var visual = new Mat(size, MatType.CV_8UC3, Scalar.Black);
-                visual.SetTo(new Scalar(0, 170, 0), observation.ObservedEdges);
+                visual.SetTo(new Scalar(0, 170, 0), observedEdges);
                 Cv2.PutText(
                     visual,
                     $"VPSG3 Scale Failed: {result.ScaleResult.RejectReason}",
@@ -178,5 +172,83 @@ internal static class Vpsg3DiagnosticCapture
                 preparedFloor!.ReferenceWidth, preparedFloor.ReferenceHeight);
         using var referenceImage = Cv2.ImRead(referencePath, ImreadModes.Unchanged);
         return SemanticStructureContours.Geometry(referenceImage);
+    }
+
+    private sealed class CaptureSnapshot(string structurePath, string semanticPath, string fitnessPath,
+        Mat edges, Mat? labels, MapScreenRect bounds, Vpsg3BootstrapResult result,
+        Vpsg3PreparedFloor.PrecisionDistanceLease? precision, int referenceWidth, int referenceHeight,
+        Mat? referenceEdges, IDisposable protection) : MapDiagnosticModeCapture.PendingWrite
+    {
+        internal override int ImageCount => labels is null ? 2 : 3;
+        internal Vpsg3DiagnosticTiming Timing { get; private set; }
+
+        internal static CaptureSnapshot Create(string directory, int id, string? tag,
+            Vpsg3LiveObservation observation, string? referencePath, Vpsg3BootstrapResult result,
+            Vpsg3PreparedFloor? floor)
+        {
+            Mat? edges = null, labels = null, reference = null;
+            Vpsg3PreparedFloor.PrecisionDistanceLease? precision = null;
+            IDisposable? protection = null;
+            var transferred = false;
+            try
+            {
+                protection = AppDataPaths.ProtectCachePath(directory);
+                edges = observation.ObservedEdges.Clone();
+                labels = observation.SemanticLabels?.Clone();
+                if (!string.IsNullOrEmpty(referencePath) && File.Exists(referencePath))
+                {
+                    // Retain the exact immutable precision revision independently
+                    // of the floor/registry. No frame or floor owner escapes here.
+                    precision = floor?.RentPrecisionDistance();
+                    if (precision is null) reference = ReadReferenceEdges(referencePath, null);
+                }
+                var suffix = string.IsNullOrWhiteSpace(tag) ? string.Empty : $"_{tag}";
+                var semanticTag = string.IsNullOrWhiteSpace(tag) ? "semantic" : tag + "_semantic";
+                var snapshot = new CaptureSnapshot(
+                    Path.Combine(directory, "结构配准", $"结构配准 {id}{suffix}.png"),
+                    Path.Combine(directory, "结构配准", $"结构配准 {id}_{semanticTag}.png"),
+                    Path.Combine(directory, "贴合度", $"贴合度 {id}{suffix}.png"),
+                    edges, labels, observation.ViewportBounds, result, precision,
+                    floor?.ReferenceWidth ?? 0, floor?.ReferenceHeight ?? 0, reference, protection);
+                transferred = true;
+                return snapshot;
+            }
+            finally
+            {
+                if (!transferred)
+                {
+                    edges?.Dispose(); labels?.Dispose(); reference?.Dispose();
+                    precision?.Dispose(); protection?.Dispose();
+                }
+            }
+        }
+
+        internal override void Write()
+        {
+            var started = Stopwatch.GetTimestamp();
+            MapDiagnosticModeCapture.TryWrite(structurePath, edges);
+            var inputMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+            started = Stopwatch.GetTimestamp();
+            if (labels is not null)
+            {
+                using var semantic = SemanticStructureContours.Encode(labels);
+                MapDiagnosticModeCapture.TryWrite(semanticPath, semantic);
+            }
+            var semanticMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+            started = Stopwatch.GetTimestamp();
+            using var reference = precision is not null
+                ? NativeDistanceMetrics.ZeroMask(precision.Span, referenceWidth, referenceHeight) : null;
+            using var overlay = CreateFittedOverlay(edges, bounds, reference ?? referenceEdges, result);
+            var overlayMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+            started = Stopwatch.GetTimestamp();
+            if (overlay is not null) MapDiagnosticModeCapture.TryWrite(fitnessPath, overlay);
+            Timing = new(inputMs, semanticMs, overlayMs, Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+        }
+
+        public override void Dispose()
+        {
+            try { edges.Dispose(); labels?.Dispose(); referenceEdges?.Dispose(); }
+            finally { precision?.Dispose(); protection.Dispose(); }
+        }
     }
 }

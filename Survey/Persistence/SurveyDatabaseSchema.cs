@@ -19,11 +19,11 @@ internal static class SurveyDatabaseSchema
             Pooling = false
         }.ToString());
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        var table = connection.CreateCommand();
+        using var table = connection.CreateCommand();
         table.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'meta';";
         if (Convert.ToInt64(await table.ExecuteScalarAsync(cancellationToken)) == 0)
             return 0;
-        var version = connection.CreateCommand();
+        using var version = connection.CreateCommand();
         version.CommandText = "SELECT value FROM meta WHERE key = 'survey_schema_version';";
         var value = Convert.ToString(await version.ExecuteScalarAsync(cancellationToken));
         return int.TryParse(value, out var parsed) ? parsed : 0;
@@ -62,7 +62,7 @@ internal static class SurveyDatabaseSchema
             throw new InvalidDataException(
                 $"Survey schema {storedVersion} requires a newer version of Identity Vision Bridge.");
         }
-        var command = connection.CreateCommand();
+        using var command = connection.CreateCommand();
         command.CommandText = """
             PRAGMA foreign_keys = ON;
             PRAGMA journal_mode = WAL;
@@ -267,7 +267,7 @@ internal static class SurveyDatabaseSchema
         if (storedVersion < 7)
             await EnsureLayerColumnAsync(connection, "brightness", "REAL NOT NULL DEFAULT 1.0", cancellationToken).ConfigureAwait(false);
 
-        var versionCommand = connection.CreateCommand();
+        using var versionCommand = connection.CreateCommand();
         versionCommand.CommandText = """
             INSERT INTO meta(key, value) VALUES('survey_schema_version', $version)
             ON CONFLICT(key) DO UPDATE SET value = excluded.value;
@@ -282,7 +282,7 @@ internal static class SurveyDatabaseSchema
         string definition,
         CancellationToken cancellationToken)
     {
-        var columns = connection.CreateCommand();
+        using var columns = connection.CreateCommand();
         columns.CommandText = "PRAGMA table_info(layer_edit_state);";
         await using var reader = await columns.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -291,7 +291,7 @@ internal static class SurveyDatabaseSchema
                 return;
         }
         await reader.DisposeAsync().ConfigureAwait(false);
-        var alter = connection.CreateCommand();
+        using var alter = connection.CreateCommand();
         alter.CommandText = $"ALTER TABLE layer_edit_state ADD COLUMN {name} {definition};";
         await alter.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -302,7 +302,7 @@ internal static class SurveyDatabaseSchema
         string definition,
         CancellationToken cancellationToken)
     {
-        var columns = connection.CreateCommand();
+        using var columns = connection.CreateCommand();
         columns.CommandText = "PRAGMA table_info(layers);";
         await using var reader = await columns.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -311,7 +311,7 @@ internal static class SurveyDatabaseSchema
                 return;
         }
         await reader.DisposeAsync().ConfigureAwait(false);
-        var alter = connection.CreateCommand();
+        using var alter = connection.CreateCommand();
         alter.CommandText = $"ALTER TABLE layers ADD COLUMN {name} {definition};";
         await alter.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -320,11 +320,11 @@ internal static class SurveyDatabaseSchema
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-        var table = connection.CreateCommand();
+        using var table = connection.CreateCommand();
         table.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'meta';";
         if (Convert.ToInt64(await table.ExecuteScalarAsync(cancellationToken)) == 0)
             return 0;
-        var version = connection.CreateCommand();
+        using var version = connection.CreateCommand();
         version.CommandText = "SELECT value FROM meta WHERE key = 'survey_schema_version';";
         var value = Convert.ToString(await version.ExecuteScalarAsync(cancellationToken));
         return int.TryParse(value, out var parsed) ? parsed : 0;

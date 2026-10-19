@@ -1,6 +1,9 @@
 using IDVBuff.Features.Maps;
+using IDVBuff.Core.Contracts.Online;
+using IDVBuff.Features.Accounts;
 using IDVBuff.Diagnostics;
 using IDVBuff.Survey.Domain;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -57,8 +60,10 @@ public sealed partial class MapListPage : UserControl
 
     private readonly MapRepository _repository;
     private readonly IdvmPackageService _idvmPackageService;
-    private readonly MapSubscriptionService _mapSubscriptionService;
-    private readonly MapPublicationService _mapPublicationService;
+    private readonly IMapSubscriptionService _mapSubscriptionService;
+    private readonly IMapPublicationService _mapPublicationService;
+    private readonly IAccountService _accountService;
+    private readonly ICommunityService _communityService;
     private readonly ContentPresenter _workflowHost = new();
     internal ScrollViewer? ParentScrollViewer { get; set; }
     internal Action<bool>? NavigationCompactStateChanged { get; set; }
@@ -133,18 +138,25 @@ public sealed partial class MapListPage : UserControl
     private double _imageAspectRatio = 16d / 9d;
 
     public MapListPage(bool coCreationMode = false)
-        : this(new MapRepository(), coCreationMode)
+        : this(App.Services.GetRequiredService<MapRepository>(), coCreationMode,
+            App.Services.GetRequiredService<IMapSubscriptionService>(),
+            App.Services.GetRequiredService<IMapPublicationService>(),
+            AccountSession.Service, CoCreationPublicationClient.Service)
     {
     }
 
-    internal MapListPage(MapRepository repository, bool coCreationMode)
+    internal MapListPage(MapRepository repository, bool coCreationMode,
+        IMapSubscriptionService subscriptions, IMapPublicationService publications,
+        IAccountService accounts, ICommunityService community)
     {
         _repository = repository;
         _coCreationMode = coCreationMode;
-        if (coCreationMode) IDVBuff.Features.Accounts.AccountSession.Changed += CoCreationAccountChanged;
         _idvmPackageService = new IdvmPackageService(_repository);
-        _mapSubscriptionService = new MapSubscriptionService(_repository);
-        _mapPublicationService = new MapPublicationService(_repository);
+        _mapSubscriptionService = subscriptions;
+        _mapPublicationService = publications;
+        _accountService = accounts;
+        _communityService = community;
+        if (coCreationMode) _accountService.Changed += CoCreationAccountChanged;
         Content = _workflowHost;
         Loaded += MapListPage_Loaded;
         Unloaded += OnUnloaded;

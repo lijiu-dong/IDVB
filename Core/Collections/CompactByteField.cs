@@ -36,6 +36,17 @@ public sealed partial class CompactByteField
     // Trusted in-process pixel kernels borrow immutable encoded arrays. No
     // public mutable storage or source raster escapes this snapshot.
     internal EncodedStorage GetEncodedStorage() => new(_data, _tiles, _compactTiles, _width, _height, _tileColumns, _constant);
+    private CompactByteField(EncodedStorage storage, string resource)
+    {
+        _data = storage.Data; _tiles = storage.Tiles; _compactTiles = storage.CompactTiles;
+        _width = storage.Width; _height = storage.Height; _tileColumns = storage.TileColumns; _constant = storage.Constant;
+        MemoryJournal.ObserveManagedArray(_data, resource + ".Payload");
+        if (_tiles is not null) MemoryJournal.ObserveManagedArray(_tiles, resource + ".Tiles");
+        if (_compactTiles is not null) MemoryJournal.ObserveManagedArray(_compactTiles, resource + ".Tiles");
+    }
+    public void WriteTo(BinaryWriter writer) => EncodedRasterPersistence.Write(writer, GetEncodedStorage());
+    public static CompactByteField ReadFrom(BinaryReader reader, int width, int height, string resource) =>
+        new(EncodedRasterPersistence.Read(reader, width, height), resource);
     internal readonly record struct EncodedStorage(byte[] Data, uint[]? Tiles, byte[]? CompactTiles,
         int Width, int Height, int TileColumns, bool Constant);
 

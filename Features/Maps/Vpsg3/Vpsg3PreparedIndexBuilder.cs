@@ -92,97 +92,38 @@ public static class Vpsg3PreparedIndexBuilder
     // Owns the caller-created geometry scratch, which ends before the semantic
     // callback. Neither geometry nor the callback is retained by the floor.
     private static Vpsg3PreparedFloor BuildFromGeometry(Mat edgeImage, Vpsg3IndexCacheKey cacheKey,
-        bool deriveGeometryK3, Func<SemanticStructureIndex?> buildSemantic, Vpsg3TuningConfig? tuning, bool preparePrecision)
+        bool semantic, Func<SemanticStructureIndex?> buildSemantic, Vpsg3TuningConfig? tuning, bool preparePrecision)
     {
         using var memoryOperation = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("VPSG3.BuildFloor", cacheKey.ToString());
         if (edgeImage.Type() != MatType.CV_8UC1)
             throw new ArgumentException("Edge image must be single-channel 8-bit.", nameof(edgeImage));
-
-        var cfg = tuning ?? Vpsg3TuningConfig.Default;
         var width = edgeImage.Width;
         var height = edgeImage.Height;
-
-        // 1. Edge pixel count
         var edgePixelCount = Cv2.CountNonZero(edgeImage);
-
-        // 2. Compute reference scale prior via normalized autocorrelation
-        var scalePrior = ComputeReferenceScalePrior(edgeImage, edgePixelCount, cfg);
-
-        // 3. Morphological dilation for structural matching tolerance (K5 for 5x5 / +/-2px and K3 for 3x3 / +/-1px)
-        using var dilatedK5 = new Mat();
-        using var dilatedK3 = new Mat();
-        using var kernel5 = Cv2.GetStructuringElement(MorphShapes.Rect, new Size(5, 5));
-        using var kernel3 = Cv2.GetStructuringElement(MorphShapes.Rect, new Size(3, 3));
-        if (!deriveGeometryK3) Cv2.Dilate(edgeImage, dilatedK5, kernel5);
-        if (!deriveGeometryK3) Cv2.Dilate(edgeImage, dilatedK3, kernel3);
-
-        // 4. Pack into 64-bit row-major bitsets
+        // RGB retains exact seeds in its semantic fields. Gray retains one
+        // compressed seed bitmap; K3/K5 are derived only by active consumers.
+        var seeds = semantic ? null : new IDVBuff.Core.Collections.CompactBitWords(
+            MemoryMarshal.CreateReadOnlySpan(ref edgeImage.At<byte>(0, 0), checked(width * height)),
+            width, height, 0, "VPSG3.ReferenceSeeds", invert: true);
+        var scalePrior = ComputeReferenceScalePrior(edgeImage, edgePixelCount, tuning ?? Vpsg3TuningConfig.Default);
         var wordsPerRow = (width + 63) / 64;
-        var memoryRequest = IDVBuff.Core.Diagnostics.MemoryJournal.Request($"VPSG3.Base/{cacheKey}",
-            (long)height * wordsPerRow * (deriveGeometryK3 ? 0 : 16) + (deriveGeometryK3 ? 160 : 208));
-        var bitsetK5 = deriveGeometryK3 ? [] : new ulong[height * wordsPerRow];
-        var bitsetK3 = deriveGeometryK3 ? [] : new ulong[height * wordsPerRow];
-        if (!deriveGeometryK3)
-        {
-            IDVBuff.Core.Diagnostics.MemoryJournal.ObserveManagedArray(bitsetK5, "VPSG3.K5");
-            IDVBuff.Core.Diagnostics.MemoryJournal.ObserveManagedArray(bitsetK3, "VPSG3.K3");
-        } // RGB uses shared Array.Empty here; there was no payload allocation.
-
-        for (var y = 0; !deriveGeometryK3 && y < height; y++)
-        {
-            var rowOffset = y * wordsPerRow;
-            // Borrow each row once; a per-pixel Mat.At is a native call.
-            var k5 = MemoryMarshal.CreateReadOnlySpan(ref dilatedK5.At<byte>(y, 0), width);
-            var k3 = MemoryMarshal.CreateReadOnlySpan(ref dilatedK3.At<byte>(y, 0), width);
-            for (var x = 0; x < width; x++)
-            {
-                if (k5[x] > 128)
-                {
-                    bitsetK5[rowOffset + (x >> 6)] |= 1UL << (x & 63);
-                }
-                if (k3[x] > 128)
-                {
-                    bitsetK3[rowOffset + (x >> 6)] |= 1UL << (x & 63);
-                }
-            }
-        }
-
-        // 5. Calculate memory footprint
-        var objectOverhead = 160L;
-        var bitsetBytes = ((bitsetK5.Length + bitsetK3.Length) * 8L) + (deriveGeometryK3 ? 0L : 48L);
+        var memoryRequest = IDVBuff.Core.Diagnostics.MemoryJournal.Request($"VPSG3.Base/{cacheKey}", 160);
         float[]? precisionDistance = null;
         if (preparePrecision)
         {
             precisionDistance = Vpsg3PreparedFloor.CreatePrecisionDistance(edgeImage);
             IDVBuff.Core.Diagnostics.MemoryJournal.ObserveManagedArray(precisionDistance, "VPSG3.Precision");
         }
-        var totalBytes = objectOverhead + bitsetBytes
-            + (precisionDistance is null ? 0L : precisionDistance.LongLength * sizeof(float) + 24L);
-
-        // Geometry bitsets already own their data. End native scratch lifetimes
-        // before constructing semantic distance transforms for this floor.
-        dilatedK5.Dispose();
-        dilatedK3.Dispose();
+        var totalBytes = 160L + (precisionDistance is null ? 0L : precisionDistance.LongLength * sizeof(float) + 24L);
         edgeImage.Dispose();
         IDVBuff.Core.Diagnostics.MemoryJournal.ReleaseResource(edgeImage);
-
-        // Construct all dependent data before publishing cache ownership. If
-        // semantic preparation throws, no unreachable floor owns the bitsets.
         var semanticIndex = buildSemantic();
-
         try
         {
-            return new Vpsg3PreparedFloor(
-                cacheKey,
-                width,
-                height,
-                edgePixelCount,
-                scalePrior,
-                wordsPerRow,
-                bitsetK5,
-                bitsetK3,
-                totalBytes,
-                precisionDistance, memoryRequest, deriveGeometryK3, deriveGeometryK5: deriveGeometryK3) { SemanticIndex = semanticIndex };
+            return new Vpsg3PreparedFloor(cacheKey, width, height, edgePixelCount, scalePrior,
+                wordsPerRow, [], [], totalBytes, precisionDistance, memoryRequest,
+                deriveGeometryK3: true, deriveGeometryK5: true)
+                { SemanticIndex = semanticIndex, ReferenceSeeds = seeds };
         }
         catch { semanticIndex?.Dispose(); throw; }
     }

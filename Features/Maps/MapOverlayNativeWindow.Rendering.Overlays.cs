@@ -45,7 +45,7 @@ internal static partial class MapOverlayBitmapRenderer
             // 玩家标记贴图是静态资产，从共享缓存取，避免每帧重复加载。
             lock (ImageCacheLock)
             {
-                var marker = GetOrLoadMapImage(player.ImagePath);
+                var marker = GetOrLoadPlayerImage(player.ImagePath);
                 graphics.DrawImage(
                     marker,
                     new RectangleF(

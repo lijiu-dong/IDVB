@@ -27,7 +27,7 @@ public sealed partial class SqliteSurveyProjectRepository
             request.ProjectId,
             cancellationToken).ConfigureAwait(false);
         EnsureRevision(request.ProjectId, request.ExpectedRevision, revision);
-        var stateCommand = connection.CreateCommand();
+        using var stateCommand = connection.CreateCommand();
         stateCommand.Transaction = sqlite;
         stateCommand.CommandText = "SELECT state FROM projects WHERE project_id = $project_id;";
         stateCommand.Parameters.AddWithValue("$project_id", request.ProjectId.ToString("N"));
@@ -35,7 +35,7 @@ public sealed partial class SqliteSurveyProjectRepository
         if ((SurveyProjectState)state == SurveyProjectState.Archived)
             throw new InvalidOperationException("Archived survey projects are read-only.");
 
-        var project = connection.CreateCommand();
+        using var project = connection.CreateCommand();
         project.Transaction = sqlite;
         project.CommandText = """
             UPDATE projects SET name = $name, map_class = $class
@@ -48,7 +48,7 @@ public sealed partial class SqliteSurveyProjectRepository
 
         if (request.FloorId is { } floorId)
         {
-            var floor = connection.CreateCommand();
+            using var floor = connection.CreateCommand();
             floor.Transaction = sqlite;
             floor.CommandText = """
                 UPDATE floors SET display_name = $name

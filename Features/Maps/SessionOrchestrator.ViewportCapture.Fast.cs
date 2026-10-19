@@ -10,7 +10,8 @@ public sealed partial class SessionOrchestrator
         double StableViewportWaitMilliseconds,
         string StableViewportMode,
         bool StableViewportFallback,
-        MapRecognitionAttempt? PrecomputedVpsg3Attempt);
+        MapRecognitionAttempt? PrecomputedVpsg3Attempt,
+        MapOpenFrameReuseEntry? ReusedFrame);
 
     private async Task<MapOpenViewportCaptureResult> CaptureMapOpenViewportAsync(
         MapGameToggleTransition toggle,
@@ -18,7 +19,8 @@ public sealed partial class SessionOrchestrator
         string floorKey,
         MapStructureRegistrationTuning initialPrewarmTuning,
         CancellationToken cancellationToken,
-        AutoFloorCapture? autoFloor = null)
+        AutoFloorCapture? autoFloor = null,
+        bool allowFrameReuse = false)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var timer = Stopwatch.StartNew();
@@ -27,6 +29,7 @@ public sealed partial class SessionOrchestrator
             "stable_viewport", MapOperationWaitKind.Capture,
             mapId: locked.Map.Id.ToString("D"), floorKey: floorKey);
         CapturedGameFrame? frame;
+        MapOpenFrameReuseEntry? reusedFrame = null;
         try
         {
             frame = await CaptureStableViewportAsync(
@@ -37,7 +40,11 @@ public sealed partial class SessionOrchestrator
                 prepareNativeStructure: initialPrewarmTuning.UsePrebuiltStructureLine
                     && _recognition.HasPrebuiltStructureLine(locked.Map, floorKey),
                 prepareVpsg3Structure: _recognition.IsVpsg3Ready(locked.Map, floorKey),
-                autoFloor: autoFloor);
+                autoFloor: autoFloor,
+                skipStructurePreparation: allowFrameReuse
+                    ? current => (reusedFrame = TryGetUnchangedMapOpenFrame(
+                        toggle, locked, floorKey, current)) is not null
+                    : null);
         }
         finally
         {
@@ -48,6 +55,6 @@ public sealed partial class SessionOrchestrator
         return new MapOpenViewportCaptureResult(
             frame, timer.Elapsed.TotalMilliseconds,
             nativeFrame ? "frame-arrived-readiness" : "readiness-gdi",
-            !nativeFrame, null);
+            !nativeFrame, null, reusedFrame);
     }
 }

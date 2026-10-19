@@ -169,7 +169,7 @@ public sealed partial class IdvmPackageService
                 CreatedAt = createdAt,
                 MinimumReader = formatVersion,
                 Compression = compressed ? SolidCompression : null,
-                SupportedPlatforms = compressed || hasNavigation ? ["windows"] : IdvmPlatformCompatibility.All.ToList(),
+                SupportedPlatforms = compressed || hasNavigation ? ["windows", "web"] : IdvmPlatformCompatibility.All.ToList(),
                 Capabilities = new CapabilitiesDto
                 {
                     NavigationTopology = hasNavigation,

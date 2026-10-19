@@ -5,7 +5,7 @@ namespace IDVBuff.Features.Maps;
 
 /// <summary>Read-only local contour geometry, owned by one catalog floor revision.
 /// Neither construction nor querying changes the shared contour/distance index.</summary>
-internal sealed class DeepScanStructureIndex
+internal sealed partial class DeepScanStructureIndex
 {
     private static readonly ConditionalWeakTable<Mat, DeepScanStructureIndex> Cache = new();
     private const double AngleStep = Math.PI / 36;

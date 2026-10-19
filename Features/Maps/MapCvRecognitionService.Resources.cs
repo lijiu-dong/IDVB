@@ -35,44 +35,9 @@ public sealed partial class MapCvRecognitionService
                 await LoadResidentRecognitionCatalogAsync(mapClass);
                 var maps = ResidentMaps(_maps);
                 var report = MapOperationProgress.Capture();
-                var progressGate = new object();
-                double scanFraction = 0, alignmentFraction = 0;
-                void ReportBranch(bool scan, MapOperationUpdate update)
-                {
-                    lock (progressGate)
-                    {
-                        if (scan) scanFraction = Math.Max(scanFraction, update.Fraction);
-                        else alignmentFraction = Math.Max(alignmentFraction, update.Fraction);
-                        report(.2 + .8 * (scanFraction + alignmentFraction) / 2, update.Operation);
-                    }
-                }
-                var scanPreparation = Task.Run(() =>
-                {
-                    using var memory = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("Match.PrepareScan", mapClass);
-                    using var progress = MapOperationProgress.Begin(new MatchResourceProgress(update => ReportBranch(true, update)));
-                    using (MapOperationProgress.Range(0, .8))
-                        _sideEntranceFeatureCache.Publish(MapCvRecognitionHelpers.BuildSideEntranceFeatureCache(_repository, maps, _deterministicScanStorage, _deterministicSemanticStorage));
-                    if (_sideEntranceFeatureCache.Count > 0)
-                    {
-                        using var prewarmProgress = MapOperationProgress.Range(.8, 1);
-                        PrewarmDeepScan(_sideEntranceFeatureCache.MetadataSnapshot.Values, MapOperationProgress.Capture());
-                    }
-                    MapOperationProgress.Report(1, "扫描资源已就绪");
-                });
-                var alignmentPreparation = Task.Run(async () =>
-                {
-                    // Both branches build full-resolution native scratch rasters.
-                    // Finish/release scan scratch before starting alignment scratch.
-                    await scanPreparation;
-                    using var memory = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("Match.PrepareAlignment", mapClass);
-                    using var progress = MapOperationProgress.Begin(new MatchResourceProgress(update => ReportBranch(false, update)));
-                    InvalidateAndTriggerVpsg3Rebuild(maps, maps.Select(map => map.Id).ToHashSet(), MapOperationProgress.Capture());
-                    await Volatile.Read(ref _vpsg3Preparation);
-                    MapOperationProgress.Report(1, "对齐资源已就绪");
-                });
-                // These owners prepare independent caches. Drain both before
-                // publishing readiness or cleaning up after either failure.
-                await Task.WhenAll(scanPreparation, alignmentPreparation);
+                await Task.Run(() => PrepareResidentFloors(maps, report));
+                PrewarmDeepScan(_sideEntranceFeatureCache.MetadataSnapshot.Values,
+                    (value, message) => report(.95 + .05 * value, message));
                 AuditResidentResources("MatchResources.Prepared");
                 MapOperationProgress.Report(1, "地图资源已就绪");
             }
@@ -83,11 +48,6 @@ public sealed partial class MapCvRecognitionService
             }
         }
         finally { _cacheGate.Release(); }
-    }
-
-    private sealed class MatchResourceProgress(Action<MapOperationUpdate> report) : IProgress<MapOperationUpdate>
-    {
-        public void Report(MapOperationUpdate value) => report(value);
     }
 
     // The orchestrator has already stopped and drained scans/alignment. Drain

@@ -171,6 +171,10 @@ internal static partial class MapOverlayBitmapRenderer
             foreach (var image in ImageCache.Values)
                 DisposeCachedBitmap(image);
             ImageCache.Clear();
+            foreach (var entry in PlayerImageCache.Values)
+                DisposeCachedBitmap(entry.Bitmap);
+            PlayerImageCache.Clear();
+            PlayerImageRecency.Clear();
             SourceImageVersions.Clear();
             SourceImageRecency.Clear();
             InvalidateLayerCachesCore();
@@ -251,6 +255,7 @@ internal static partial class MapOverlayBitmapRenderer
                 count++;
             }
             foreach (var bitmap in ImageCache.Values) Add(bitmap);
+            foreach (var entry in PlayerImageCache.Values) Add(entry.Bitmap);
             foreach (var entry in ScaledImageCache.Values) Add(entry.Bitmap);
             foreach (var entry in MapLayerCache.Values) Add(entry.Bitmap);
             foreach (var entry in MiniMapLayerCache.Values) Add(entry.Bitmap);
@@ -449,20 +454,9 @@ internal static partial class MapOverlayBitmapRenderer
             if (ImageCache.TryGetValue(imagePath, out var cached) && cached is not null)
                 return cached;
             var sourceVersion = ReadSourceImageVersion(imagePath);
-            var bytes = File.ReadAllBytes(imagePath);
-            IDVBuff.Core.Diagnostics.MemoryJournal.ObserveManagedArray(bytes, "Overlay.SourceImage.EncodedBytes");
-            // GDI+ can read the encoded source again while its Bitmap is alive.
-            // The cache owns both; release the stream after disposing its bitmap.
-            var request = IDVBuff.Core.Diagnostics.MemoryJournal.Request("Overlay.SourceImage", nativeModule: "gdiplus.dll");
-            var stream = new MemoryStream(bytes, writable: false);
-            Bitmap loaded;
-            try { loaded = new Bitmap(stream); }
-            catch { stream.Dispose(); throw; }
+            var loaded = LoadEncodedSourceImage(imagePath);
             try
             {
-                SourceImageStreams.Add(loaded, stream);
-                IDVBuff.Core.Diagnostics.MemoryJournal.TrackResource(stream, "Overlay.SourceImage.Stream", 0);
-                IDVBuff.Core.Diagnostics.MemoryJournal.TrackResource(loaded, "Overlay.SourceImage", checked((long)loaded.Width * loaded.Height * 4), "gdiplus.dll", request);
                 TrimSourceImageCacheCore(MaxSourceCacheEntries - 1);
                 if (!ImageCache.TryAdd(imagePath, loaded))
                 {
@@ -475,8 +469,7 @@ internal static partial class MapOverlayBitmapRenderer
             }
             catch
             {
-                try { DisposeCachedBitmap(loaded); }
-                finally { stream.Dispose(); }
+                DisposeCachedBitmap(loaded);
                 throw;
             }
         }

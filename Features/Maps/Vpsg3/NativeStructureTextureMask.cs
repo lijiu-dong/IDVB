@@ -1,4 +1,5 @@
 using OpenCvSharp;
+using System.Runtime.InteropServices;
 
 namespace IDVBuff.Features.Maps;
 
@@ -14,6 +15,7 @@ internal static class NativeStructureTextureMask
         Cv2.CvtColor(bgr, gray, ColorConversionCodes.BGR2GRAY);
         Cv2.MorphologyEx(gray, detail, MorphTypes.TopHat, kernel);
         Cv2.Threshold(detail, detail, 8, 255, ThresholdTypes.Binary);
+        Span<int> counts = stackalloc int[128];
         foreach (var vertical in new[] { true, false })
         {
             using var barKernel = Cv2.GetStructuringElement(MorphShapes.Rect, vertical ? new Size(1, 9) : new Size(9, 1));
@@ -32,12 +34,18 @@ internal static class NativeStructureTextureMask
                 var runs = 0;
                 var run = 0;
                 var widest = 0;
+                counts[..length].Clear();
+                // Count each axis in row order. The native Mat header is read
+                // once per row rather than once for every bar pixel.
+                for (var y = 0; y < box.Height; y++)
+                {
+                    var row = MemoryMarshal.CreateReadOnlySpan(ref bars.At<byte>(box.Y + y, box.X), box.Width);
+                    for (var x = 0; x < box.Width; x++)
+                        if (row[x] != 0) counts[vertical ? x : y]++;
+                }
                 for (var axis = 0; axis < length; axis++)
                 {
-                    var count = 0;
-                    for (var along = 0; along < extent; along++)
-                        if (bars.At<byte>(box.Y + (vertical ? along : axis), box.X + (vertical ? axis : along)) != 0) count++;
-                    if (count >= extent * .65)
+                    if (counts[axis] >= extent * .65)
                     {
                         if (run == 0) runs++;
                         widest = Math.Max(widest, ++run);

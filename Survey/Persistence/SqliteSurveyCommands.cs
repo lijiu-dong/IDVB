@@ -13,7 +13,7 @@ internal static class SqliteSurveyCommands
         Guid projectId,
         CancellationToken cancellationToken)
     {
-        var command = connection.CreateCommand();
+        using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = "SELECT revision FROM projects WHERE project_id = $project_id;";
         command.Parameters.AddWithValue("$project_id", projectId.ToString("N"));
@@ -32,7 +32,7 @@ internal static class SqliteSurveyCommands
         string commandType,
         CancellationToken cancellationToken)
     {
-        var command = connection.CreateCommand();
+        using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
             INSERT INTO revisions(
@@ -53,7 +53,7 @@ internal static class SqliteSurveyCommands
         string idempotencyKey,
         CancellationToken cancellationToken)
     {
-        var command = connection.CreateCommand();
+        using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
             SELECT l.layer_id
@@ -72,7 +72,7 @@ internal static class SqliteSurveyCommands
         SurveyObservation observation,
         CancellationToken cancellationToken)
     {
-        var command = connection.CreateCommand();
+        using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
             INSERT INTO floors(
@@ -95,7 +95,7 @@ internal static class SqliteSurveyCommands
         SurveyObservation observation,
         CancellationToken cancellationToken)
     {
-        var command = connection.CreateCommand();
+        using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
             INSERT INTO observations(
@@ -125,7 +125,7 @@ internal static class SqliteSurveyCommands
         SurveyMapLayer layer,
         CancellationToken cancellationToken)
     {
-        var command = connection.CreateCommand();
+        using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
             INSERT INTO layers(
@@ -144,7 +144,7 @@ internal static class SqliteSurveyCommands
         AddLayerParameters(command, layer);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
-        var editorState = connection.CreateCommand();
+        using var editorState = connection.CreateCommand();
         editorState.Transaction = transaction;
         editorState.CommandText = """
             INSERT INTO layer_edit_state(
@@ -177,7 +177,7 @@ internal static class SqliteSurveyCommands
         long revision,
         CancellationToken cancellationToken)
     {
-        var project = connection.CreateCommand();
+        using var project = connection.CreateCommand();
         project.Transaction = transaction;
         project.CommandText = """
             UPDATE projects SET state = $state, active_floor_key = $floor_key,
@@ -191,7 +191,7 @@ internal static class SqliteSurveyCommands
         project.Parameters.AddWithValue("$project_id", observation.ProjectId.ToString("N"));
         await project.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
-        var root = connection.CreateCommand();
+        using var root = connection.CreateCommand();
         root.Transaction = transaction;
         root.CommandText = """
             UPDATE floors SET root_layer_id = $layer_id
@@ -208,7 +208,7 @@ internal static class SqliteSurveyCommands
         SurveyLayerEditRequest request,
         CancellationToken cancellationToken)
     {
-        var command = connection.CreateCommand();
+        using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
             SELECT floor_id, observation_id, name, z_order, is_visible, is_locked,
@@ -277,7 +277,7 @@ internal static class SqliteSurveyCommands
         SurveyMapLayer layer,
         CancellationToken cancellationToken)
     {
-        var command = connection.CreateCommand();
+        using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
             UPDATE layers SET name = $name, z_order = $z_order,
@@ -300,7 +300,7 @@ internal static class SqliteSurveyCommands
         bool keepPublished,
         CancellationToken cancellationToken)
     {
-        var command = connection.CreateCommand();
+        using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = keepPublished
             ? "UPDATE projects SET revision = $revision, updated_utc = $updated_utc WHERE project_id = $project_id;"

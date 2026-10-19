@@ -150,15 +150,13 @@ public sealed partial class MapRepository
             await using var stream = File.OpenRead(temporaryPath);
             committedHash = await System.Security.Cryptography.SHA256.HashDataAsync(stream);
         }
-        var writtenFile = new FileInfo(temporaryPath);
-        var writtenRevision = new MapCatalogRevision(writtenFile.LastWriteTimeUtc.Ticks, writtenFile.Length);
-        File.Move(temporaryPath, CatalogPath, overwrite: true);
+        var committedRevision = await CommitCatalogReplacementAsync(temporaryPath, committedHash);
         MetadataRevisionAdvances.TryRemove(CatalogPath, out _);
         ScanFloorAdvances.TryRemove(CatalogPath, out _);
         // Writers own a complete, normalized catalog. Metadata repair and saves
         // legitimately invalidate snapshots, but their committed revision need
         // not deserialize unrelated maps again when opening one editor.
-        if (GetCatalogRevision() == writtenRevision)
+        if (committedRevision is { } writtenRevision)
         {
             ClassNamesCache[CatalogPath] = (writtenRevision, catalog.Classes.ToArray());
             RememberMapCount(writtenRevision, catalog.Maps.Count);

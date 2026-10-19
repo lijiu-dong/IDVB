@@ -8,7 +8,6 @@ namespace IDVBuff.Views;
 /// <summary>Library of guided tutorials.</summary>
 public sealed class HelpPage : Page
 {
-    private const string OnboardingVideoBaseUri = "https://download.xgflee.com/guides/onboarding/";
 
     public event EventHandler? ActivateGuideRequested;
     public event EventHandler? SubscribeMapsGuideRequested;
@@ -164,9 +163,11 @@ public sealed class HelpPage : Page
 
     private static Button CreateVideoButton(string fileName)
     {
+        var uri = IDVBuff.UpdateCore.OnlineServiceLinks.TryResolve("downloads.guide", ("file", fileName));
         var button = new Button
         {
-            Content = "观看视频",
+            Content = uri is null ? "在线视频未配置" : "观看视频",
+            IsEnabled = uri is not null,
             MinWidth = 104,
             MinHeight = 34,
             VerticalAlignment = VerticalAlignment.Center
@@ -175,7 +176,7 @@ public sealed class HelpPage : Page
         {
             try
             {
-                await Launcher.LaunchUriAsync(new Uri(OnboardingVideoBaseUri + fileName));
+                await Launcher.LaunchUriAsync(uri!);
             }
             catch
             {

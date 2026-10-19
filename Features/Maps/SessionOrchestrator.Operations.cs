@@ -428,6 +428,7 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
             _matchLifecycleGate.Release();
         }
         _input.Dispose();
+        _gameMapCloseWarning?.Dispose();
         _overlayStatus.Dispose();
         _scanProgressOverlay.Dispose();
         _overlay.Dispose();

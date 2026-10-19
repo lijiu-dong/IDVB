@@ -2,6 +2,10 @@
 
 using IDVBuff.Diagnostics;
 using IDVBuff.Core.Contracts;
+using IDVBuff.Core.Contracts.Online;
+using IDVBuff.Core.Contracts.Online.Security;
+using IDVBuff.Features.Accounts;
+using IDVBuff.Lifecycle;
 using IDVBuff.Features.Maps;
 using IDVBuff.Features.Maps.Adapters;
 using IDVBuff.Features.Capture;
@@ -21,6 +25,7 @@ using IDVBuff.PluginContracts;
 using IDVBuff.Features.Notifications;
 using IdentityVisionBridge.PluginSdk;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.UI.Dispatching;
 
 namespace IDVBuff;
@@ -67,6 +72,18 @@ public static class ServiceCollectionExtensions
         // Data — Repository
         // ════════════════════════════════════════════════════════════
         services.AddSingleton<IMapRepository, MapRepositoryAdapter>();
+        services.AddSingleton<MapRepository>();
+        services.AddSingleton<ISubscriptionMapInstallation, SubscriptionMapInstallation>();
+        services.AddSingleton<IMapSubscriptionService>(sp => new MapSubscriptionService(
+            sp.GetRequiredService<ISubscriptionMapInstallation>()));
+        services.AddSingleton<IMapPublicationService>(sp => new MapPublicationService(
+            sp.GetRequiredService<MapRepository>()));
+        services.AddSingleton<IAccountService>(_ => AccountSession.Service);
+        services.AddSingleton<ICommunityService>(_ => CoCreationPublicationClient.Service);
+        services.AddSingleton<IVersionPolicyService>(_ => VersionAccessClient.Service);
+        services.AddSingleton<IApplicationUpdateService>(_ => AutomaticUpdateLauncher.Service);
+        services.TryAddSingleton<IOnlineSecurityTransport>(_ => DesktopSecurityRuntimeHost.Transport);
+        services.TryAddSingleton<IDesktopSecurityRuntime>(_ => DesktopSecurityRuntimeHost.Runtime);
         services.AddSingleton<ISettingsRepository, SettingsRepositoryAdapter>();
         services.AddSingleton(_ => new SurveyStoragePaths(
             Path.Combine(AppDataPaths.RootDirectory, "SurveyProjects")));

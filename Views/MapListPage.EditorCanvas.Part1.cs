@@ -40,7 +40,7 @@ public sealed partial class MapListPage : UserControl
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
         ++_workflowRevision;
-        IDVBuff.Features.Accounts.AccountSession.Changed -= CoCreationAccountChanged;
+        _accountService.Changed -= CoCreationAccountChanged;
         _initialListReady.TrySetCanceled();
         LocalTemplateClassAdded = null;
         CommunityMapsRequested = null;

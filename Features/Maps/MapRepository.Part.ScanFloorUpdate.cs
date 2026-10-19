@@ -58,12 +58,10 @@ public sealed partial class MapRepository
             cancellation.ThrowIfCancellationRequested();
             if (GetCatalogRevision() != revision)
                 throw new IOException("地图目录在修改期间发生变化，请刷新后重试。");
-            var file = new FileInfo(temporary);
-            var written = new MapCatalogRevision(file.LastWriteTimeUtc.Ticks, file.Length);
-            File.Move(temporary, CatalogPath, overwrite: true);
+            var committedRevision = await CommitCatalogReplacementAsync(temporary);
             MetadataRevisionAdvances.TryRemove(CatalogPath, out _);
             ScanFloorAdvances.TryRemove(CatalogPath, out _);
-            if (GetCatalogRevision() == written)
+            if (committedRevision is { } written)
             {
                 ClassNamesCache[CatalogPath] = (written, selected.Classes.ToArray());
                 AdvanceMapCount(revision, written);

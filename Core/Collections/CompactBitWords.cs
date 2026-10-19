@@ -6,7 +6,7 @@ namespace IDVBuff.Core.Collections;
 
 /// <summary>Immutable row-major bits with exact, allocation-free word access.
 /// Zero words occupy only one presence bit, without a decompression cache.</summary>
-public sealed class CompactBitWords
+public sealed partial class CompactBitWords
 {
     private readonly ulong[] _values;
     private readonly ulong[]? _presence;
@@ -19,6 +19,9 @@ public sealed class CompactBitWords
     public static CompactBitWords Zero(int length) => length >= 0 ? new(length) : throw new ArgumentOutOfRangeException(nameof(length));
 
     public CompactBitWords(ReadOnlySpan<byte> raster, int width, int height, byte threshold, string resource)
+        : this(raster, width, height, threshold, resource, false) { }
+
+    public CompactBitWords(ReadOnlySpan<byte> raster, int width, int height, byte threshold, string resource, bool invert)
     {
         if (width <= 0 || height <= 0 || raster.Length != checked(width * height))
             throw new ArgumentException("Invalid bit raster dimensions.");
@@ -35,7 +38,7 @@ public sealed class CompactBitWords
         for (var index = 0; index < Length; index++)
         {
             if ((index & 63) == 0) offsets[index >> 6] = count;
-            if (RasterWord(raster, width, stride, index, threshold) == 0) continue;
+            if (RasterWord(raster, width, stride, index, threshold, invert) == 0) continue;
             presence[index >> 6] |= 1UL << (index & 63);
             count++;
         }
@@ -48,19 +51,19 @@ public sealed class CompactBitWords
         var at = 0;
         for (var index = 0; index < Length; index++)
         {
-            var word = RasterWord(raster, width, stride, index, threshold);
+            var word = RasterWord(raster, width, stride, index, threshold, invert);
             if (!sparse || word != 0) _values[at++] = word;
         }
     }
 
-    private static ulong RasterWord(ReadOnlySpan<byte> raster, int width, int stride, int index, byte threshold)
+    private static ulong RasterWord(ReadOnlySpan<byte> raster, int width, int stride, int index, byte threshold, bool invert)
     {
         var x = (index % stride) * 64;
         var row = (index / stride) * width;
         ulong value = 0;
         var count = Math.Min(64, width - x);
         for (var bit = 0; bit < count; bit++)
-            if (raster[row + x + bit] <= threshold) value |= 1UL << bit;
+            if ((raster[row + x + bit] <= threshold) != invert) value |= 1UL << bit;
         return value;
     }
 

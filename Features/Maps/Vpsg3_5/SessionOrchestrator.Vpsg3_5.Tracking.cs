@@ -12,33 +12,23 @@ public sealed partial class SessionOrchestrator
         CancellationToken cancellationToken)
     {
         var currentRecognition = initialRecognition;
-        var lockedScale = (initialTransform.ScaleX + initialTransform.ScaleY) / 2.0d;
-        var priorTx = initialTransform.OffsetX;
-        var priorTy = initialTransform.OffsetY;
-        var feedforwardTx = priorTx;
-        var feedforwardTy = priorTy;
-        var visualFrameTx = priorTx;
-        var visualFrameTy = priorTy;
-        var hasVisualFrameAnchor = false;
-        var velTx = 0.0d;
-        var velTy = 0.0d;
-        var weakFrames = 0;
+        var lockedScale = (initialTransform.ScaleX + initialTransform.ScaleY) / 2d;
         var trackingConfig = Vpsg3_5TrackingConfig.Default;
-        var gameWindowHandle = IntPtr.Zero;
-
-        var wasDragging = false;
-        var mouseHistory = new TimestampedMouseHistory();
+        var motion = new Vpsg3_5DragMotion(initialTransform.OffsetX, initialTransform.OffsetY, trackingConfig);
+        SetNativeDragPresentation(context.Generation, motion);
+        using var inputCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         using var opticalFlow = new Vpsg3_5OpticalFlowTracker();
-        CancellationTokenSource? dragCaptureCancellation = null;
-        Task<object?>? pendingCapture = null;
-        long pendingCaptureStarted = 0;
+        var visualEpoch = 0L;
+        var releaseEpoch = 0L;
+        var visualFrameTx = initialTransform.OffsetX;
+        var visualFrameTy = initialTransform.OffsetY;
+        var hasVisualFrameAnchor = false;
+        var previousViewport = default(MapScreenRect);
         var afterSystemTicks = SystemRelativeClock.GetTicks();
-
-        var sessionStarted = Stopwatch.GetTimestamp();
-        var lastTelemetryLog = Stopwatch.GetTimestamp();
         var lastAbsoluteCorrection = 0L;
-        var dragStarted = 0L;
-        var dragDurationMs = 0d;
+        var weakFrames = 0;
+        var sessionStarted = Stopwatch.GetTimestamp();
+        var lastTelemetryLog = sessionStarted;
         var captureCount = 0;
         var gdiFallbackCount = 0;
         var visualAttempts = 0;
@@ -55,369 +45,175 @@ public sealed partial class SessionOrchestrator
         var solveSamples = new List<double>();
 
         _realtimeMapTransformPublisher.Snapshot(reset: true);
-
-        _logCollector.Append(
-            MapLogCategory.StructureRegistration,
-            MapLogLevel.Info,
-            $"VPSG 3.5 hybrid tracking loop entered · map={context.MapId} · floor={context.FloorKey} · scale={lockedScale:F4} · initialTx={priorTx:F1}, initialTy={priorTy:F1}");
+        _logCollector.Append(MapLogCategory.StructureRegistration, MapLogLevel.Info,
+            $"VPSG 3.5 hybrid tracking loop entered · map={context.MapId} · floor={context.FloorKey} · scale={lockedScale:F4} · initialTx={initialTransform.OffsetX:F1}, initialTy={initialTransform.OffsetY:F1}");
 
         TimeBeginPeriod(1);
+        // This is the only realtime pose publisher. Capture, LK, absolute solving
+        // and release settling must never run on the cursor sampling task.
+        var inputTask = Task.Run(() => RunVpsg3_5InputLoopAsync(
+            context, lockedScale, motion, inputCancellation.Token));
         try
         {
-            while (!cancellationToken.IsCancellationRequested
-                && IsOrbTrackingContextCurrent(context))
+            while (!cancellationToken.IsCancellationRequested && IsOrbTrackingContextCurrent(context))
             {
-                // Check if game window is foreground and if mouse left button is held
-                var isForeground = gameWindowHandle != IntPtr.Zero && GetForegroundWindow() == gameWindowHandle;
-                if (!isForeground)
+                if (inputTask.IsCompleted)
+                    break;
+                var snapshot = motion.Snapshot();
+                if (!snapshot.IsDragging)
                 {
-                    if (_captureSvc.TryGetForegroundClientBounds(out _, out var fgWindow, out _))
+                    if (snapshot.ReleasedAt > 0 && releaseEpoch != snapshot.Epoch)
                     {
-                        gameWindowHandle = fgWindow;
-                        isForeground = true;
-                    }
-                }
-
-                var isLButtonDown = (GetAsyncKeyState(VkLButton) & 0x8000) != 0;
-#if IDVB_DEVELOPMENT_BUILD
-                if (IDVBuff.Lifecycle.BackgroundTestRuntime.Enabled)
-                {
-                    isForeground = IDVBuff.Lifecycle.BackgroundTestRuntime.TryInput(out _, out _, out isLButtonDown, out _);
-                }
-#endif
-                var isDragging = isForeground && isLButtonDown;
-
-                if (!isDragging)
-                {
-                    if (wasDragging)
-                    {
-                        // Release Snap: player just released mouse button.
-                        // Perform one clean visual capture and solve to snap strictly to ground truth.
-                        wasDragging = false;
-                        dragDurationMs += Stopwatch.GetElapsedTime(dragStarted).TotalMilliseconds;
-                        await DisposePendingCaptureAsync(
-                            pendingCapture,
-                            dragCaptureCancellation).ConfigureAwait(false);
-                        pendingCapture = null;
-                        dragCaptureCancellation = null;
-                        var snapResult = await PerformReleaseSnapAsync(
-                            context,
-                            currentRecognition,
-                            lockedScale,
-                            feedforwardTx,
-                            feedforwardTy,
-                            trackingConfig,
-                            cancellationToken).ConfigureAwait(false);
-
-                        if (snapResult is not null && snapResult.IsAccepted)
+                        releaseEpoch = snapshot.Epoch;
+                        var snap = await PerformReleaseSnapAsync(context, currentRecognition,
+                            lockedScale, snapshot.Tx, snapshot.Ty, trackingConfig, cancellationToken)
+                            .ConfigureAwait(false);
+                        // A quick re-grab invalidates this snap even if the same map
+                        // session is still current. Never pull the new drag backwards.
+                        if (snap is { IsAccepted: true } && IsOrbTrackingContextCurrent(context)
+                            && motion.TryReleaseSnap(snapshot.Epoch, snap.OffsetX, snap.OffsetY,
+                                SystemRelativeClock.GetTicks(), snap.Confidence))
                         {
-                            feedforwardTx = snapResult.OffsetX;
-                            feedforwardTy = snapResult.OffsetY;
-
-                            var finalTransform = MapCanonicalTransformMath.BuildOverlayTransform(
-                                lockedScale,
-                                lockedScale,
-                                feedforwardTx,
-                                feedforwardTy,
-                                currentRecognition.Result.OverlayTransform?.ReferenceWidth ?? 1000,
-                                currentRecognition.Result.OverlayTransform?.ReferenceHeight ?? 1000,
-                                residualPixels: 0d,
-                                orientationDegrees: currentRecognition.Result.OrientationDegrees,
-                                alignmentMode: MapOverlayAlignmentMode.Uniform);
-
-                            var finalRecognition = MapCvRecognitionBuilders.ReplaceTransformAndSource(
-                                currentRecognition,
-                                finalTransform,
-                                MapRecognitionSource.VpsgTracking);
-
-                            currentRecognition = finalRecognition;
-                            EnqueueOrbTrackingCommit(context, finalRecognition, 0.05d);
-                            PublishRealtimeMapTransform(
-                                context,
-                                lockedScale,
-                                feedforwardTx,
-                                feedforwardTy,
-                                SystemRelativeClock.GetTicks(),
-                                snapResult.Confidence);
+                            currentRecognition = CommitVpsg3_5Motion(context, currentRecognition,
+                                lockedScale, motion.Snapshot());
                         }
-
-                        priorTx = feedforwardTx;
-                        priorTy = feedforwardTy;
-                        velTx = 0.0d;
-                        velTy = 0.0d;
-                        weakFrames = 0;
                         opticalFlow.Reset();
                         hasVisualFrameAnchor = false;
+                        weakFrames = 0;
                         _alignmentTrackingMode = MapAlignmentTrackingMode.VpsgTracking;
                     }
-
-                    // Map cannot move in-game without holding Left Mouse Button.
-                    // Keep overlay strictly stationary: 0 jitter, zero CPU waste.
-                    velTx = 0.0d;
-                    velTy = 0.0d;
-                    weakFrames = 0;
-                    _alignmentTrackingMode = MapAlignmentTrackingMode.VpsgTracking;
-                    await Task.Delay(30, cancellationToken);
+                    await Task.Delay(2, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
 
-                // Drag transition: newly pressed
-                if (!wasDragging)
+                if (visualEpoch != snapshot.Epoch)
                 {
-                    wasDragging = true;
-                    dragStarted = Stopwatch.GetTimestamp();
-                    if (TryGetTrackingCursor(out var initialCursor))
-                    {
-                        mouseHistory.Reset(
-                            initialCursor.X,
-                            initialCursor.Y,
-                            SystemRelativeClock.GetTicks());
-                    }
-                    feedforwardTx = priorTx;
-                    feedforwardTy = priorTy;
-                    visualFrameTx = priorTx;
-                    visualFrameTy = priorTy;
-                    hasVisualFrameAnchor = false;
+                    visualEpoch = snapshot.Epoch;
                     opticalFlow.Reset();
-                    lastAbsoluteCorrection = Stopwatch.GetTimestamp();
-                    afterSystemTicks = SystemRelativeClock.GetTicks();
+                    hasVisualFrameAnchor = false;
+                    afterSystemTicks = snapshot.StartedAt;
+                    lastAbsoluteCorrection = 0;
                     _captureSvc.PrepareViewportCapture();
-                    dragCaptureCancellation = CancellationTokenSource.CreateLinkedTokenSource(
-                        cancellationToken);
                 }
 
-                // 1. Zero-latency Mouse Feedforward
-                if (trackingConfig.EnableMouseFeedforward && TryGetTrackingCursor(out var currentCursor))
+                var captureStarted = Stopwatch.GetTimestamp();
+                object? frameObject = await _captureSvc.CaptureNextViewportAsync(
+                    ResolveMapViewportForCurrentWindow(), afterSystemTicks,
+                    TimeSpan.FromMilliseconds(trackingConfig.FrameCaptureWaitMs), cancellationToken)
+                    .ConfigureAwait(false);
+                var fallbackTimestamp = SystemRelativeClock.GetTicks();
+                if (frameObject is not CapturedGameFrame)
                 {
-                    var mouseTimestamp = SystemRelativeClock.GetTicks();
-                    var (rawDx, rawDy) = mouseHistory.Record(
-                        currentCursor.X,
-                        currentCursor.Y,
-                        mouseTimestamp,
-                        trackingConfig.MouseScaleRatio);
-
-                    if (rawDx != 0 || rawDy != 0)
-                    {
-                        feedforwardTx += rawDx;
-                        feedforwardTy += rawDy;
-                        PublishRealtimeMapTransform(
-                            context,
-                            lockedScale,
-                            feedforwardTx,
-                            feedforwardTy,
-                            mouseTimestamp,
-                            0.05d);
-                    }
+                    if (_captureSvc.TryCaptureViewport(ResolveMapViewportForCurrentWindow(),
+                            out frameObject, out _))
+                        gdiFallbackCount++;
+                }
+                if (frameObject is not CapturedGameFrame frame)
+                {
+                    droppedFrames++;
+                    await Task.Delay(2, cancellationToken).ConfigureAwait(false);
+                    continue;
                 }
 
-                // 2. Consume each distinct WGC frame at most once. The task remains
-                // pending while the 2ms cursor loop continues to publish transforms.
-                if (pendingCapture is null && dragCaptureCancellation is not null)
+                using (frame)
                 {
-                    pendingCaptureStarted = Stopwatch.GetTimestamp();
-                    pendingCapture = _captureSvc.CaptureNextViewportAsync(
-                        ResolveMapViewportForCurrentWindow(),
-                        afterSystemTicks,
-                        TimeSpan.FromMilliseconds(trackingConfig.FrameCaptureWaitMs),
-                        dragCaptureCancellation.Token);
-                }
+                    var timestamp = frame.CaptureSystemRelativeTicks > 0
+                        ? frame.CaptureSystemRelativeTicks : fallbackTimestamp;
+                    afterSystemTicks = Math.Max(afterSystemTicks, timestamp);
+                    // The mouse task may have released or started another drag while
+                    // capture/readback was pending. Dispose those pixels without using them.
+                    if (!IsOrbTrackingContextCurrent(context)
+                        || !motion.TryPredictFrame(visualEpoch, timestamp, out var predictedTx, out var predictedTy))
+                        continue;
+                    captureCount++;
+                    droppedFrames += frame.CaptureDroppedFrames;
+                    captureAgeTotalMs += SystemRelativeClock.AgeMilliseconds(timestamp);
+                    readbackTotalMs += frame.CaptureReadbackMilliseconds > 0d
+                        ? frame.CaptureReadbackMilliseconds
+                        : Stopwatch.GetElapsedTime(captureStarted).TotalMilliseconds;
 
-                if (pendingCapture?.IsCompleted == true)
-                {
-                    object? frameObject = null;
-                    var captureElapsedMs = Stopwatch.GetElapsedTime(pendingCaptureStarted).TotalMilliseconds;
-                    try
+                    if (previousViewport.Width != frame.ViewportBounds.Width
+                        || previousViewport.Height != frame.ViewportBounds.Height)
                     {
-                        frameObject = await pendingCapture.ConfigureAwait(false);
+                        opticalFlow.Reset();
+                        hasVisualFrameAnchor = false;
                     }
-                    catch (OperationCanceledException) when (
-                        dragCaptureCancellation?.IsCancellationRequested == true)
+                    opticalAttempts++;
+                    var hadVisualFrameAnchor = hasVisualFrameAnchor;
+                    var flow = hasVisualFrameAnchor
+                        ? opticalFlow.Track(frame.Image,
+                            predictedTx - visualFrameTx - (frame.ViewportBounds.X - previousViewport.X),
+                            predictedTy - visualFrameTy - (frame.ViewportBounds.Y - previousViewport.Y))
+                        : opticalFlow.Track(frame.Image);
+                    preprocessTotalMs += flow.PreprocessMilliseconds;
+                    trackTotalMs += flow.TrackMilliseconds;
+                    if (hasVisualFrameAnchor && flow.Accepted)
                     {
-                    }
-                    pendingCapture = null;
-
-                    var fallbackTimestamp = SystemRelativeClock.GetTicks();
-                    if (frameObject is not CapturedGameFrame)
-                    {
-                        var fallbackStarted = Stopwatch.GetTimestamp();
-                        var fallbackCaptured = _captureSvc.TryCaptureViewport(
-                            ResolveMapViewportForCurrentWindow(),
-                            out frameObject,
-                            out _);
-                        captureElapsedMs = Stopwatch.GetElapsedTime(fallbackStarted).TotalMilliseconds;
-                        if (fallbackCaptured)
-                            gdiFallbackCount++;
-                    }
-
-                    if (frameObject is CapturedGameFrame frame)
-                    {
-                        using (frame)
-                        {
-                            captureCount++;
-                            droppedFrames += frame.CaptureDroppedFrames;
-                            var frameTimestamp = frame.CaptureSystemRelativeTicks > 0
-                                ? frame.CaptureSystemRelativeTicks
-                                : fallbackTimestamp;
-                            afterSystemTicks = Math.Max(afterSystemTicks, frameTimestamp);
-                            var captureAgeMs = SystemRelativeClock.AgeMilliseconds(frameTimestamp);
-                            captureAgeTotalMs += captureAgeMs;
-                            readbackTotalMs += frame.CaptureReadbackMilliseconds > 0d
-                                ? frame.CaptureReadbackMilliseconds
-                                : captureElapsedMs;
-
-                            opticalAttempts++;
-                            var flow = opticalFlow.Track(frame.Image);
-                            preprocessTotalMs += flow.PreprocessMilliseconds;
-                            trackTotalMs += flow.TrackMilliseconds;
-                            var pendingMouse = mouseHistory.DeltaAfter(frameTimestamp);
-                            if (!hasVisualFrameAnchor)
-                            {
-                                visualFrameTx = feedforwardTx - pendingMouse.Dx;
-                                visualFrameTy = feedforwardTy - pendingMouse.Dy;
-                                hasVisualFrameAnchor = true;
-                            }
-                            else if (flow.Accepted)
-                            {
-                                opticalAccepted++;
-                                visualFrameTx += flow.DeltaX;
-                                visualFrameTy += flow.DeltaY;
-                                feedforwardTx = visualFrameTx + pendingMouse.Dx;
-                                feedforwardTy = visualFrameTy + pendingMouse.Dy;
-                                PublishRealtimeMapTransform(
-                                    context,
-                                    lockedScale,
-                                    feedforwardTx,
-                                    feedforwardTy,
-                                    frameTimestamp,
-                                    flow.InlierRatio);
-                            }
-                            else
-                            {
-                                // A rejected flow frame cannot advance the visual anchor.
-                                // Rebase it on the timestamped predictor before the next frame.
-                                visualFrameTx = feedforwardTx - pendingMouse.Dx;
-                                visualFrameTy = feedforwardTy - pendingMouse.Dy;
-                            }
-
-                            var now = Stopwatch.GetTimestamp();
-                            if (ElapsedMilliseconds(lastAbsoluteCorrection)
-                                >= trackingConfig.VisualVerificationIntervalMs)
-                            {
-                                lastAbsoluteCorrection = now;
-                                visualAttempts++;
-                                var preprocessStarted = Stopwatch.GetTimestamp();
-                                using var obs = Vpsg3FastLiveExtractor.Extract(
-                                    frame.Image,
-                                    frame.ViewportBounds);
-                                preprocessTotalMs += Stopwatch.GetElapsedTime(preprocessStarted)
-                                    .TotalMilliseconds;
-                                if (obs.SparseEdgePoints.Count >= 8
-                                    && _recognition.TryGetVpsg3FloorLease(
-                                        currentRecognition.Map,
-                                        context.FloorKey,
-                                        out var lease))
-                                {
-                                    Vpsg3_5TrackingResult trackResult;
-                                    using (lease)
-                                    {
-                                        trackResult = Vpsg3_5TrackingSolver.TryTrack(
-                                            obs,
-                                            lease.Floor,
-                                            lockedScale,
-                                            visualFrameTx,
-                                            visualFrameTy,
-                                            trackingConfig);
-                                    }
-                                    solveSamples.Add(trackResult.Timing.TotalMs);
-                                    if (TryGetTrackingCursor(out var cursorAfterSolve))
-                                    {
-                                        var postSolveMouse = mouseHistory.Record(
-                                            cursorAfterSolve.X,
-                                            cursorAfterSolve.Y,
-                                            SystemRelativeClock.GetTicks(),
-                                            trackingConfig.MouseScaleRatio);
-                                        feedforwardTx += postSolveMouse.Dx;
-                                        feedforwardTy += postSolveMouse.Dy;
-                                    }
-                                    if (trackResult.IsAccepted)
-                                    {
-                                        acceptedCount++;
-                                        weakFrames = 0;
-                                        _alignmentTrackingMode = MapAlignmentTrackingMode.VpsgTracking;
-                                        visualFrameTx = trackResult.OffsetX;
-                                        visualFrameTy = trackResult.OffsetY;
-                                        var mouseAfterCapture = mouseHistory.DeltaAfter(frameTimestamp);
-                                        feedforwardTx = visualFrameTx + mouseAfterCapture.Dx;
-                                        feedforwardTy = visualFrameTy + mouseAfterCapture.Dy;
-                                        priorTx = feedforwardTx;
-                                        priorTy = feedforwardTy;
-
-                                        var correctedTransform = MapCanonicalTransformMath.BuildOverlayTransform(
-                                            lockedScale,
-                                            lockedScale,
-                                            feedforwardTx,
-                                            feedforwardTy,
-                                            currentRecognition.Result.OverlayTransform?.ReferenceWidth ?? 1000,
-                                            currentRecognition.Result.OverlayTransform?.ReferenceHeight ?? 1000,
-                                            residualPixels: 0d,
-                                            orientationDegrees: currentRecognition.Result.OrientationDegrees,
-                                            alignmentMode: MapOverlayAlignmentMode.Uniform);
-                                        currentRecognition = MapCvRecognitionBuilders.ReplaceTransformAndSource(
-                                            currentRecognition,
-                                            correctedTransform,
-                                            MapRecognitionSource.VpsgTracking);
-                                        EnqueueOrbTrackingCommit(context, currentRecognition, 0.05d);
-                                        PublishRealtimeMapTransform(
-                                            context,
-                                            lockedScale,
-                                            feedforwardTx,
-                                            feedforwardTy,
-                                            frameTimestamp,
-                                            trackResult.Confidence);
-                                    }
-                                    else
-                                    {
-                                        rejectedCount++;
-                                        weakFrames++;
-                                        HandleWeakTrackingFrame(context, ref currentRecognition, lockedScale, ref priorTx, ref priorTy, ref velTx, ref velTy, ref weakFrames);
-                                    }
-                                }
-                                else
-                                {
-                                    rejectedCount++;
-                                    weakFrames++;
-                                    HandleWeakTrackingFrame(context, ref currentRecognition, lockedScale, ref priorTx, ref priorTy, ref velTx, ref velTy, ref weakFrames);
-                                }
-                            }
-                            endToEndTotalMs += SystemRelativeClock.AgeMilliseconds(frameTimestamp);
-                        }
+                        opticalAccepted++;
+                        visualFrameTx += flow.DeltaX + frame.ViewportBounds.X - previousViewport.X;
+                        visualFrameTy += flow.DeltaY + frame.ViewportBounds.Y - previousViewport.Y;
+                        motion.ObserveVisual(visualEpoch, timestamp,
+                            visualFrameTx, visualFrameTy, flow.InlierRatio);
                     }
                     else
                     {
-                        weakFrames++;
-                        droppedFrames++;
+                        visualFrameTx = predictedTx;
+                        visualFrameTy = predictedTy;
+                        hasVisualFrameAnchor = true;
                     }
+                    previousViewport = frame.ViewportBounds;
+
+                    var correctionAgeMs = ElapsedMilliseconds(lastAbsoluteCorrection);
+                    if (correctionAgeMs >= trackingConfig.VisualVerificationIntervalMs
+                        || (hadVisualFrameAnchor && !flow.Accepted && correctionAgeMs >= 32d))
+                    {
+                        lastAbsoluteCorrection = Stopwatch.GetTimestamp();
+                        visualAttempts++;
+                        var preprocessStarted = Stopwatch.GetTimestamp();
+                        using var observation = Vpsg3FastLiveExtractor.Extract(frame.Image, frame.ViewportBounds);
+                        preprocessTotalMs += Stopwatch.GetElapsedTime(preprocessStarted).TotalMilliseconds;
+                        if (observation.SparseEdgePoints.Count >= 8
+                            && _recognition.TryGetVpsg3FloorLease(currentRecognition.Map, context.FloorKey, out var lease))
+                        {
+                            Vpsg3_5TrackingResult result;
+                            using (lease)
+                                result = Vpsg3_5TrackingSolver.TryTrack(observation, lease.Floor,
+                                    lockedScale, visualFrameTx, visualFrameTy, trackingConfig);
+                            solveSamples.Add(result.Timing.TotalMs);
+                            if (result.IsAccepted && IsOrbTrackingContextCurrent(context)
+                                && motion.ObserveVisual(visualEpoch, timestamp,
+                                    result.OffsetX, result.OffsetY, result.Confidence))
+                            {
+                                acceptedCount++;
+                                weakFrames = 0;
+                                visualFrameTx = result.OffsetX;
+                                visualFrameTy = result.OffsetY;
+                                _alignmentTrackingMode = MapAlignmentTrackingMode.VpsgTracking;
+                                currentRecognition = CommitVpsg3_5Motion(context, currentRecognition,
+                                    lockedScale, motion.Snapshot());
+                            }
+                            else
+                            {
+                                rejectedCount++;
+                                HandleWeakTrackingFrame(++weakFrames);
+                            }
+                        }
+                        else
+                        {
+                            rejectedCount++;
+                            HandleWeakTrackingFrame(++weakFrames);
+                        }
+                    }
+                    endToEndTotalMs += SystemRelativeClock.AgeMilliseconds(timestamp);
                 }
 
-                // 3. Periodic Telemetry (Every 3s)
                 if (ElapsedMilliseconds(lastTelemetryLog) >= 3000)
                 {
-                    var activeDragMs = dragDurationMs
-                        + (wasDragging
-                            ? Stopwatch.GetElapsedTime(dragStarted).TotalMilliseconds
-                            : 0d);
-                    var fps = activeDragMs > 0d
-                        ? captureCount / (activeDragMs / 1000d)
-                        : 0d;
-                    var hitRate = visualAttempts > 0 ? (double)acceptedCount / visualAttempts : 0d;
-                    var avgMs = solveSamples.Count > 0 ? solveSamples.Average() : 0d;
-                    var realtime = _realtimeMapTransformPublisher.Snapshot(reset: false);
                     lastTelemetryLog = Stopwatch.GetTimestamp();
-
-                    _logCollector.Append(
-                        MapLogCategory.StructureRegistration,
-                        MapLogLevel.Info,
-                        $"VPSG 3.5 hybrid tracking telemetry · fps={fps:F1} · hitRate={hitRate:P0} · avgSolve={avgMs:F2}ms · mode={_alignmentTrackingMode}",
+                    var realtime = _realtimeMapTransformPublisher.Snapshot(reset: false);
+                    var input = motion.Telemetry();
+                    _logCollector.Append(MapLogCategory.StructureRegistration, MapLogLevel.Info,
+                        $"VPSG 3.5 hybrid tracking telemetry · optical={opticalAccepted}/{opticalAttempts} · accepted={acceptedCount}/{visualAttempts} · mode={_alignmentTrackingMode}",
                         details: new()
                         {
                             ["generation"] = context.Generation,
@@ -427,19 +223,19 @@ public sealed partial class SessionOrchestrator
                             ["rejected"] = rejectedCount,
                             ["opticalAttempts"] = opticalAttempts,
                             ["opticalAccepted"] = opticalAccepted,
-                            ["dispatcherQueueMs"] = realtime.AverageDispatcherQueueMs,
+                            ["inputSamples"] = input.InputSamples,
+                            ["maximumInputGapMs"] = input.MaximumInputGapMs,
+                            ["mouseGainX"] = input.MouseGainX,
+                            ["mouseGainY"] = input.MouseGainY,
+                            ["nativeInputDelayMs"] = input.NativeInputDelayMs,
+                            ["nativeFrameErrorPixels"] = input.NativeFrameErrorPixels,
+                            ["maximumNativeFrameErrorPixels"] = input.MaximumNativeFrameErrorPixels,
                             ["dispatcherQueueP95Ms"] = realtime.P95DispatcherQueueMs,
-                            ["renderMs"] = realtime.AverageRenderMs,
                             ["renderP95Ms"] = realtime.P95RenderMs,
-                            ["endToEndMs"] = realtime.AverageEndToEndMs,
                             ["endToEndP95Ms"] = realtime.P95EndToEndMs,
-                            ["droppedFrames"] = droppedFrames,
                             ["coalescedTransforms"] = realtime.CoalescedTransforms
                         });
                 }
-
-                // High-frequency yield (2ms) for buttery smooth cursor polling
-                await Task.Delay(2, cancellationToken);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -447,52 +243,53 @@ public sealed partial class SessionOrchestrator
         }
         catch (Exception exception)
         {
-            _logCollector.Append(
-                MapLogCategory.StructureRegistration,
-                MapLogLevel.Warning,
+            _logCollector.Append(MapLogCategory.StructureRegistration, MapLogLevel.Warning,
                 "VPSG 3.5 tracking loop stopped after an unexpected error.",
-                details: new()
-                {
-                    ["generation"] = context.Generation,
-                    ["exception"] = exception.ToString()
-                });
+                details: new() { ["generation"] = context.Generation, ["exception"] = exception.ToString() });
         }
         finally
         {
-            if (wasDragging)
-                dragDurationMs += Stopwatch.GetElapsedTime(dragStarted).TotalMilliseconds;
-            await DisposePendingCaptureAsync(
-                pendingCapture,
-                dragCaptureCancellation).ConfigureAwait(false);
-            var sessionDurationMs = Stopwatch.GetElapsedTime(sessionStarted).TotalMilliseconds;
-            LogVpsg3_5SessionEnd(
-                context,
-                sessionDurationMs,
-                dragDurationMs,
-                captureCount,
-                gdiFallbackCount,
-                visualAttempts,
-                acceptedCount,
-                rejectedCount,
-                opticalAttempts,
-                droppedFrames,
-                captureAgeTotalMs,
-                readbackTotalMs,
-                preprocessTotalMs,
-                trackTotalMs,
-                endToEndTotalMs,
-                solveSamples);
-            TimeEndPeriod(1);
-            lock (_orbTrackingGate)
+            inputCancellation.Cancel();
+            try { await inputTask.ConfigureAwait(false); }
+            catch (OperationCanceledException) when (inputCancellation.IsCancellationRequested) { }
+            catch (Exception exception)
             {
-                if (_orbTrackingGeneration == context.Generation)
+                _logCollector.Append(MapLogCategory.StructureRegistration, MapLogLevel.Warning,
+                    "VPSG 3.5 cursor sampling stopped after an unexpected error.",
+                    details: new() { ["generation"] = context.Generation, ["exception"] = exception.ToString() });
+            }
+            finally
+            {
+                ClearNativeDragPresentation(context.Generation);
+                LogVpsg3_5SessionEnd(context, Stopwatch.GetElapsedTime(sessionStarted).TotalMilliseconds,
+                    motion.Telemetry().DragDurationMs, captureCount, gdiFallbackCount, visualAttempts, acceptedCount, rejectedCount,
+                    opticalAttempts, droppedFrames, captureAgeTotalMs, readbackTotalMs, preprocessTotalMs,
+                    trackTotalMs, endToEndTotalMs, solveSamples, motion);
+                TimeEndPeriod(1);
+                lock (_orbTrackingGate)
                 {
-                    _orbTrackingCancellation?.Dispose();
-                    _orbTrackingCancellation = null;
-                    _orbTrackingTask = null;
+                    if (_orbTrackingGeneration == context.Generation)
+                    {
+                        _orbTrackingCancellation?.Dispose();
+                        _orbTrackingCancellation = null;
+                        _orbTrackingTask = null;
+                    }
                 }
             }
         }
     }
 
+    private RuntimeMapRecognition CommitVpsg3_5Motion(OrbTrackingContext context,
+        RuntimeMapRecognition recognition, double scale, Vpsg3_5DragSnapshot snapshot)
+    {
+        var transform = MapCanonicalTransformMath.BuildOverlayTransform(scale, scale, snapshot.Tx, snapshot.Ty,
+            recognition.Result.OverlayTransform?.ReferenceWidth ?? 1000,
+            recognition.Result.OverlayTransform?.ReferenceHeight ?? 1000,
+            residualPixels: 0d, orientationDegrees: recognition.Result.OrientationDegrees,
+            alignmentMode: MapOverlayAlignmentMode.Uniform);
+        var updated = MapCvRecognitionBuilders.ReplaceTransformAndSource(recognition, transform,
+            MapRecognitionSource.VpsgTracking);
+        EnqueueOrbTrackingCommit(context, updated, 0.05d, updateOverlay: false);
+        return updated;
+    }
 }

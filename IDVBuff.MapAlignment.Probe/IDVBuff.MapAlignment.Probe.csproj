@@ -9,6 +9,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="..\Features\Maps\PreparedFloor*.cs" />
+    <Compile Include="..\Features\Maps\ScanIdentityEvidence.Persistence.cs" />
+    <Compile Include="..\Features\Maps\Vpsg3\*Persistence.cs" />
+    <Compile Include="..\Features\Maps\Vpsg3\Vpsg3PreparedIndexModels.cs" />
+    <Compile Include="..\Features\Maps\Vpsg3\Vpsg3PreparedIndexMemory.cs" />
+    <Compile Include="..\Features\Maps\Vpsg3\Vpsg3PreparedIndexBuilder.cs" />
     <PackageReference Include="OpenCvSharp4.Windows" Version="4.13.0.20260627" />
     <PackageReference Include="OpenCvSharp4.Extensions" Version="4.13.0.20260627" />
     <PackageReference Include="System.Drawing.Common" Version="10.0.9" />
@@ -94,6 +100,8 @@
     <Compile Include="..\Features\Maps\GameFrameStream.cs" Link="Production\GameFrameStream.cs" />
     <Compile Include="..\Features\Maps\GameFrameStream.Readback.cs" Link="Production\GameFrameStream.Readback.cs" />
     <Compile Include="..\Features\Maps\MapViewportPresenceDetector.cs" Link="Production\MapViewportPresenceDetector.cs" />
+    <Compile Include="..\Features\Maps\MapViewportPresenceDetector.Absence.cs" Link="Production\MapViewportPresenceDetector.Absence.cs" />
+    <Compile Include="..\Features\Maps\MapViewportPresenceDetector.Signature.cs" Link="Production\MapViewportPresenceDetector.Signature.cs" />
     <Compile Include="..\Features\Maps\Vpsg3\SemanticStructureContours.cs" />
     <Compile Include="..\Features\Maps\Vpsg3\NativeStructureTextureMask.cs" />
     <Compile Include="..\Features\Maps\Vpsg3\Vpsg3SemanticPoints.cs" />
@@ -115,6 +123,7 @@
     <Compile Include="..\Features\Maps\IdvaStructureLineEngine.Preprocessing.cs" Link="Production\IdvaStructureLineEngine.Preprocessing.cs" />
     <Compile Include="..\Features\Maps\IdvaStructureLineEngine.Validation.cs" Link="Production\IdvaStructureLineEngine.Validation.cs" />
     <Compile Include="..\Features\Maps\MapRepository.Catalog.cs" Link="Production\MapRepository.Catalog.cs" />
+    <Compile Include="..\Features\Maps\MapRepository.CatalogRevision.cs" Link="Production\MapRepository.CatalogRevision.cs" />
     <Compile Include="..\Features\Maps\MapRepository.SnapshotEditing.cs" Link="Production\MapRepository.SnapshotEditing.cs" />
     <Compile Include="..\Features\Maps\MapRepository.Import.cs" Link="Production\MapRepository.Import.cs" />
     <Compile Include="..\Features\Maps\MapRepository.Subscriptions.cs" Link="Production\MapRepository.Subscriptions.cs" />

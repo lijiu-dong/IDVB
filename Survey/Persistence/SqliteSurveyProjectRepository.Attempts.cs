@@ -22,7 +22,7 @@ public sealed partial class SqliteSurveyProjectRepository
             cancellationToken).ConfigureAwait(false);
         EnsureRevision(request.ProjectId, request.ExpectedRevision, revision);
 
-        var command = connection.CreateCommand();
+        using var command = connection.CreateCommand();
         command.Transaction = sqlite;
         command.CommandText = """
             INSERT INTO capture_attempts(

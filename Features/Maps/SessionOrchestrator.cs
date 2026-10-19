@@ -37,7 +37,7 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
     private readonly MapRecognitionStatisticsRepository _recognitionStatsRepo;
     private readonly MapFeatureCacheRepository _mapFeatureCacheRepository;
     private readonly MapOverlayStatusCoordinator _overlayStatus;
-    private readonly MapControlPanelWindow? _controlPanel;
+    private readonly IMapControlPanelView? _controlPanel = null;
     private readonly ICaptureProtectionService? _captureProtection;
     private readonly GameOverlayProgressBar _scanProgressOverlay;
     private readonly RealtimeMapTransformPublisher _realtimeMapTransformPublisher;
@@ -178,6 +178,9 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
         // MapControlPanelWindow 仅在 GUI 模式创建（headless CLI 跳过）
         if (!headless)
         {
+#if IDVB_HEADLESS
+            throw new InvalidOperationException("当前宿主仅支持 headless 模式，不能创建可视控制面板。");
+#else
             _controlPanel = new MapControlPanelWindow(
                 mapClass => BeginMatchAsync(mapClass),
                 GetMapClassesAsync,
@@ -195,6 +198,7 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
                 _captureProtection,
                 CorrectMapAsync,
                 beginMatchWithPendingSave: (mapClass, pendingSave) => BeginMatchAsync(mapClass, pendingSave));
+#endif
         }
 
         // 全局输入事件仅在 GUI 模式订阅（headless CLI 无输入设备）
@@ -214,7 +218,7 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
                 StartInputOperation("game-map-close", HandleGameMapCloseAsync);
             _input.GameMapClickObserved += (_, _) =>
                 StartInputOperation("game-map-click", HandleGameMapClickAsync);
-            _input.SetGameMapClickWatch(() => _gameMapToggleState.IsOpen);
+            _input.SetGameMapClickWatch(CanWatchGameMapClick);
             _input.ControlPanelToggleInvoked += (_, _) =>
                 ToggleControlPanel();
             _input.SwitchFloorInvoked += (_, _) =>

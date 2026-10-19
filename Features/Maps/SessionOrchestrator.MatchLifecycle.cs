@@ -89,6 +89,7 @@ public sealed partial class SessionOrchestrator
 
     private void CancelMatchOperations(bool preserveMapToggleState = false)
     {
+        HideGameMapCloseWarning();
         CancelMapObservation();
         EndAdaptiveMapOpen("match lifecycle changed");
         CancelOrbTracking("match lifecycle changed");
@@ -164,6 +165,8 @@ public sealed partial class SessionOrchestrator
     /// </summary>
     private void UnlockMapForRescan()
     {
+        _mapOpenFrameReuseCache.Reset();
+        HideGameMapCloseWarning();
         _hasCompletedQuickScanAlignment = false;
         CancelMapObservation(clearPreview: true);
         _overlay.ClearMap();
@@ -232,6 +235,7 @@ public sealed partial class SessionOrchestrator
 
     private void ResetMatchTransientState(bool resetAutomaticCacheSamples)
     {
+        _mapOpenFrameReuseCache.Reset();
         CancelMapObservation(clearPreview: true);
         // 对局结束：作废尚未消费的后台扫描结果，下一局重新开始。
         ClearPendingBackgroundScan();

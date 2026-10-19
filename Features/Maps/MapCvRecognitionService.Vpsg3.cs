@@ -319,30 +319,9 @@ public sealed partial class MapCvRecognitionService : IDisposable
                     try
                     {
                         ct.ThrowIfCancellationRequested();
-                        using var scanReaders = _sideEntranceFeatureCache.Rent(key =>
-                            key.Item1 == taskItem.Map.Id && key.Item2 == taskItem.Floor.Key);
-                        scanReaders.Entries.TryGetValue((taskItem.Map.Id, taskItem.Floor.Key), out var scanIndex);
-                        var preparedFloor = Vpsg3PreparedIndexBuilder.BuildFromPrebuiltFile(taskItem.LinePath, taskItem.CacheKey,
-                            preparePrecision: false, reuseSemanticDistancesFrom: scanIndex?.SemanticIndex,
-                            nativeSemanticStorage: _deterministicSemanticStorage);
-                        if (preparedFloor is null)
-                        {
-                            const string reason = "Decoded prebuilt line image is empty.";
-                            RecordSelectedFloorBuildFailure(taskItem.CacheKey, reason, selectionGeneration);
-                            MapLogCollector.Instance.Append(
-                                MapLogCategory.StructureRegistration,
-                                MapLogLevel.Warning,
-                                "VPSG3 index build failed: image empty",
-                                details: new()
-                                {
-                                    ["mapId"] = taskItem.Map.Id,
-                                    ["floorKey"] = taskItem.Floor.Key,
-                                    ["cacheKey"] = taskItem.CacheKey.ToString(),
-                                    ["linePath"] = taskItem.LinePath
-                                });
-                            return ValueTask.CompletedTask;
-                        }
-
+                        using var resources = FloorResourcePreparation.Prepare(_repository, taskItem.Map, taskItem.Floor.Key,
+                            false, _deterministicScanStorage, _deterministicSemanticStorage, ct, taskItem.CacheKey);
+                        var preparedFloor = resources.TakeAlignment();
                         // Cancellation can arrive while the synchronous encoder runs.
                         // Retire its unpublished owner before leaving this worker.
                         if (ct.IsCancellationRequested)

@@ -14,6 +14,9 @@ internal sealed class StartupWindowInteractionGuard : IDisposable
     private readonly IntPtr _window;
     private readonly bool _wasEnabled;
     private readonly bool _hadNoActivate;
+    private readonly HookProcedure _procedure;
+    private GCHandle _procedureRoot;
+    private IntPtr _activationHook;
     private bool _disposed;
 
     internal StartupWindowInteractionGuard(IntPtr window)
@@ -21,11 +24,20 @@ internal sealed class StartupWindowInteractionGuard : IDisposable
         if (!IsWindow(window))
             throw new ArgumentException("A live startup window is required.", nameof(window));
         _window = window;
+        if (GetWindowThreadProcessId(window, out _) != GetCurrentThreadId())
+            throw new ArgumentException("The startup guard must run on the window's owning thread.", nameof(window));
         _wasEnabled = IsWindowEnabled(window);
         var style = GetWindowLong(window, ExStyleIndex);
         _hadNoActivate = (style & NoActivate) != 0;
+        _procedure = PreventStartupActivation;
         try
         {
+            // WS_EX_NOACTIVATE and EnableWindow(false) do not reject explicit
+            // native activation. Veto it before Windows changes active/focus
+            // state, including activation inside SetWindowPlacement.
+            _procedureRoot = GCHandle.Alloc(_procedure);
+            _activationHook = SetWindowsHookEx(5, _procedure, IntPtr.Zero, GetCurrentThreadId()); // WH_CBT
+            if (_activationHook == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
             SetExtendedStyle(style | NoActivate);
             EnableWindow(window, false);
             if (IsWindowEnabled(window))
@@ -43,19 +55,55 @@ internal sealed class StartupWindowInteractionGuard : IDisposable
         if (_disposed)
             return;
         _disposed = true;
-        if (!IsWindow(_window))
-            return;
         try
         {
-            // Preserve unrelated style changes made by WinUI/theme registration.
-            var style = GetWindowLong(_window, ExStyleIndex);
-            SetExtendedStyle(_hadNoActivate ? style | NoActivate : style & ~NoActivate);
+            if (IsWindow(_window))
+            {
+                try
+                {
+                    // Preserve unrelated style changes made by WinUI/theme registration.
+                    var style = GetWindowLong(_window, ExStyleIndex);
+                    SetExtendedStyle(_hadNoActivate ? style | NoActivate : style & ~NoActivate);
+                }
+                finally { EnableWindow(_window, _wasEnabled); }
+            }
         }
         finally
         {
-            EnableWindow(_window, _wasEnabled);
+            if (_activationHook != IntPtr.Zero && !UnhookWindowsHookEx(_activationHook))
+            {
+                var error = Marshal.GetLastWin32Error();
+                // An already removed hook cannot call the delegate again.
+                if (error != 1404) throw new Win32Exception(error);
+            }
+            _activationHook = IntPtr.Zero;
+            if (_procedureRoot.IsAllocated) _procedureRoot.Free();
         }
     }
+
+    private IntPtr PreventStartupActivation(int code, IntPtr target, IntPtr data)
+    {
+        if (code is 5 or 9 && (target == _window || IsChild(_window, target))) // HCBT_ACTIVATE / HCBT_SETFOCUS
+            return new IntPtr(1);
+        return CallNextHookEx(_activationHook, code, target, data);
+    }
+
+    private delegate IntPtr HookProcedure(int code, IntPtr target, IntPtr data);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowsHookExW", SetLastError = true)]
+    private static extern IntPtr SetWindowsHookEx(int kind, HookProcedure procedure, IntPtr module, uint thread);
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool UnhookWindowsHookEx(IntPtr hook);
+    [DllImport("user32.dll")]
+    private static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr target, IntPtr data);
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsChild(IntPtr parent, IntPtr child);
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
 
     private void SetExtendedStyle(int style)
     {

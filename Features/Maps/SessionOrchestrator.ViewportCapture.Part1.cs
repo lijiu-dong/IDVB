@@ -20,7 +20,8 @@ public sealed partial class SessionOrchestrator
         int structureFallbackFrameCount,
         bool prepareNativeStructure,
         bool prepareVpsg3Structure,
-        AutoFloorCapture? autoFloor = null)
+        AutoFloorCapture? autoFloor = null,
+        Func<CapturedGameFrame, bool>? skipStructurePreparation = null)
     {
         var sessionTuning = _settings!.SessionTuning;
         var captureViewport = autoFloor?.Expand(viewport) ?? viewport;
@@ -102,7 +103,6 @@ public sealed partial class SessionOrchestrator
                     if (autoFloor is not null)
                     {
                         current = autoFloor.Extract(current, viewport);
-                        afterSystemTicks = Math.Max(afterSystemTicks, current.CaptureSystemRelativeTicks);
                         var floor = current.DetectedFloorKey ?? _currentFloorKey
                             ?? MapFloorRules.GetPrimaryFloorKey(autoFloor.Map);
                         if (previousFloor != floor)
@@ -121,98 +121,104 @@ public sealed partial class SessionOrchestrator
                         prepareVpsg3Structure = _recognition.IsVpsg3Ready(autoFloor.Map, floor);
                     }
                     lastFrame = current;
-                    var presenceReference =
-                        GetCurrentMapViewportPresenceReference(current.DetectedFloorKey);
-                    var floorIndicatorReadiness = autoFloor is not null
-                        && current.DetectedFloorKey is not null
-                        && presenceReference is null
-                        && (prepareNativeStructure || prepareVpsg3Structure);
-                    if (floorIndicatorReadiness) requireStructureReadiness = true;
                     afterSystemTicks = Math.Max(afterSystemTicks, current.CaptureSystemRelativeTicks);
-                    // 本帧签名同时用于就绪判定和下一帧的明度基线，只能算一次。
-                    var signatureTimer = Stopwatch.StartNew();
-                    var signatureSpan = ActiveOperationTrace?.StartChild(
-                        "signature",
-                        MapOperationWaitKind.Compute,
-                        attemptIndex: attempts);
-                    MapViewportColorSignature signature;
-                    try
-                    {
-                        signature = MapViewportPresenceDetector.CreateSignature(
-                            current.Image, includeStructure: requireStructureReadiness);
-                    }
-                    finally
-                    {
-                        signatureSpan?.Complete();
-                    }
-                    signatureTimer.Stop();
+                    var floorIndicatorPending = autoFloor is not null && current.DetectedFloorKey is null;
                     double? referenceStructureSimilarity = null;
                     double? consecutiveStructureSimilarity = null;
-                    lastPresence = MapViewportPresenceDetector.EvaluateReady(
-                        signature,
-                        presenceReference,
-                        previousSignature,
-                        requireStructure: requireStructureReadiness,
-                        requiredStableStructureFrames:
-                            Math.Clamp(structureFallbackFrameCount, 2, 5),
-                        observedStableStructureFrames: stableStructureFrames,
-                        floorIndicatorVerified: floorIndicatorReadiness);
-                    if (requireStructureReadiness)
+                    var signatureDuration = 0d;
+                    if (floorIndicatorPending)
                     {
-                        // This counter measures whether the opening animation
-                        // has settled, so compare consecutive live frames. The
-                        // saved reference belongs to an earlier alignment and
-                        // may legitimately have a different translation; using
-                        // it here permanently pins the counter at one after the
-                        // map recenters.
-                        if (signature.Structure is { } currentStructure
-                            && presenceReference?.Structure is { } referenceStructure)
+                        // This same-frame prerequisite always vetoed the result
+                        // below. Reject before resizing or extracting a signature
+                        // from an animation/gameplay frame that cannot be used.
+                        lastPresence = new(false, "floor-indicator-pending", 0d, 0d);
+                        previousSignature = null;
+                        stableStructureFrames = 0;
+                    }
+                    else
+                    {
+                        var presenceReference =
+                            GetCurrentMapViewportPresenceReference(current.DetectedFloorKey);
+                        var floorIndicatorReadiness = autoFloor is not null
+                            && current.DetectedFloorKey is not null
+                            && presenceReference is null
+                            && (prepareNativeStructure || prepareVpsg3Structure);
+                        if (floorIndicatorReadiness) requireStructureReadiness = true;
+                        // 本帧签名同时用于就绪判定和下一帧的明度基线，只能算一次。
+                        var signatureTimer = Stopwatch.StartNew();
+                        var signatureSpan = ActiveOperationTrace?.StartChild(
+                            "signature",
+                            MapOperationWaitKind.Compute,
+                            attemptIndex: attempts);
+                        MapViewportColorSignature signature;
+                        try
                         {
-                            referenceStructureSimilarity =
-                                MapViewportPresenceDetector.StructureSimilarity(
-                                    currentStructure,
-                                    referenceStructure);
+                            signature = MapViewportPresenceDetector.CreateSignature(
+                                current.Image, includeStructure: requireStructureReadiness);
                         }
-                        if (signature.Structure is { } liveStructure
-                            && previousSignature?.Structure is { } previousStructure)
+                        finally
                         {
-                            consecutiveStructureSimilarity =
-                                MapViewportPresenceDetector.StructureSimilarity(
-                                    liveStructure,
-                                    previousStructure);
+                            signatureSpan?.Complete();
                         }
-                        var structureIsConsistent =
-                            consecutiveStructureSimilarity >= 0.90d;
-                        stableStructureFrames = structureIsConsistent
-                            ? stableStructureFrames + 1
-                            : 1;
+                        signatureTimer.Stop();
                         lastPresence = MapViewportPresenceDetector.EvaluateReady(
                             signature,
                             presenceReference,
                             previousSignature,
-                            requireStructure: true,
+                            requireStructure: requireStructureReadiness,
                             requiredStableStructureFrames:
                                 Math.Clamp(structureFallbackFrameCount, 2, 5),
                             observedStableStructureFrames: stableStructureFrames,
                             floorIndicatorVerified: floorIndicatorReadiness);
-                    }
-                    previousSignature = signature;
-                    // A configured floor indicator must belong to this very
-                    // frame. Falling back to the previous floor here can admit
-                    // gameplay/closing frames and poison its readiness reference.
-                    if (autoFloor is not null && current.DetectedFloorKey is null)
-                    {
-                        lastPresence = lastPresence with { IsPresent = false, Mode = "floor-indicator-pending" };
-                        previousSignature = null;
-                        stableStructureFrames = 0;
+                        if (requireStructureReadiness)
+                        {
+                            // This counter measures whether the opening animation
+                            // has settled, so compare consecutive live frames. The
+                            // saved reference belongs to an earlier alignment and
+                            // may legitimately have a different translation; using
+                            // it here permanently pins the counter at one after the
+                            // map recenters.
+                            if (signature.Structure is { } currentStructure
+                                && presenceReference?.Structure is { } referenceStructure)
+                            {
+                                referenceStructureSimilarity =
+                                    MapViewportPresenceDetector.StructureSimilarity(
+                                        currentStructure,
+                                        referenceStructure);
+                            }
+                            if (signature.Structure is { } liveStructure
+                                && previousSignature?.Structure is { } previousStructure)
+                            {
+                                consecutiveStructureSimilarity =
+                                    MapViewportPresenceDetector.StructureSimilarity(
+                                        liveStructure,
+                                        previousStructure);
+                            }
+                            var structureIsConsistent =
+                                consecutiveStructureSimilarity >= 0.90d;
+                            stableStructureFrames = structureIsConsistent
+                                ? stableStructureFrames + 1
+                                : 1;
+                            lastPresence = MapViewportPresenceDetector.EvaluateReady(
+                                signature,
+                                presenceReference,
+                                previousSignature,
+                                requireStructure: true,
+                                requiredStableStructureFrames:
+                                    Math.Clamp(structureFallbackFrameCount, 2, 5),
+                                observedStableStructureFrames: stableStructureFrames,
+                                floorIndicatorVerified: floorIndicatorReadiness);
+                        }
+                        previousSignature = signature;
+                        signatureDuration = signatureTimer.Elapsed.TotalMilliseconds;
                     }
                     captureMilliseconds += captureTimer.Elapsed.TotalMilliseconds;
-                    signatureMilliseconds +=
-                        signatureTimer.Elapsed.TotalMilliseconds;
+                    signatureMilliseconds += signatureDuration;
                     if (lastPresence.IsPresent)
                     {
+                        var reuseFrame = skipStructurePreparation?.Invoke(current) == true;
                         var structureTimer = Stopwatch.StartNew();
-                        if (prepareNativeStructure || prepareVpsg3Structure)
+                        if (!reuseFrame && (prepareNativeStructure || prepareVpsg3Structure))
                         {
                             using var structureSpan = ActiveOperationTrace?.StartChild(
                                 "native_contour", MapOperationWaitKind.Compute, attemptIndex: attempts);
@@ -249,8 +255,9 @@ public sealed partial class SessionOrchestrator
                                 ["presenceRejections"] = presenceRejections,
                                 ["readyWaitMs"] = stopwatch.Elapsed.TotalMilliseconds,
                                 ["captureBackend"] = current.CaptureBackend,
+                                ["unchangedFrameReused"] = reuseFrame,
                                 ["nativeContourMs"] = structureTimer.Elapsed.TotalMilliseconds,
-                                ["nativeFrameToContourMs"] = current.CaptureSystemRelativeTicks > 0
+                                ["nativeFrameToContourMs"] = !reuseFrame && current.CaptureSystemRelativeTicks > 0
                                     ? Stopwatch.GetTimestamp() * 1000d / Stopwatch.Frequency
                                         - current.CaptureSystemRelativeTicks / (double)TimeSpan.TicksPerMillisecond
                                     : null,
@@ -286,8 +293,8 @@ public sealed partial class SessionOrchestrator
                         MapLogCategory.ViewportCapture,
                         MapLogLevel.Info,
                         $"画面未就绪 · op={operation} · mode={lastPresence.Mode} "
-                        + $"· score={lastPresence.Score:F4} "
-                        + $"· blueGray={lastPresence.BlueGrayFraction:F4}",
+                        + (floorIndicatorPending ? "· signature=skipped"
+                            : $"· score={lastPresence.Score:F4} · blueGray={lastPresence.BlueGrayFraction:F4}"),
                         elapsedMs: stopwatch.Elapsed.TotalMilliseconds,
                         details: new()
                         {
@@ -295,7 +302,8 @@ public sealed partial class SessionOrchestrator
                             ["attempts"] = attempts,
                             ["captureMs"] = captureTimer.Elapsed.TotalMilliseconds,
                             ["signatureMs"] = signatureMilliseconds,
-                            ["mapPresenceScore"] = lastPresence.Score,
+                            ["signatureSkipped"] = floorIndicatorPending,
+                            ["mapPresenceScore"] = floorIndicatorPending ? null : lastPresence.Score,
                             ["referenceStructureSimilarity"] =
                                 referenceStructureSimilarity,
                             ["consecutiveStructureSimilarity"] =
@@ -387,8 +395,9 @@ public sealed partial class SessionOrchestrator
                     ["attempts"] = attempts,
                     ["successfulCaptures"] = successfulCaptures,
                     ["mapPresenceMode"] = lastPresence?.Mode,
-                    ["mapPresenceScore"] = lastPresence?.Score,
-                    ["blueGrayFraction"] = lastPresence?.BlueGrayFraction,
+                    ["signatureSkipped"] = lastPresence?.Mode == "floor-indicator-pending",
+                    ["mapPresenceScore"] = lastPresence?.Mode == "floor-indicator-pending" ? null : lastPresence?.Score,
+                    ["blueGrayFraction"] = lastPresence?.Mode == "floor-indicator-pending" ? null : lastPresence?.BlueGrayFraction,
                     ["presenceRejections"] = presenceRejections,
                     ["captureFailureReason"] = _lastStableCaptureFailureReason
                     ,["floorIndicatorGroup"] = autoFloor?.Group.Key

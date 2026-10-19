@@ -8,6 +8,7 @@ internal sealed partial class MapOverlayNativeWindow : IDisposable
 {
     private const string WindowClassName = "IDVBuff.MapOverlay.NativeWindow";
     private const uint WsPopup = 0x80000000;
+    private const long WsExTopmost = 0x00000008;
     private const uint WmNchittest = 0x0084;
     private const uint WmMouseActivate = 0x0021;
     private const int HtTransparent = -1;
@@ -63,8 +64,12 @@ internal sealed partial class MapOverlayNativeWindow : IDisposable
         EnsureWindowClass();
 
         SetLastError(0);
+        // The display layer belongs to the topmost band from creation. After
+        // an ordinary window initializes IME, a later non-activating placement
+        // can succeed while retaining the original band behind the IME window.
+        // Creating it in the correct band avoids depending on that transition.
         _handle = CreateWindowEx(
-            (uint)MapOverlayWindowStyles.Create(),
+            (uint)(MapOverlayWindowStyles.Create() | WsExTopmost),
             WindowClassName,
             string.Empty,
             WsPopup,
@@ -80,11 +85,11 @@ internal sealed partial class MapOverlayNativeWindow : IDisposable
             throw NativeFailure("Unable to create the native overlay window.");
 
         var appliedStyles = GetWindowLongPtr(_handle, MapOverlayWindowStyles.GwlExStyle).ToInt64();
-        if (!MapOverlayWindowStyles.AreApplied(appliedStyles))
+        if (!MapOverlayWindowStyles.AreApplied(appliedStyles) || (appliedStyles & WsExTopmost) == 0)
         {
             DestroyWindow(_handle);
             _handle = IntPtr.Zero;
-            throw new InvalidOperationException("The native overlay window did not retain its required input styles.");
+            throw new InvalidOperationException("The native overlay window did not retain its required input and topmost styles.");
         }
         if (_captureProtection is not null)
         {

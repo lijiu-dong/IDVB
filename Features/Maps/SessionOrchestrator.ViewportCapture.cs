@@ -71,7 +71,8 @@ public sealed partial class SessionOrchestrator
         bool prepareVpsg3Structure = false,
         AutoFloorCapture? autoFloor = null,
         bool allowPartialMap = false,
-        Func<NormalizedRectangle, IDisposable>? suspendOverlayForCapture = null)
+        Func<NormalizedRectangle, IDisposable>? suspendOverlayForCapture = null,
+        Func<CapturedGameFrame, bool>? skipStructurePreparation = null)
     {
         var sessionTuning = _settings!.SessionTuning;
         if (_captureSvc.TryGetForegroundClientBounds(
@@ -112,7 +113,7 @@ public sealed partial class SessionOrchestrator
                 requireStructureReadiness: lowStructureReadiness,
                 structureFallbackFrameCount,
                 prepareNativeStructure,
-                prepareVpsg3Structure, autoFloor);
+                prepareVpsg3Structure, autoFloor, skipStructurePreparation);
             if (readyFrame is not null
                 && string.Equals(operation, "仅对齐", StringComparison.Ordinal))
             {

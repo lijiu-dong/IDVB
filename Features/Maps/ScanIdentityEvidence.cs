@@ -99,7 +99,8 @@ internal sealed partial class ScanStructureIndex : IDisposable
     }
     internal static bool HasEnoughKnownPoints(int known, int total, int minimum) =>
         known >= minimum && known >= total * .65;
-    private ScanStructureIndex(Mat labels, bool semantic, bool deterministicDistanceStorage, bool nativeSemanticStorage)
+    private ScanStructureIndex(Mat labels, bool semantic, bool deterministicDistanceStorage, bool nativeSemanticStorage,
+        SemanticStructureIndex? semanticSource = null, byte erasedKinds = 3)
     {
         Width = labels.Width; Height = labels.Height;
         // Preserve the exact quantized distance field without overlapping
@@ -125,7 +126,9 @@ internal sealed partial class ScanStructureIndex : IDisposable
         }
         try
         {
-            if (semantic) SemanticIndex = new(labels, prepareCorrelationBits: false, nativeStorage: nativeSemanticStorage);
+            if (semantic) SemanticIndex = semanticSource is null
+                ? new(labels, prepareCorrelationBits: false, nativeStorage: nativeSemanticStorage)
+                : SemanticStructureIndex.FromMaskedLabels(labels, semanticSource, erasedKinds, nativeSemanticStorage);
             _ownsSemanticReader = SemanticIndex?.UsesNativeStorage == true;
         }
         catch { _distanceReader?.Dispose(); throw; }

@@ -29,6 +29,7 @@ public static class Vpsg3TranslationSolver
         using var scratchLease = scratch is null ? Vpsg3SolverScratch.Rent() : null;
         var sc = scratch ?? scratchLease!.Scratch;
         sc.CandidateCount = 0;
+        sc.PolishScores.Clear();
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(cfg.CoarseTranslationStride);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(cfg.MaxSparsePoints);
 
@@ -103,7 +104,8 @@ public static class Vpsg3TranslationSolver
         for (var i = 0; i < poolCount; i++)
         {
             var (pDx, pDy, pHits) = PolishTranslationSubWindow(
-                scaledPts, preparedFloor, topPool[i].Dx, topPool[i].Dy, maxDx, maxDy, minDx, minDy, classes);
+                scaledPts, preparedFloor, topPool[i].Dx, topPool[i].Dy, maxDx, maxDy, minDx, minDy, classes,
+                scores, stride, columns, sc.PolishScores);
             polished[i] = new CoarseCand(pDx, pDy, pHits);
         }
         SortCoarsePool(polished);
@@ -213,7 +215,8 @@ public static class Vpsg3TranslationSolver
             if (foundRunnerUp && runnerUpHits >= 3)
             {
                 var (pDx2, pDy2, pHits2) = PolishTranslationSubWindow(
-                    scaledPts, preparedFloor, runnerUpDx, runnerUpDy, maxDx, maxDy, minDx, minDy, classes);
+                    scaledPts, preparedFloor, runnerUpDx, runnerUpDy, maxDx, maxDy, minDx, minDy, classes,
+                    scores, stride, columns, sc.PolishScores);
 
                 var pDistSq = (pDx2 - best.Dx) * (pDx2 - best.Dx) + (pDy2 - best.Dy) * (pDy2 - best.Dy);
                 if (pDistSq >= minDistinctDistSqRef)
@@ -409,20 +412,13 @@ public static class Vpsg3TranslationSolver
         int maxDy,
         int minDx,
         int minDy,
-        byte[]? classes = null)
+        byte[]? classes, ReadOnlySpan<int> coarseScores, int stride, int columns,
+        Dictionary<(int X, int Y), int> fineScores)
     {
         var bestDx = centerDx;
         var bestDy = centerDy;
-        var bestHits = 0;
-        for (var i = 0; i < scaledPts.Length; i++)
-        {
-            var rx = scaledPts[i].X + centerDx;
-            var ry = scaledPts[i].Y + centerDy;
-            if (Hit(i, rx, ry))
-            {
-                bestHits++;
-            }
-        }
+        var bestHits = ScorePolishPosition(scaledPts, preparedFloor, centerDx, centerDy,
+            minDx, minDy, classes, coarseScores, stride, columns, fineScores);
 
         var startY = Math.Max(minDy, centerDy - 2);
         var endY = Math.Min(maxDy, centerDy + 2);
@@ -436,16 +432,8 @@ public static class Vpsg3TranslationSolver
                 if (ldx == centerDx && ldy == centerDy)
                     continue;
 
-                var hits = 0;
-                for (var i = 0; i < scaledPts.Length; i++)
-                {
-                    var rx = scaledPts[i].X + ldx;
-                    var ry = scaledPts[i].Y + ldy;
-                    if (Hit(i, rx, ry))
-                    {
-                        hits++;
-                    }
-                }
+                var hits = ScorePolishPosition(scaledPts, preparedFloor, ldx, ldy,
+                    minDx, minDy, classes, coarseScores, stride, columns, fineScores);
 
                 if (hits > bestHits)
                 {
@@ -457,9 +445,27 @@ public static class Vpsg3TranslationSolver
         }
 
         return (bestDx, bestDy, bestHits);
+    }
 
-        bool Hit(int i, int x, int y) => preparedFloor.SemanticIndex is { } semantic
-            && classes is not null && classes[i] is SemanticStructureContours.Warm or SemanticStructureContours.Cool
-            ? semantic.IsHit(x, y, classes[i], 1) : preparedFloor.IsHitK3(x, y);
+    private static int ScorePolishPosition(ReadOnlySpan<Point> points, Vpsg3PreparedFloor floor,
+        int dx, int dy, int minDx, int minDy, byte[]? classes, ReadOnlySpan<int> coarseScores,
+        int stride, int columns, Dictionary<(int X, int Y), int> fineScores)
+    {
+        // Preserve every grid point, vote, ordering and tie. Reuse already
+        // computed coarse scores and overlapping 5x5 candidate neighborhoods.
+        if ((dx - minDx) % stride == 0 && (dy - minDy) % stride == 0)
+            return coarseScores[(dy - minDy) / stride * columns + (dx - minDx) / stride];
+        if (fineScores.TryGetValue((dx, dy), out var cached)) return cached;
+        var hits = 0;
+        var semantic = floor.SemanticIndex;
+        for (var i = 0; i < points.Length; i++)
+        {
+            var x = points[i].X + dx; var y = points[i].Y + dy;
+            if (semantic is not null && classes is not null
+                && classes[i] is SemanticStructureContours.Warm or SemanticStructureContours.Cool
+                    ? semantic.IsHit(x, y, classes[i], 1) : floor.IsHitK3(x, y)) hits++;
+        }
+        fineScores.Add((dx, dy), hits);
+        return hits;
     }
 }

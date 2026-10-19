@@ -1,3 +1,4 @@
+// Public contract and unavailable implementation. Private sources are selected by the build.
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -19,16 +20,7 @@ public static class MapSubscriptionProtocol
     };
 
     public static string NormalizePublisherHandle(string? value)
-    {
-        var normalized = value?.Trim() ?? string.Empty;
-        if (!normalized.StartsWith('@'))
-            normalized = "@" + normalized;
-        if (normalized.Length is < 2 or > 65
-            || normalized.Skip(1).Any(character =>
-                !(char.IsLetterOrDigit(character) || character is '_' or '-' or '.')))
-            throw new ArgumentException("发布者账号必须以 @ 开头，且只能包含字母、数字、点、短横线或下划线。");
-        return normalized;
-    }
+    { throw new global::IDVBuff.Core.Contracts.Online.OnlineServiceUnavailableException("online-services"); }
 }
 
 public static class IdvmPlatformCompatibility
@@ -41,10 +33,9 @@ public static class IdvmPlatformCompatibility
     public static IReadOnlyList<string> All { get; } =
         [Windows, Android, Ios, Web];
 
-    public static bool IsKnown(string value) => All.Contains(value, StringComparer.Ordinal);
+    public static bool IsKnown(string value) => throw new global::IDVBuff.Core.Contracts.Online.OnlineServiceUnavailableException("online-services");
 
-    public static bool SupportsWindows(IReadOnlyCollection<string>? platforms) =>
-        platforms is null || platforms.Contains(Windows, StringComparer.Ordinal);
+    public static bool SupportsWindows(IReadOnlyCollection<string>? platforms) => throw new global::IDVBuff.Core.Contracts.Online.OnlineServiceUnavailableException("online-services");
 }
 
 public sealed record MapSubscriptionLink(
@@ -53,68 +44,10 @@ public sealed record MapSubscriptionLink(
     string PublisherKeyId)
 {
     public static MapSubscriptionLink Parse(string value)
-    {
-        if (!Uri.TryCreate(value?.Trim(), UriKind.Absolute, out var uri))
-            throw new FormatException("更新订阅链接无效。");
-        if (string.Equals(uri.Scheme, "idvb-sub", StringComparison.OrdinalIgnoreCase))
-            return ParseIdvbLink(uri);
-        if (uri.Scheme is "https" or "file")
-            return ParseDirectLink(uri);
-        throw new FormatException("更新订阅链接只支持 idvb-sub、https 或 file 协议。");
-    }
+    { throw new global::IDVBuff.Core.Contracts.Online.OnlineServiceUnavailableException("online-services"); }
 
     public string ToUriString()
-    {
-        var feed = Uri.EscapeDataString(FeedUri.AbsoluteUri);
-        var key = Base64Url.Encode(ContentKey);
-        var publisher = Uri.EscapeDataString(PublisherKeyId);
-        return $"idvb-sub://v1?feed={feed}&key={key}&publisher={publisher}";
-    }
-
-    private static MapSubscriptionLink ParseIdvbLink(Uri uri)
-    {
-        if (!string.Equals(uri.Host, "v1", StringComparison.OrdinalIgnoreCase))
-            throw new FormatException("不支持的更新订阅链接版本。");
-        var values = ParseParameters(uri.Query.TrimStart('?'));
-        if (!values.TryGetValue("feed", out var feedText)
-            || !Uri.TryCreate(feedText, UriKind.Absolute, out var feed))
-            throw new FormatException("更新订阅链接缺少有效 feed 地址。");
-        return CreateValidated(feed, values.GetValueOrDefault("key"), values.GetValueOrDefault("publisher"));
-    }
-
-    private static MapSubscriptionLink ParseDirectLink(Uri uri)
-    {
-        var values = ParseParameters(uri.Fragment.TrimStart('#'));
-        var builder = new UriBuilder(uri) { Fragment = string.Empty };
-        return CreateValidated(
-            builder.Uri,
-            values.GetValueOrDefault("idvb-key"),
-            values.GetValueOrDefault("idvb-publisher"));
-    }
-
-    private static MapSubscriptionLink CreateValidated(Uri feed, string? keyText, string? publisher)
-    {
-        if (feed.Scheme is not ("https" or "file"))
-            throw new FormatException("feed 地址只支持 HTTPS 或本地 file 协议。");
-        byte[] key;
-        try { key = Base64Url.Decode(keyText ?? string.Empty); }
-        catch (FormatException) { throw new FormatException("订阅内容密钥格式无效。"); }
-        if (key.Length != 32)
-            throw new FormatException("订阅内容密钥必须为 256 位。");
-        if (string.IsNullOrWhiteSpace(publisher) || publisher.Length != 64
-            || publisher.Any(character => !Uri.IsHexDigit(character)))
-            throw new FormatException("订阅链接缺少有效的发布者公钥指纹。");
-        return new MapSubscriptionLink(feed, key, publisher.ToUpperInvariant());
-    }
-
-    private static Dictionary<string, string> ParseParameters(string value) => value
-        .Split('&', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-        .Select(part => part.Split('=', 2))
-        .Where(pair => pair.Length == 2)
-        .ToDictionary(
-            pair => Uri.UnescapeDataString(pair[0]),
-            pair => Uri.UnescapeDataString(pair[1]),
-            StringComparer.OrdinalIgnoreCase);
+    { throw new global::IDVBuff.Core.Contracts.Online.OnlineServiceUnavailableException("online-services"); }
 }
 
 public sealed record MapPublicationPayload(
@@ -174,47 +107,27 @@ public sealed record PendingMapSubscriptionUpdate(
     Guid SubscriptionId,
     MapPublicationPayload Publication,
     string PackagePath,
-    DateTimeOffset PreparedAtUtc);
+    DateTimeOffset PreparedAtUtc)
+{
+    public string? AuthorizationSubject { get; init; }
+    public SignedMapPublicationEnvelope? SignedFeed { get; init; }
+}
 
 public sealed class MapSubscriptionStore
 {
-    private readonly string _path;
-    public MapSubscriptionStore(string rootDirectory) =>
-        _path = Path.Combine(rootDirectory, "subscriptions.json");
+    public MapSubscriptionStore(string rootDirectory) => throw new global::IDVBuff.Core.Contracts.Online.OnlineServiceUnavailableException("online-services");
 
     public IReadOnlyList<MapSubscriptionRecord> Load()
-    {
-        if (!File.Exists(_path)) return [];
-        var records = JsonSerializer.Deserialize<List<MapSubscriptionRecord>>(
-            File.ReadAllText(_path), MapSubscriptionProtocol.JsonOptions) ?? [];
-        foreach (var record in records)
-        {
-            record.ClassBindings = new Dictionary<string, string>(
-                record.ClassBindings ?? [], StringComparer.OrdinalIgnoreCase);
-            record.CoCreationMapBindings ??= [];
-            record.InstalledMapIds ??= [];
-        }
-        return records;
-    }
+    { throw new global::IDVBuff.Core.Contracts.Online.OnlineServiceUnavailableException("online-services"); }
 
     public void Save(IEnumerable<MapSubscriptionRecord> records)
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
-        var temporary = _path + ".tmp";
-        File.WriteAllText(temporary, JsonSerializer.Serialize(records, MapSubscriptionProtocol.JsonOptions));
-        File.Move(temporary, _path, overwrite: true);
-    }
+    { throw new global::IDVBuff.Core.Contracts.Online.OnlineServiceUnavailableException("online-services"); }
 }
 
 internal static class Base64Url
 {
-    public static string Encode(ReadOnlySpan<byte> value) =>
-        Convert.ToBase64String(value).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+    public static string Encode(ReadOnlySpan<byte> value) => throw new global::IDVBuff.Core.Contracts.Online.OnlineServiceUnavailableException("online-services");
 
     public static byte[] Decode(string value)
-    {
-        var padded = value.Replace('-', '+').Replace('_', '/');
-        padded += (padded.Length % 4) switch { 2 => "==", 3 => "=", 0 => "", _ => throw new FormatException() };
-        return Convert.FromBase64String(padded);
-    }
+    { throw new global::IDVBuff.Core.Contracts.Online.OnlineServiceUnavailableException("online-services"); }
 }

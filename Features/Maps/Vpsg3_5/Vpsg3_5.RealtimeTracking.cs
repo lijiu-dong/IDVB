@@ -41,15 +41,19 @@ internal sealed class TimestampedMouseHistory
         Add(new MouseSample(timestamp, 0d, 0d));
     }
 
-    internal (double Dx, double Dy) Record(int x, int y, long timestamp, double scaleRatio)
+    internal (double Dx, double Dy) Record(int x, int y, long timestamp, double scaleRatio) =>
+        Record(x, y, timestamp, scaleRatio, scaleRatio);
+
+    internal (double Dx, double Dy) Record(
+        int x, int y, long timestamp, double scaleRatioX, double scaleRatioY)
     {
         if (!_initialized)
         {
             Reset(x, y, timestamp);
             return default;
         }
-        var dx = (x - _lastX) * scaleRatio;
-        var dy = (y - _lastY) * scaleRatio;
+        var dx = (x - _lastX) * scaleRatioX;
+        var dy = (y - _lastY) * scaleRatioY;
         _lastX = x;
         _lastY = y;
         _cumulativeX += dx;
@@ -66,6 +70,12 @@ internal sealed class TimestampedMouseHistory
         return (_cumulativeX - atTimestamp.X, _cumulativeY - atTimestamp.Y);
     }
 
+    internal (double X, double Y) PositionAt(long timestamp) =>
+        _count == 0 ? default : Interpolate(timestamp);
+
+    internal bool Contains(long timestamp) => _count > 0
+        && timestamp >= Get(0).Timestamp && timestamp <= Get(_count - 1).Timestamp;
+
     private (double X, double Y) Interpolate(long timestamp)
     {
         var first = Get(0);
@@ -75,21 +85,22 @@ internal sealed class TimestampedMouseHistory
         if (timestamp >= last.Timestamp)
             return (last.CumulativeX, last.CumulativeY);
 
-        for (var index = 1; index < _count; index++)
+        var low = 1;
+        var high = _count - 1;
+        while (low < high)
         {
-            var right = Get(index);
-            if (timestamp > right.Timestamp)
-                continue;
-            var left = Get(index - 1);
-            var span = right.Timestamp - left.Timestamp;
-            if (span <= 0)
-                return (right.CumulativeX, right.CumulativeY);
-            var amount = Math.Clamp((timestamp - left.Timestamp) / (double)span, 0d, 1d);
-            return (
-                left.CumulativeX + ((right.CumulativeX - left.CumulativeX) * amount),
-                left.CumulativeY + ((right.CumulativeY - left.CumulativeY) * amount));
+            var middle = (low + high) / 2;
+            if (Get(middle).Timestamp < timestamp) low = middle + 1;
+            else high = middle;
         }
-        return (last.CumulativeX, last.CumulativeY);
+        var right = Get(low);
+        var left = Get(low - 1);
+        var span = right.Timestamp - left.Timestamp;
+        if (span <= 0) return (right.CumulativeX, right.CumulativeY);
+        var amount = Math.Clamp((timestamp - left.Timestamp) / (double)span, 0d, 1d);
+        return (
+            left.CumulativeX + ((right.CumulativeX - left.CumulativeX) * amount),
+            left.CumulativeY + ((right.CumulativeY - left.CumulativeY) * amount));
     }
 
     private void Add(MouseSample sample)
@@ -125,19 +136,31 @@ internal readonly record struct Vpsg3_5OpticalFlowResult(
 /// <summary>Pyramidal LK frame-to-frame translation tracker.</summary>
 internal sealed class Vpsg3_5OpticalFlowTracker : IDisposable
 {
-    private const int MaximumCorners = 240;
+    private const int MaximumCorners = 160;
+    private const int MaximumTrackingDimension = 640;
     private Mat? _previousGray;
     private Point2f[] _previousPoints = [];
 
-    internal Vpsg3_5OpticalFlowResult Track(Mat image)
+    internal Vpsg3_5OpticalFlowResult Track(
+        Mat image, double predictedDeltaX = double.NaN, double predictedDeltaY = double.NaN)
     {
         ArgumentNullException.ThrowIfNull(image);
         var preprocessStarted = Stopwatch.GetTimestamp();
+        using var resized = new Mat();
+        var input = image;
+        if (Math.Max(image.Width, image.Height) > MaximumTrackingDimension)
+        {
+            var ratio = MaximumTrackingDimension / (double)Math.Max(image.Width, image.Height);
+            Cv2.Resize(image, resized, new Size(
+                Math.Max(1, (int)Math.Round(image.Width * ratio)),
+                Math.Max(1, (int)Math.Round(image.Height * ratio))), 0d, 0d, InterpolationFlags.Linear);
+            input = resized;
+        }
         using var gray = new Mat();
-        if (image.Channels() == 1)
-            image.CopyTo(gray);
+        if (input.Channels() == 1)
+            input.CopyTo(gray);
         else
-            Cv2.CvtColor(image, gray, ColorConversionCodes.BGR2GRAY);
+            Cv2.CvtColor(input, gray, ColorConversionCodes.BGR2GRAY);
         Cv2.GaussianBlur(gray, gray, new Size(3, 3), 0.8d);
         var preprocessMs = Stopwatch.GetElapsedTime(preprocessStarted).TotalMilliseconds;
 
@@ -151,6 +174,14 @@ internal sealed class Vpsg3_5OpticalFlowTracker : IDisposable
 
         var trackStarted = Stopwatch.GetTimestamp();
         Point2f[] nextPoints = [];
+        var flags = OpticalFlowFlags.None;
+        if (double.IsFinite(predictedDeltaX) && double.IsFinite(predictedDeltaY))
+        {
+            nextPoints = _previousPoints.Select(point => new Point2f(
+                point.X + (float)(predictedDeltaX * gray.Width / image.Width),
+                point.Y + (float)(predictedDeltaY * gray.Height / image.Height))).ToArray();
+            flags = OpticalFlowFlags.UseInitialFlow;
+        }
         Cv2.CalcOpticalFlowPyrLK(
             _previousGray,
             gray,
@@ -161,13 +192,21 @@ internal sealed class Vpsg3_5OpticalFlowTracker : IDisposable
             new Size(21, 21),
             3,
             new TermCriteria(CriteriaTypes.Count | CriteriaTypes.Eps, 20, 0.03d),
-            OpticalFlowFlags.None,
+            flags,
             0.0001d);
+
+        Point2f[] backwardPoints = [];
+        Cv2.CalcOpticalFlowPyrLK(gray, _previousGray, nextPoints,
+            ref backwardPoints, out var backwardStatus, out _, new Size(21, 21), 3,
+            new TermCriteria(CriteriaTypes.Count | CriteriaTypes.Eps, 20, 0.03d),
+            OpticalFlowFlags.None, 0.0001d);
 
         var valid = new List<(Point2f Point, double Dx, double Dy)>(_previousPoints.Length);
         for (var index = 0; index < _previousPoints.Length; index++)
         {
-            if (status[index] == 0 || errors[index] > 24f)
+            if (status[index] == 0 || backwardStatus[index] == 0 || errors[index] > 24f
+                || Math.Abs(backwardPoints[index].X - _previousPoints[index].X) > 1f
+                || Math.Abs(backwardPoints[index].Y - _previousPoints[index].Y) > 1f)
                 continue;
             var next = nextPoints[index];
             if (next.X < 0 || next.Y < 0 || next.X >= gray.Width || next.Y >= gray.Height)
@@ -193,16 +232,22 @@ internal sealed class Vpsg3_5OpticalFlowTracker : IDisposable
                 + Math.Pow(item.Dy - medianY, 2d)))
             .ToArray();
         var medianResidual = Median(residuals);
-        var threshold = Math.Max(1.25d, medianResidual * 2.5d);
+        // A broad, inconsistent vector cloud must not expand its own acceptance
+        // radius. Repeated stairs and fog boundaries otherwise become a false
+        // translation even when most tracked points disagree with one another.
+        var threshold = Math.Clamp(medianResidual * 2.5d, 0.75d, 1.5d);
         var inliers = valid
             .Where((_, index) => residuals[index] <= threshold)
             .ToArray();
         var inlierRatio = inliers.Length / (double)valid.Count;
-        var deltaX = Median(inliers.Select(item => item.Dx));
-        var deltaY = Median(inliers.Select(item => item.Dy));
+        // Native positions and cursor coordinates stay in physical screen
+        // pixels; the smaller LK working image is never an overlay scale seed.
+        var deltaX = Median(inliers.Select(item => item.Dx)) * image.Width / gray.Width;
+        var deltaY = Median(inliers.Select(item => item.Dy)) * image.Height / gray.Height;
         var magnitude = Math.Sqrt((deltaX * deltaX) + (deltaY * deltaY));
         var accepted = inliers.Length >= 12
             && inlierRatio >= 0.55d
+            && medianResidual <= 1.25d
             && magnitude <= 160d;
 
         _previousGray.Dispose();

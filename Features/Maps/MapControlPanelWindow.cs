@@ -16,7 +16,7 @@ namespace IDVBuff.Features.Maps;
 /// Small interactive match controller. This window is intentionally separate
 /// from both the click-through map overlay and the full-screen manual selector.
 /// </summary>
-public sealed partial class MapControlPanelWindow : IDisposable
+public sealed partial class MapControlPanelWindow : IMapControlPanelView
 {
     private readonly Func<string, Task, Task> _beginMatch;
     private readonly Func<string, Task> _beginSurveyMatch;

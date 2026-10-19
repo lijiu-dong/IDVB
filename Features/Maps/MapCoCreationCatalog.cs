@@ -2,61 +2,8 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using IDVBuff.UpdateCore;
 namespace IDVBuff.Features.Maps;
-public sealed record MapCoCreationPublication(Guid Id, string Name, string SubscriptionLink,
-    string PublisherHandle, DateTimeOffset? PublishedAt, string? CoverUrl = null, string? PublisherName = null,
-    string? Version = null);
-public sealed record MapCoCreationDownload(string Name, string Filename, string DownloadUrl, long Size, DateTimeOffset? Uploaded,
-    string? ResourceKey = null);
-public sealed record MapCoCreationCommunityCatalog(IReadOnlyList<MapCoCreationPublication> Publications,
-    IReadOnlyList<MapCoCreationDownload> Maps);
 public sealed record MapCoCreationOwnedPublication(MapSubscriptionRecord Publication, IReadOnlyList<MapRecord> Maps);
 public sealed record MapCoCreationOwnedClass(MapSubscriptionRecord Publication, string Name, IReadOnlyList<MapRecord> Maps);
-public static class MapCoCreationRules
-{
-    public static MapDraft CreateEditingDraft(MapDraft source)
-    {
-        var draft = JsonSerializer.Deserialize<MapDraft>(JsonSerializer.Serialize(source))
-            ?? throw new InvalidDataException("无法创建地图编辑草稿。");
-        draft.ClassProperties = source.ClassProperties.Clone();
-        draft.ImportedTagGroupNames = new(source.ImportedTagGroupNames);
-        draft.SourcePackageMapId = source.SourcePackageMapId;
-        draft.CreateAsImportedCopy = source.CreateAsImportedCopy;
-        draft.RemoveBackgroundOverride = source.RemoveBackgroundOverride;
-        draft.BackgroundRemovalIntensityOverride = source.BackgroundRemovalIntensityOverride;
-        draft.SideEntranceFeaturePaths = new(source.SideEntranceFeaturePaths);
-        draft.PrebuiltStructureLinePaths = new(source.PrebuiltStructureLinePaths);
-        draft.PrebuiltStructureAlgorithmPath = source.PrebuiltStructureAlgorithmPath;
-        return draft;
-    }
-
-    public static bool NeedsCloudPackage(MapCoCreationOwnedPublication? installed) =>
-        installed is null || installed.Maps.Count == 0 || installed.Publication.CoCreationMapBindings.Count > 0;
-
-    public static MapRecord? ResolveSavedMap(IEnumerable<MapRecord> maps, MapSubscriptionRecord publication, Guid? sourceMapId)
-    {
-        if (sourceMapId is not { } source || !publication.CoCreationMapBindings.TryGetValue(source, out var localId)) return null;
-        return maps.FirstOrDefault(map => map.Id == localId && publication.InstalledMapIds.Contains(map.Id)
-            && map.SubscriptionId == publication.Id && map.AcquisitionKind == MapAcquisitionKind.Subscription);
-    }
-
-    public static IReadOnlyList<MapCoCreationOwnedPublication> GetOwnedPublications(
-        IEnumerable<MapRecord> maps, IEnumerable<MapSubscriptionRecord> publications, string? publisherHandle)
-    {
-        if (string.IsNullOrWhiteSpace(publisherHandle)) return [];
-        var byId = maps.ToDictionary(map => map.Id);
-        return publications.Where(record => string.Equals(record.PublisherHandle, publisherHandle, StringComparison.OrdinalIgnoreCase))
-            .OrderByDescending(record => record.LastPublishedAtUtc)
-            .Select(record => new MapCoCreationOwnedPublication(record,
-                record.InstalledMapIds.Distinct().Where(byId.ContainsKey).Select(id => byId[id])
-                    .Where(map => map.SubscriptionId == record.Id && map.AcquisitionKind == MapAcquisitionKind.Subscription)
-                    .OrderBy(map => map.SequenceNumber).ToArray())).ToArray();
-    }
-    public static IReadOnlyList<MapCoCreationOwnedClass> GetOwnedClasses(
-        IEnumerable<MapRecord> maps, IEnumerable<MapSubscriptionRecord> publications, string? publisherHandle) =>
-        GetOwnedPublications(maps, publications, publisherHandle)
-            .SelectMany(publication => publication.Maps.GroupBy(map => map.Class, StringComparer.OrdinalIgnoreCase)
-                .Select(group => new MapCoCreationOwnedClass(publication.Publication, group.Key, group.ToArray()))).ToArray();
-}
 public sealed class MapCoCreationTemplateAnchor
 {
     public string Key { get; set; } = string.Empty;

@@ -1,3 +1,4 @@
+using IDVBuff.Core.Contracts.Online;
 using IDVBuff.Features.Maps;
 using IDVBuff.Features.Accounts;
 using IDVBuff.UpdateCore;
@@ -149,7 +150,7 @@ public sealed partial class MapListPage
         AccountIdentity identity;
         try
         {
-            identity = await AccountSession.RequirePublishAccessAsync();
+            identity = await _accountService.RequirePublishAccessAsync();
         }
         catch (Exception exception)
         {
@@ -228,7 +229,7 @@ public sealed partial class MapListPage
             identity.DisplayName,
             intendedForWebsite: true,
             packageNameText, coverPath, usesAutomaticCover, previous?.Id,
-            previous is null ? null : MapSubscriptionLink.Parse(previous.Link).ContentKey,
+            null,
             importButton,
             publishButton);
     }
@@ -303,7 +304,7 @@ public sealed partial class MapListPage
         {
             try
             {
-                var identity = await AccountSession.RequirePublishAccessAsync();
+                var identity = await _accountService.RequirePublishAccessAsync();
                 publisherText = identity.PublisherHandle;
                 publisherDisplayName = identity.DisplayName;
                 isOfficialPublisher = identity.IsOfficial;
@@ -355,7 +356,10 @@ public sealed partial class MapListPage
                     usesAutomaticCover: usesAutomaticCover)));
                 MapOperationProgress.Report(.6, "正在上传地图……");
                 var linkText = intendedForWebsite
-                    ? await MapOperationProgress.RunAsync(.6, .9, () => AccountSession.UploadPublicationAsync(publication))
+                    ? await MapOperationProgress.RunAsync(.6, .9, () => _communityService.PublishAsync(new(
+                        publication.PublicationId, publication.PublisherHandle, publication.SubscriptionLink,
+                        publication.OutputDirectory, publication.PackagePath, publication.PackageName,
+                        publication.CoverPath), CancellationToken.None))
                     : publication.SubscriptionLink;
                 if (intendedForWebsite) uploadedLink = linkText;
                 if (intendedForWebsite)
@@ -376,7 +380,7 @@ public sealed partial class MapListPage
             data.SetText(subscriptionLink);
             Clipboard.SetContent(data);
             var publisherName = intendedForWebsite
-                ? AccountSession.Identity?.DisplayName ?? publisherHandle
+                ? _accountService.Identity?.DisplayName ?? publisherHandle
                 : publisherHandle;
             var targetText = intendedForWebsite
                 ? "已发布到 IDVB 官网"
@@ -405,7 +409,7 @@ public sealed partial class MapListPage
             .Distinct()
             .ToArray();
         if (ids.Length != 1 || ids[0] is not { } id) return null;
-        var identity = AccountSession.Identity;
+        var identity = _accountService.Identity;
         return identity is null ? null : _mapSubscriptionService.GetSubscriptions()
             .SingleOrDefault(record => record.Id == id
                 && MapPublicationRules.CanUpdate(maps, record, identity.PublisherHandle));

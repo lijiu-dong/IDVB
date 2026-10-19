@@ -125,14 +125,14 @@ public sealed partial class MapListPage
 
     private async Task ShowCoCreationMineAsync(StackPanel content, CancellationToken token)
     {
-        if (AccountSession.Identity is null)
+        if (_accountService.Identity is null)
         {
             content.Children.Add(CreateCoCreationDescription("登录后查看你的地图。"));
             var login = CreateCoCreationToolbarButton("登录地图社区账号", "登录地图社区账号");
             login.Click += async (_, _) =>
             {
                 login.IsEnabled = false;
-                try { await AccountSession.LoginAsync(token); }
+                try { await _accountService.LoginAsync(token); }
                 catch (OperationCanceledException) { }
                 catch (Exception exception) { if (IsLoaded) await ShowMessageAsync("登录失败", exception.Message); }
                 finally { login.IsEnabled = true; }
@@ -154,7 +154,7 @@ public sealed partial class MapListPage
         {
             try
             {
-                var publications = await CoCreationPublicationClient.GetAsync(token);
+                var publications = await _communityService.GetOwnedAsync(token);
                 if (!token.IsCancellationRequested && !_coCreationEditing && _coCreationSelectedClass is null)
                     RenderCoCreationPublications(published, publications);
             }
@@ -194,8 +194,8 @@ public sealed partial class MapListPage
         foreach (var package in packages) await package.DisposeAsync();
     }
 
-    private static bool IsCoCreationOwner(string? handle) => !string.IsNullOrWhiteSpace(handle)
-        && string.Equals(handle, AccountSession.Identity?.PublisherHandle, StringComparison.OrdinalIgnoreCase);
+    private bool IsCoCreationOwner(string? handle) => !string.IsNullOrWhiteSpace(handle)
+        && string.Equals(handle, _accountService.Identity?.PublisherHandle, StringComparison.OrdinalIgnoreCase);
     private void CoCreationAccountChanged(object? sender, EventArgs e)
     {
         _coCreationLoad?.Cancel();

@@ -237,10 +237,14 @@ public sealed class Vpsg3SolverScratch
 
     public Point[] ScaledQueryPointsBuffer { get; } = Allocate<Point>(256, "ScaledPoints");
     internal int[] TranslationScores = [];
+    // One solve owns this cache. It contains integer scores only, never a
+    // floor, observation or scale, and is cleared before the next grid.
+    internal readonly Dictionary<(int X, int Y), int> PolishScores = new(1024);
     public Vpsg3TranslationCandidate[] CandidateBuffer { get; } = Allocate<Vpsg3TranslationCandidate>(64, "Candidates");
     internal int CandidateCount;
     public byte[] EdgeMaskBuffer { get; private set; } = [];
     internal long MemoryBytes => EdgeMaskBuffer.LongLength + TranslationScores.LongLength * sizeof(int)
+        + PolishScores.EnsureCapacity(0) * 24L
         + (ProjectionBufferX.LongLength + ProjectionBufferY.LongLength + CenteredSignalBuffer.LongLength
             + AutocorrBuffer.LongLength) * sizeof(double)
         + ScaledQueryPointsBuffer.LongLength * Unsafe.SizeOf<Point>()

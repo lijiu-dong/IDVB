@@ -25,10 +25,19 @@ public static class PrebuiltContourLabels
     public static bool TryRead(string path, [NotNullWhen(true)] out Mat? labels, out bool semantic,
         string resource = "ScanLabels.DirectPng")
     {
+        using var file = File.OpenRead(path);
+        return TryRead(file, out labels, out semantic, resource);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    public static bool TryRead(Stream file, [NotNullWhen(true)] out Mat? labels, out bool semantic,
+        string resource = "ScanLabels.DirectPng")
+    {
+        if (!file.CanRead || !file.CanSeek)
+            throw new ArgumentException("预制轮廓输入必须支持读取和定位。", nameof(file));
         labels = null;
         semantic = false;
-        using var operation = MemoryJournal.BeginOperation("Scan.DecodePngLabels", path);
-        using var file = File.OpenRead(path);
+        using var operation = MemoryJournal.BeginOperation("Scan.DecodePngLabels", resource);
         Span<byte> header = stackalloc byte[33];
         if (file.Read(header[..8]) != 8 || !header[..8].SequenceEqual(Signature)) return false;
         file.ReadExactly(header[8..]);
@@ -135,7 +144,7 @@ public static class PrebuiltContourLabels
 
     // Check every chunk before consuming pixels. The second pass streams IDAT;
     // neither pass retains the encoded file or a full RGB raster.
-    private static uint? ValidateChunks(FileStream file)
+    private static uint? ValidateChunks(Stream file)
     {
         file.Position = 8;
         Span<byte> header = stackalloc byte[8];
@@ -222,7 +231,7 @@ public static class PrebuiltContourLabels
         return signature;
     }
 
-    private sealed class PngDataStream(FileStream input) : Stream
+    private sealed class PngDataStream(Stream input) : Stream
     {
         private long _remaining;
         private bool _end;

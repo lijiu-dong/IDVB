@@ -15,7 +15,8 @@ internal static class MapDiagnosticModeCapture
     // alignment diagnostics are queued so they never extend the latency they
     // are recording. A full queue falls back to a synchronous write.
     private const int MaxPendingWrites = 8;
-    private static readonly Queue<(string Path, Mat Image)> PendingWrites = new();
+    private static readonly Queue<PendingWrite> PendingWrites = new();
+    private static int _pendingImageCount;
     private static bool _writerActive;
 
     internal static string RootDirectory => Path.Combine(
@@ -145,41 +146,89 @@ internal static class MapDiagnosticModeCapture
         Mat copy;
         try { copy = image.Clone(); }
         catch { return; /* Diagnostics must never change alignment behavior. */ }
+        QueueWork(new ImageWrite(path, copy));
+    }
+
+    internal abstract class PendingWrite : IDisposable
+    {
+        internal virtual int ImageCount => 1;
+        internal abstract void Write();
+        public abstract void Dispose();
+    }
+
+    private sealed class ImageWrite(string path, Mat image) : PendingWrite
+    {
+        internal override void Write() => TryWrite(path, image);
+        public override void Dispose() => image.Dispose();
+    }
+
+    // Freeze ownership and enqueue under the session gate. EndMatch/Clear cannot
+    // pass their flush boundary between capturing this session and queuing work.
+    internal static bool? QueueAlignmentCapture(int? attemptId, Func<string, int, PendingWrite> create)
+    {
+        lock (Gate)
+        {
+            var id = attemptId ?? _currentMapOpenId;
+            if (SuppressionDepth.Value > 0 || _matchDirectory is null || id <= 0)
+                return null;
+            return QueueWork(create(_matchDirectory, id));
+        }
+    }
+
+    // Takes ownership on every path. Preserve the existing bounded queue and
+    // synchronous overflow policy: diagnostic evidence must not be dropped.
+    internal static bool QueueWork(PendingWrite work)
+    {
         bool queued, startWriter = false;
         lock (PendingWrites)
         {
-            queued = PendingWrites.Count < MaxPendingWrites;
+            // A composite capture emits two or three images. Count those
+            // images so grouping work cannot silently expand the old budget.
+            queued = work.ImageCount <= MaxPendingWrites - _pendingImageCount;
             if (queued)
             {
-                PendingWrites.Enqueue((path, copy));
+                PendingWrites.Enqueue(work);
+                _pendingImageCount += work.ImageCount;
                 startWriter = !_writerActive;
                 _writerActive = true;
             }
         }
         if (!queued)
         {
-            using (copy) TryWrite(path, copy);
-            return;
+            ExecuteWrite(work);
+            return false;
         }
         if (startWriter)
-            _ = Task.Run(DrainPendingWrites);
+        {
+            try { _ = Task.Run(DrainPendingWrites); }
+            catch { DrainPendingWrites(); return false; }
+        }
+        return true;
+    }
+
+    private static void ExecuteWrite(PendingWrite work)
+    {
+        try { using (work) work.Write(); }
+        catch { /* A failed write or disposal must not strand the queue/flush. */ }
     }
 
     private static void DrainPendingWrites()
     {
         while (true)
         {
-            (string Path, Mat Image) job;
+            PendingWrite job;
             lock (PendingWrites)
             {
-                if (!PendingWrites.TryDequeue(out job))
+                if (PendingWrites.Count == 0)
                 {
                     _writerActive = false;
                     Monitor.PulseAll(PendingWrites);
                     return;
                 }
+                job = PendingWrites.Dequeue();
+                _pendingImageCount -= job.ImageCount;
             }
-            using (job.Image) TryWrite(job.Path, job.Image);
+            ExecuteWrite(job);
         }
     }
 

@@ -110,7 +110,7 @@ public sealed partial class MapListPage
         else
         {
             var owned = MapCoCreationRules.GetOwnedClasses(_loadedMaps, _mapSubscriptionService.GetSubscriptions(),
-                AccountSession.Identity?.PublisherHandle);
+                _accountService.Identity?.PublisherHandle);
             foreach (var map in owned.Where(c => c.Publication.Id == selection.PublicationId
                 && string.Equals(c.Name, selection.LocalClassName, StringComparison.OrdinalIgnoreCase)).SelectMany(c => c.Maps))
                 cards.Add(CreateCoCreationCard(map.DisplayName, selection.Name,

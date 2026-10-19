@@ -1,167 +1,113 @@
-using System.Diagnostics;
-
 namespace IDVBuff.Features.Maps;
 
 public sealed partial class SessionOrchestrator
 {
-    // The game's open animation starts with the toggle. A click during it sees
-    // a half-faded map, which must not read as "closed".
-    private const double GameMapClickOpeningGraceMilliseconds = 1500d;
-    // Let the game's close fade finish before sampling, then confirm once more
-    // so one transient frame (floor switch, effect) never closes an open map.
-    private const int GameMapClickSettleMilliseconds = 250;
-    private const int GameMapClickConfirmMilliseconds = 300;
+    private GameMapCloseWarningWindow? _gameMapCloseWarning;
+    private int _gameMapCloseWarningVersion;
 
-    private int _gameMapClickProbeActive;
-
-    /// <summary>
-    /// Escape closes the game's own map. Mirror only that close: an Escape while
-    /// the map is already closed, or while another window owns the keyboard,
-    /// must never flip the toggle state into "open".
-    /// </summary>
     private async Task HandleGameMapCloseAsync()
     {
+        if (!CanCheckGameMapClose()) return;
+        if (!_captureSvc.TryGetForegroundClientBounds(out var boundsObject, out var windowHandle, out var failure)
+            || boundsObject is not MapScreenRect bounds)
+        {
+            ReportInputDecision("game-map-close", "ignored", "game-not-foreground:" + failure);
+            return;
+        }
+        var version = _gameMapToggleState.Version;
+        var matchVersion = _matchSession.Snapshot.Version;
+        var identityMapId = GetGameMapCloseIdentityId();
+        var hasVisibleMap = HasVisibleGameMapAlignment(identityMapId)
+            && windowHandle == _lastGameWindowHandle && bounds == _lastGameBounds;
+        if (!_gameMapToggleState.IsOpen && !_overlay.HasMap)
+        {
+            ReportInputDecision("game-map-close", "ignored", "map-already-closed");
+            return;
+        }
+        // Capture before yielding or changing runtime state. Sampling after the
+        // close fade would classify every normal Escape close as mouse misuse.
+        var absent = identityMapId.HasValue && hasVisibleMap
+            ? ProbeGameMapAbsent(GetCurrentMapViewportPresenceReference(), windowHandle, bounds)
+            : null;
+        var warn = GameMapCloseProbe.ShouldWarnOnEscape(identityMapId.HasValue, hasVisibleMap, absent);
         await _matchLifecycleGate.WaitAsync();
         try
         {
-            if (_disposed || _settings is not { IsEnabled: true }
-                || !_matchSession.Snapshot.IsStarted)
-            {
-                ReportInputDecision("game-map-close", "rejected", _disposed ? "disposed"
-                    : _settings is not { IsEnabled: true } ? "runtime-disabled" : "match-not-started");
-                return;
-            }
-
-            if (!_gameMapToggleState.IsOpen)
-            {
-                ReportInputDecision("game-map-close", "ignored", "map-already-closed");
-                return;
-            }
-
-            if (!_captureSvc.TryGetForegroundClientBounds(out _, out _, out var targetFailure))
-            {
-                ReportInputDecision("game-map-close", "ignored", "game-not-foreground:" + targetFailure);
-                return;
-            }
-
-            _gameMapToggleState.Toggle();
-            await EndMapDisplayAsync("game map closed by escape");
-            ReportInputDecision("game-map-close", "applied", "map-closed");
+            if (!CanCheckGameMapClose() || version != _gameMapToggleState.Version
+                || !IsGameMapCloseTargetCurrent(windowHandle, bounds)) return;
+            warn = warn && IsGameMapCloseIdentityCurrent(identityMapId, matchVersion)
+                && HasVisibleGameMapAlignment(identityMapId);
+            _gameMapToggleState.SetOpenForExternalController(false);
+            await EndMapDisplayAsync(warn ? "escape recovered an already closed game map" : "game map closed by escape");
+            ReportInputDecision("game-map-close", "applied", warn ? "already-closed-with-overlay" : "map-closed");
         }
-        finally
-        {
-            _matchLifecycleGate.Release();
-        }
+        finally { _matchLifecycleGate.Release(); }
+        if (warn && identityMapId is { } mapId) await WarnGameMapClosedByMouseAsync(bounds, mapId, matchVersion);
     }
 
-    /// <summary>
-    /// A left click while the map is open may have hit the game's own close
-    /// button, which the runtime cannot see. Probe the map viewport once the
-    /// close fade has settled; when the map is really gone, warn the player and
-    /// close the runtime state so the next game-map key opens instead of closing.
-    /// </summary>
-    private async Task HandleGameMapClickAsync()
-    {
-        if (_disposed || _settings is not { IsEnabled: true }
-            || !_matchSession.Snapshot.IsStarted || !_gameMapToggleState.IsOpen)
-        {
-            ReportInputDecision("game-map-click", "ignored", "map-not-open");
-            return;
-        }
-        if (Stopwatch.GetElapsedTime(_gameMapToggleState.OpenedAtTimestamp).TotalMilliseconds
-            < GameMapClickOpeningGraceMilliseconds)
-        {
-            ReportInputDecision("game-map-click", "ignored", "opening-animation");
-            return;
-        }
-        // Rapid clicks share the probe already running.
-        if (Interlocked.Exchange(ref _gameMapClickProbeActive, 1) == 1)
-        {
-            ReportInputDecision("game-map-click", "ignored", "probe-in-flight");
-            return;
-        }
+    private bool CanCheckGameMapClose() =>
+        !_disposed && !IsMatchEnding && _settings is { IsEnabled: true } && _matchSession.Snapshot.IsStarted;
 
-        try
-        {
-            var version = _gameMapToggleState.Version;
-            var reference = GetCurrentMapViewportPresenceReference();
-            var probeWatch = Stopwatch.StartNew();
-            foreach (var delay in new[] { GameMapClickSettleMilliseconds, GameMapClickConfirmMilliseconds })
-            {
-                await Task.Delay(delay);
-                if (!IsGameMapClickProbeCurrent(version))
-                {
-                    ReportInputDecision("game-map-click", "ignored", "superseded");
-                    return;
-                }
-                var absent = await Task.Run(() => ProbeGameMapAbsent(reference));
-                if (absent is not true)
-                {
-                    ReportInputDecision("game-map-click", "ignored",
-                        absent is null ? "probe-capture-failed" : "map-still-open");
-                    return;
-                }
-            }
+    private Guid? GetGameMapCloseIdentityId() =>
+        GameMapCloseProbe.GetCurrentIdentity(_matchSession.Snapshot, _mapLease,
+            (_pendingAlignmentIdentity ?? _lastRecognition)?.Map.Id);
 
-            await _matchLifecycleGate.WaitAsync();
-            try
-            {
-                if (!IsGameMapClickProbeCurrent(version))
-                {
-                    ReportInputDecision("game-map-click", "ignored", "superseded");
-                    return;
-                }
-                _gameMapToggleState.Toggle();
-                await EndMapDisplayAsync("game map closed by mouse");
-                WarnGameMapClosedByMouse();
-                ReportInputDecision("game-map-click", "applied",
-                    $"map-closed-by-mouse:{probeWatch.ElapsedMilliseconds}ms");
-            }
-            finally
-            {
-                _matchLifecycleGate.Release();
-            }
-        }
-        finally
-        {
-            Volatile.Write(ref _gameMapClickProbeActive, 0);
-        }
-    }
+    private bool IsGameMapCloseIdentityCurrent(Guid? mapId, int matchVersion) =>
+        CanCheckGameMapClose() && mapId.HasValue && _matchSession.Snapshot.Version == matchVersion
+        && GetGameMapCloseIdentityId() == mapId;
 
-    private bool IsGameMapClickProbeCurrent(int version) =>
-        !_disposed && _gameMapToggleState.IsOpen && _gameMapToggleState.Version == version;
+    private string? GameMapCloseFloor =>
+        _currentFloorKey ?? (_pendingAlignmentIdentity ?? _lastRecognition)?.Result.Floor;
 
-    /// <summary>
-    /// Captures the calibrated map viewport once. Returns null when the frame
-    /// cannot be captured, e.g. after the click focused another window.
-    /// </summary>
-    private bool? ProbeGameMapAbsent(MapViewportColorSignature? reference)
+    private bool HasVisibleGameMapAlignment(Guid? mapId) =>
+        !_alignmentResultHidden && mapId is { } currentMap && GameMapCloseFloor is { } floor
+        && _overlay.IsMapContentVisible(currentMap, floor);
+
+    // Called on the hook thread: only read identity/presentation state here.
+    // Never capture, wait, dispatch or decide absence from this predicate.
+    private bool CanWatchGameMapClick() => CanCheckGameMapClose() && _gameMapToggleState.IsOpen
+        && HasVisibleGameMapAlignment(GetGameMapCloseIdentityId())
+        && _lastGameWindowHandle != IntPtr.Zero && GetForegroundWindow() == _lastGameWindowHandle;
+
+    private bool IsGameMapCloseTargetCurrent(IntPtr window, MapScreenRect bounds) =>
+        _captureSvc.TryGetForegroundClientBounds(out var currentBounds, out var currentWindow, out _)
+        && currentWindow == window && currentBounds is MapScreenRect rectangle && rectangle == bounds;
+
+    private bool? ProbeGameMapAbsent(MapViewportColorSignature? reference,
+        IntPtr expectedWindow, MapScreenRect expectedBounds)
     {
         var viewport = ResolveMapViewportForCurrentWindow();
         if (!_captureSvc.TryCaptureViewport(viewport, out var frameObject, out _)
-            || frameObject is not CapturedGameFrame frame)
-        {
-            return null;
-        }
+            || frameObject is not CapturedGameFrame frame) return null;
         using (frame)
         {
+            if (frame.WindowHandle != expectedWindow || frame.ClientBounds != expectedBounds) return null;
             var signature = MapViewportPresenceDetector.CreateSignature(frame.Image, includeStructure: false);
             return MapViewportPresenceDetector.IsMapAbsent(signature, reference);
         }
     }
 
-    private void WarnGameMapClosedByMouse()
+    private async Task WarnGameMapClosedByMouseAsync(MapScreenRect bounds, Guid mapId, int matchVersion)
     {
-        _statusMessage = "检测到用鼠标关闭了地图，IDVB 已同步关图。请使用开图键或 Esc 关闭地图。";
-        if (!_lastGameBounds.IsValid || _lastGameWindowHandle == IntPtr.Zero)
-            return;
-        ShowTransientOverlayStatus(
-            MapOverlayStatusLevel.Warning,
-            "请勿用鼠标关闭地图",
-            "检测到地图已被鼠标点击关闭，IDVB 已同步关图。",
-            "请使用开图键或 Esc 关闭地图，否则叠加层可能与游戏地图状态不同步。",
-            _lastGameBounds,
-            _lastGameWindowHandle);
-        _overlay.Show();
+        // Recheck after EndMapDisplayAsync: rescan, survey or match shutdown may
+        // have released the identity while the close consumer was awaiting.
+        if (!IsGameMapCloseIdentityCurrent(mapId, matchVersion)) return;
+        _statusMessage = "禁止使用鼠标左键关闭地图。请使用开图快捷键或 Esc。";
+        StateChanged?.Invoke(this, EventArgs.Empty);
+        if (_headless || _disposed) return;
+        var version = ++_gameMapCloseWarningVersion;
+        (_gameMapCloseWarning ??= new(_captureProtection)).Show(bounds);
+        // Every violation shows the popup again and restarts its full duration.
+        // There is no per-match, per-session or lifetime warning quota.
+        try { await Task.Delay(TimeSpan.FromSeconds(6), _lifetimeCts.Token); }
+        catch (OperationCanceledException) { return; }
+        if (!_disposed && version == _gameMapCloseWarningVersion) _gameMapCloseWarning.Hide();
+    }
+
+    private void HideGameMapCloseWarning()
+    {
+        _gameMapClickProbe = null;
+        ++_gameMapCloseWarningVersion;
+        _gameMapCloseWarning?.Hide();
     }
 }

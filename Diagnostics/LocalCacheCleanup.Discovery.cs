@@ -15,6 +15,24 @@ internal static partial class LocalCacheCleanup
     private static IEnumerable<Entry> Discover(string root, string[] protectedPaths)
     {
         var catalog = ReadCatalog(root);
+        foreach (var (name, category, pattern) in new[]
+        {
+            (".appearance", "配色缓存", @"^[0-9A-Fa-f]{64}\.png$"),
+            (".prepared-floor-cache", "楼层静态索引", @"^[0-9A-Fa-f]{64}\.(align|scan)$")
+        })
+        {
+            var directory = Path.Combine(root, "Maps", name);
+            if (!Directory.Exists(directory) || IsProtected(directory, protectedPaths)) continue;
+            EnsureSafePath(root, directory);
+            foreach (var file in Directory.EnumerateFiles(directory))
+            {
+                if (IsProtected(file, protectedPaths) || !Regex.IsMatch(Path.GetFileName(file), pattern)) continue;
+                EnsureSafePath(root, file);
+                var snapshot = ReadFile(file);
+                var lastUsed = snapshot.AccessedUtc > snapshot.WrittenUtc ? snapshot.AccessedUtc : snapshot.WrittenUtc;
+                yield return new(category, file, false, lastUsed, [snapshot]);
+            }
+        }
         foreach (var map in Directories(root, Path.Combine(root, "MapAlignmentCache")))
         {
             if (IsProtected(map, protectedPaths)) continue;

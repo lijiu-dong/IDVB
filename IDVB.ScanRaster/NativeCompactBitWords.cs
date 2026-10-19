@@ -8,7 +8,7 @@ namespace IDVBuff.Core.Imaging;
 /// <summary>Exact immutable row-major words with independently owned native readers.
 /// A reader must finish its reads before disposing itself; other clones may retire.
 /// Empty/zero fields are inline, and the last nonzero reader releases the allocation.</summary>
-public sealed unsafe class NativeCompactBitWords : IDisposable
+public sealed unsafe partial class NativeCompactBitWords : IDisposable
 {
     private NativeEncodedByteField.ReadLease? _reader;
     private readonly ulong* _values;

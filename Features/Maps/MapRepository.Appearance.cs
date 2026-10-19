@@ -72,8 +72,7 @@ public sealed partial class MapRepository
             if (!info.Exists) throw new FileNotFoundException("地图配色资源缺失。", path);
             return $"{info.FullName}|{info.Length}|{info.LastWriteTimeUtc.Ticks}";
         }
-        // Pixels are unchanged by the buffer ownership correction. Retain the
-        // existing cache identity so upgrades do not regenerate all artwork.
+        // Only inputs consumed by the renderer belong to the pixel identity.
         var name = ComputeAppearanceCacheKey(Stamp(sourcePath), palette, croppedFloor, thumbnail,
             selected.Select(floor =>
             {
@@ -83,9 +82,17 @@ public sealed partial class MapRepository
             }));
         var directory = Path.Combine(_rootDirectory, ".appearance");
         var destination = Path.Combine(directory, name + ".png");
+        using var protection = AppDataPaths.ProtectCachePath(directory);
         lock (AppearanceGate)
         {
-            if (File.Exists(destination)) return destination;
+            if (File.Exists(destination))
+            {
+                // The name identifies immutable pixels. Refresh cleanup recency
+                // without making display consumers invalidate those pixels.
+                try { File.SetLastAccessTimeUtc(destination, DateTime.UtcNow); }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+                return destination;
+            }
             using var operation = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("Appearance.RenderFile", sourcePath);
             using var sourceOwner = new AppearanceRaster(DecodeImage(sourcePath), "Appearance.Source/" + sourcePath);
             var source = sourceOwner.Image;

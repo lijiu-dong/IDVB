@@ -193,7 +193,6 @@ public sealed partial class MapListPage
     private static string? ResolveCoCreationCover(string? path)
     {
         if (string.IsNullOrWhiteSpace(path)) return null;
-        var uri = new Uri(new Uri("https://community.idvb.xgflee.com/"), path);
-        return uri.Scheme == "https" && uri.Host == "community.idvb.xgflee.com" ? uri.AbsoluteUri : null;
+        return IDVBuff.UpdateCore.OnlineServiceLinks.TryCommunityAsset(path);
     }
 }
