@@ -238,7 +238,9 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<ISurveyCoordinator>(),
                 sp.GetRequiredService<SurveyCaptureTuning>(),
                 sp.GetRequiredService<ICaptureProtectionService>(),
-                headless: headless));
+                headless: headless,
+                // 只有桌面主程序的开始/结束对局计时；无界面宿主（RealCLI）不计时。
+                usageMeter: headless ? null : IDVBuff.Features.Accounts.DesktopUsageMeterHost.Meter));
         services.AddSingleton<ISessionOrchestrator>(sp =>
             sp.GetRequiredService<SessionOrchestrator>());
         // 插件对局控制能力：内置插件与第三方插件共用同一套语义

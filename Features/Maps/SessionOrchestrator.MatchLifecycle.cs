@@ -365,6 +365,7 @@ public sealed partial class SessionOrchestrator
             _matchPluginsActivated = false;
             StartMatchCancellationScope();
             var match = _matchSession.Begin(mapClass);
+            StartUsageMetering(match);
             if (_settings?.DiagnosticModeEnabled is true)
                 MapDiagnosticModeCapture.BeginMatch();
             MapOperationProgress.Report(.94, "激活对局插件");

@@ -39,6 +39,7 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
             // Invalidate the match identity first. Any scan/alignment already
             // running may finish native work, but can no longer commit state.
             _matchSession.End();
+            StopUsageMetering();
             if (!_headless)
                 IDVBuff.Features.Notifications.OverlayNotificationCenter.Warning("已结束对局状态。");
             MapDiagnosticModeCapture.EndMatch();

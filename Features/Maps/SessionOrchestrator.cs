@@ -1,5 +1,6 @@
 // IDVB Remaster — Session Orchestrator（新架构唯一入口）
 using IDVBuff.Core.Contracts;
+using IDVBuff.Core.Contracts.Online;
 using IDVBuff.Core.Models;
 using IDVBuff.Pipeline;
 using Microsoft.UI.Dispatching;
@@ -111,7 +112,8 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
         SurveyCaptureTuning? surveyCaptureTuning = null,
         ICaptureProtectionService? captureProtection = null,
         bool headless = false,
-        IMapCandidateLearningEngine? learningEngine = null)
+        IMapCandidateLearningEngine? learningEngine = null,
+        IUsageMeter? usageMeter = null)
     {
         _dispatcher = dispatcher;
         _settingsRepo = settingsRepo;
@@ -136,6 +138,7 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
             action => _dispatcher.TryEnqueue(() => action()),
             ApplyRealtimeMapTransform);
         _learningEngine = learningEngine ?? new MapSampleProviderEngine();
+        _usageMeter = usageMeter ?? new UnavailableUsageMeter();
         _surveyCoordinator.StatusChanged += SurveyCoordinator_StatusChanged;
         _headless = headless;
 

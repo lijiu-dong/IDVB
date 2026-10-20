@@ -88,3 +88,18 @@ internal static partial class DesktopResourceUnlockHost
     }
     static partial void ConfigurePrivate(ref IDesktopResourceUnlock service);
 }
+
+/// <summary>Play-time metering for match start/end. Public builds meter and limit nothing.</summary>
+internal static partial class DesktopUsageMeterHost
+{
+    private static readonly Lazy<IUsageMeter> Instance = new(Create);
+    internal static IUsageMeter Meter => Instance.Value;
+    private static IUsageMeter Create()
+    {
+        IUsageMeter meter = new UnavailableUsageMeter();
+        ConfigurePrivate(ref meter);
+        if (meter is IDisposable disposable) AppDomain.CurrentDomain.ProcessExit += (_, _) => disposable.Dispose();
+        return meter;
+    }
+    static partial void ConfigurePrivate(ref IUsageMeter meter);
+}
