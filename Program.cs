@@ -159,6 +159,14 @@ public static class Program
         }
 
         StartupTimeline.Write($"Launch mode: cli={isCli}; isolatedDevelopment={isIsolatedDevelopmentInstance}.");
+        if (!isCli && !PassDesktopLoginGate())
+        {
+            // The usage tracker is disposed by its using scope.
+            StopMemoryDiagnostics();
+            _guiInstance?.Dispose();
+            _guiInstance = null;
+            return 0;
+        }
         if (!isCli)
         {
             var startupPreferences = MainProgramPreferences.Load();
@@ -178,6 +186,34 @@ public static class Program
             // Commit usage before releasing the primary mutex to the next process.
             usage?.Dispose();
             _guiInstance?.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// 1.7.1-preview.3: before any WinUI work, the server must confirm this account may start IDVB on this
+    /// installation (or a signed offline allowance must still be valid). The public build has no gate.
+    /// </summary>
+    private static bool PassDesktopLoginGate()
+    {
+        var gate = Features.Accounts.DesktopLoginGateHost.Gate;
+        if (!gate.IsConfigured) return true;
+        Features.Accounts.AccountSession.InteractiveLogin = async _ =>
+        {
+            var (outcome, identity) = await Lifecycle.LoginWindow.RunAsync(gate, Lifecycle.LoginWindow.Mode.Interactive).ConfigureAwait(false);
+            return outcome == Lifecycle.LoginWindow.Result.Granted && identity is not null
+                ? identity : throw new OperationCanceledException("登录已取消。");
+        };
+        try
+        {
+            var (outcome, _) = Lifecycle.LoginWindow.RunAsync(gate, Lifecycle.LoginWindow.Mode.Startup).GetAwaiter().GetResult();
+            StartupTimeline.Write($"Desktop login gate: {outcome}.");
+            return outcome == Lifecycle.LoginWindow.Result.Granted;
+        }
+        catch (Exception exception)
+        {
+            StartupTimeline.Write("Desktop login gate failed.", exception);
+            MessageBoxW(0, $"无法打开登录窗口：{exception.Message}", "Identity Vision Bridge", 0x10);
+            return false;
         }
     }
 
