@@ -49,6 +49,9 @@ namespace IDVBuff
                 return;
 
             shutdownInProgress = true;
+            StopAccountSessionMonitor();
+            _accessLifetime.Cancel();
+            Features.Accounts.AccountSession.Changed -= VersionAccessAccountChanged;
             Program.SuspendNativeBackingReturns();
             RecordShutdownStage("app-shutdown-start", trigger);
             StopStartupPresentation();
@@ -245,11 +248,13 @@ namespace IDVBuff
 
         private void CompleteApplicationExit()
         {
-            if (applicationExitRequested)
+            if (Interlocked.Exchange(ref _exitStarted, 1) != 0)
                 return;
 
             applicationExitRequested = true;
+            StopAccountSessionMonitor();
             Features.Accounts.DesktopSecurityRuntimeHost.Stop();
+            StartLoginReturnProcess();
             try { Program.StopMemoryDiagnostics(); } catch { }
             try { _trayIcon?.Dispose(); } catch { }
             _trayIcon = null;

@@ -96,6 +96,7 @@ public sealed partial class SettingsPage : Page
             + "• 客户端每天最多尝试上传一次；上传前会校验包结构、文件哈希、样本引用和脱敏图像范围\n"
             + "• 可随时在“主设置 - 隐私”关闭；IDVB 目前不提供账号系统、通用遥测或云同步\n\n"
             + $"本地数据目录：{AppDataPaths.RootDirectory}\n卸载程序可让用户选择是否保留这些数据。分享日志或 IDVM 前请自行检查并移除敏感或无权传播的内容。"));
+        specifications.Children.Add(CreateThirdPartyCard());
         specifications.Children.Add(CreateSpecificationCard(
             "第三方与免责声明",
             "非官方项目",
@@ -364,6 +365,18 @@ public sealed partial class SettingsPage : Page
         string dialogTitle,
         string dialogContent)
     {
+        var button = CreateSpecificationCard(title, state, description, icon, SpecificationCard_Click);
+        button.Tag = (dialogTitle, dialogContent);
+        return button;
+    }
+
+    private Button CreateSpecificationCard(
+        string title,
+        string state,
+        string description,
+        Symbol icon,
+        RoutedEventHandler click)
+    {
         var text = new StackPanel { Spacing = 4 };
         text.Children.Add(new TextBlock
         {
@@ -428,10 +441,9 @@ public sealed partial class SettingsPage : Page
             BorderBrush = CardBorderBrush,
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(8),
-            Content = grid,
-            Tag = (dialogTitle, dialogContent)
+            Content = grid
         };
-        button.Click += SpecificationCard_Click;
+        button.Click += click;
         return button;
     }
 

@@ -6,6 +6,7 @@ public sealed record SubscriptionKeyRequest(Guid PublicationId, string Publisher
 public interface ISubscriptionContentKeyLease : IDisposable
 {
     ReadOnlyMemory<byte> Key { get; }
+    string? GrantId => null;
 }
 
 public interface ISubscriptionSecurity

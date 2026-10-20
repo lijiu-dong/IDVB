@@ -162,7 +162,10 @@ public sealed partial class MapListPage
             catch (Exception exception)
             {
                 if (!token.IsCancellationRequested)
-                    ReplaceCoCreationGallery(published, CreateCoCreationDescription("已发布地图读取失败：" + exception.Message));
+                {
+                    IDVBuff.Diagnostics.OutputLog.Write("WARN", "MAP/COMMUNITY", "Published maps did not load.", exception);
+                    ReplaceCoCreationGallery(published, CreateCoCreationDescription("已发布地图读取失败，请稍后重试。"));
+                }
             }
         }
     }

@@ -116,19 +116,28 @@ public sealed partial class MapListPage
         catch (Exception exception)
         {
             if (!token.IsCancellationRequested)
-                ReplaceCoCreationGallery(host, CreateCoCreationDescription((acquired ? "获取记录读取失败：" : "社区加载失败：") + exception.Message));
+            {
+                IDVBuff.Diagnostics.OutputLog.Write("WARN", "MAP/COMMUNITY", "Community gallery did not load.", exception);
+                ReplaceCoCreationGallery(host, CreateCoCreationDescription(acquired
+                    ? "获取记录读取失败，请稍后重试。" : "社区加载失败，请稍后重试。"));
+            }
         }
     }
 
     private static MapSubscriptionRecord? FindCoCreationSubscription(
         IReadOnlyList<MapSubscriptionRecord> subscriptions, MapCoCreationPublication publication)
     {
+        var byId = subscriptions.FirstOrDefault(record => record.Id == publication.Id);
+        if (byId is not null) return byId;
+        if (publication.SubscriptionLink.StartsWith("idvb-sub://v2?", StringComparison.OrdinalIgnoreCase))
+            return subscriptions.FirstOrDefault(record =>
+                Uri.TryCreate(record.FeedUri, UriKind.Absolute, out var feedUri)
+                && OnlineServiceConfiguration.Current.IsKnownSubscriptionFeed(feedUri, publication.Id));
         string? feed = null;
         try { feed = MapSubscriptionLink.Parse(publication.SubscriptionLink).FeedUri.AbsoluteUri; }
         catch (Exception exception) when (exception is FormatException or ArgumentException or InvalidDataException) { }
         return subscriptions.FirstOrDefault(record => feed is not null
-                   && string.Equals(record.FeedUri, feed, StringComparison.OrdinalIgnoreCase))
-               ?? subscriptions.FirstOrDefault(record => record.Id == publication.Id);
+                   && string.Equals(record.FeedUri, feed, StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>API versions are timestamp-prefixed, so an ordinal comparison orders them.</summary>
@@ -217,7 +226,11 @@ public sealed partial class MapListPage
         token.ThrowIfCancellationRequested();
         var record = FindCoCreationSubscription(_mapSubscriptionService.GetSubscriptions(), publication);
         if (!string.IsNullOrWhiteSpace(record?.LastError))
-            await ShowMessageAsync(installed is null ? "获取社区地图失败" : "更新社区地图失败", record.LastError);
+        {
+            IDVBuff.Diagnostics.OutputLog.Write("WARN", "MAP/COMMUNITY", "Community subscription failed: " + record.LastError);
+            await ShowMessageAsync(installed is null ? "获取社区地图失败" : "更新社区地图失败",
+                "地图暂时无法获取，请稍后重试。");
+        }
         else if (result.AppliedCount > 0)
             MapClassDiagnosticCoordinator.Instance.Trigger(_repository);
         if (IsLoaded) await ShowListAsync();

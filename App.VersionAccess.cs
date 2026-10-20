@@ -92,7 +92,7 @@ public partial class App
 
         // A late response for the previous account must never keep the runtime alive.
         if (AccountSession.PublishToken is null)
-            window?.DispatcherQueue.TryEnqueue(() => _ = StopForVersionAccessAsync("已退出登录，请重新启动程序并登录。", false));
+            window?.DispatcherQueue.TryEnqueue(ReturnToLogin);
     }
 
     private async Task MonitorVersionAccessAsync()
@@ -106,6 +106,7 @@ public partial class App
                 var result = await VersionAccessClient.CheckAsync(BuildVersionInfo.ProductVersion, _accessLifetime.Token);
                 if (!result.Allowed)
                 {
+                    if (result.LoginRequired) { ReturnToLogin(); return; }
                     await StopForVersionAccessAsync(result.Message, result.UpgradeRequired);
                     return;
                 }

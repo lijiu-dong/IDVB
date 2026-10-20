@@ -13,7 +13,7 @@ internal static class StartupSplash
     internal static StartupFocusSnapshot? LaunchFocus { get; private set; }
 
     [Flags]
-    internal enum Stage { Interface = 1, Window = 2, Services = 4, Maps = 8, Extensions = 16, Catalog = 32, Ready = 64 }
+    internal enum Stage { Interface = 1, Window = 2, Services = 4, Maps = 8, Extensions = 16, Catalog = 32, Ready = 64, Connection = 128 }
     private static int _planned = 127;
     private static int _completed;
     private static int _transition;
@@ -21,8 +21,9 @@ internal static class StartupSplash
     private static readonly TaskCompletionSource TransitionReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private static readonly TaskCompletionSource Dismissed = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    public static void Configure(bool safeMode) => _planned = safeMode
-        ? (int)(Stage.Interface | Stage.Window | Stage.Catalog | Stage.Ready) : 127;
+    public static void Configure(bool safeMode, bool connectToServer = false) => _planned = (safeMode
+        ? (int)(Stage.Interface | Stage.Window | Stage.Catalog | Stage.Ready) : 127)
+        | (connectToServer ? (int)Stage.Connection : 0);
 
     public static void Complete(Stage stage)
     {
@@ -49,6 +50,25 @@ internal static class StartupSplash
     private static int _closed;
     private static int _started;
     private static readonly ManualResetEventSlim FirstPaint = new(false);
+    private static SplashForm? _window;
+
+    // Login is interactive; temporarily yield the existing splash without ending its message loop.
+    public static async Task SetVisibleAsync(bool visible)
+    {
+        var window = Volatile.Read(ref _window);
+        if (window is null || !window.IsHandleCreated || Volatile.Read(ref _closed) != 0) return;
+        var applied = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            window.BeginInvoke(() =>
+            {
+                if (!window.IsDisposed && Volatile.Read(ref _closed) == 0) window.Visible = visible;
+                applied.TrySetResult();
+            });
+            await Task.WhenAny(applied.Task, Dismissed.Task);
+        }
+        catch (InvalidOperationException) when (window.IsDisposed || Volatile.Read(ref _closed) != 0) { }
+    }
 
     public static void Show()
     {
@@ -60,6 +80,7 @@ internal static class StartupSplash
             try
             {
                 using var splash = new SplashForm();
+                Volatile.Write(ref _window, splash);
                 if (Volatile.Read(ref _closed) == 0)
                     Forms.Application.Run(splash);
             }
@@ -67,7 +88,7 @@ internal static class StartupSplash
             {
                 StartupTimeline.Write("Native startup splash unavailable; application startup continues.", exception);
             }
-            finally { FirstPaint.Set(); TransitionReady.TrySetResult(); Dismissed.TrySetResult(); }
+            finally { Volatile.Write(ref _window, null); FirstPaint.Set(); TransitionReady.TrySetResult(); Dismissed.TrySetResult(); }
         }) { IsBackground = true, Name = "IDVB startup splash" };
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();

@@ -86,6 +86,13 @@ public static class Program
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static int RunApplication(string[] args)
     {
+        bool returnToLogin;
+        try { returnToLogin = LoginReturnProcess.WaitForPreviousProcess(args); }
+        catch (Exception exception)
+        {
+            MessageBoxW(0, exception.Message, "Identity Vision Bridge", 0x10);
+            return 2;
+        }
         StartupTimeline.Write("Legacy launch redirect check begin (includes app-data path resolution).");
         if (UpdateLifecycleState.TryRedirectLegacyLaunch(args))
         {
@@ -159,23 +166,17 @@ public static class Program
         }
 
         StartupTimeline.Write($"Launch mode: cli={isCli}; isolatedDevelopment={isIsolatedDevelopmentInstance}.");
-        if (!isCli && !PassDesktopLoginGate())
-        {
-            // The usage tracker is disposed by its using scope.
-            StopMemoryDiagnostics();
-            _guiInstance?.Dispose();
-            _guiInstance = null;
-            return 0;
-        }
-        if (!isCli)
-        {
-            var startupPreferences = MainProgramPreferences.Load();
-            StartupSplash.Configure(startupPreferences.SafeMode);
-            if (!startupPreferences.StartMinimized)
-                StartupSplash.Show();
-        }
         try
         {
+            if (!isCli)
+            {
+                var startupPreferences = MainProgramPreferences.Load();
+                var connectToServer = Features.Accounts.DesktopLoginGateHost.Gate.IsConfigured;
+                StartupSplash.Configure(startupPreferences.SafeMode, connectToServer);
+                StartupSplash.Report(connectToServer ? "正在连接服务器…" : "正在准备界面…");
+                if (!returnToLogin && !startupPreferences.StartMinimized) StartupSplash.Show();
+                if (!PassDesktopLoginGate(returnToLogin, !startupPreferences.StartMinimized)) return 0;
+            }
             return RunWinUi();
         }
         finally
@@ -193,7 +194,7 @@ public static class Program
     /// 1.7.1-preview.3: before any WinUI work, the server must confirm this account may start IDVB on this
     /// installation (or a signed offline allowance must still be valid). The public build has no gate.
     /// </summary>
-    private static bool PassDesktopLoginGate()
+    private static bool PassDesktopLoginGate(bool returnToLogin, bool showStartupSplash)
     {
         var gate = Features.Accounts.DesktopLoginGateHost.Gate;
         if (!gate.IsConfigured) return true;
@@ -205,9 +206,38 @@ public static class Program
         };
         try
         {
-            var (outcome, _) = Lifecycle.LoginWindow.RunAsync(gate, Lifecycle.LoginWindow.Mode.Startup).GetAwaiter().GetResult();
-            StartupTimeline.Write($"Desktop login gate: {outcome}.");
-            return outcome == Lifecycle.LoginWindow.Result.Granted;
+            if (returnToLogin)
+            {
+                var (outcome, _) = Lifecycle.LoginWindow.RunAsync(gate, Lifecycle.LoginWindow.Mode.Startup,
+                    new(Core.Contracts.Online.DesktopAccessOutcome.LoginRequired)).GetAwaiter().GetResult();
+                if (outcome != Lifecycle.LoginWindow.Result.Recheck) return false;
+            }
+            while (true)
+            {
+                StartupSplash.Report("正在连接服务器…");
+                RestoreStartupSplash(showStartupSplash);
+                Core.Contracts.Online.DesktopAccessResult access;
+                try { access = gate.CheckAccessAsync().GetAwaiter().GetResult(); }
+                catch (Exception exception)
+                {
+                    StartupTimeline.Write("Desktop access check failed.", exception);
+                    access = new(Core.Contracts.Online.DesktopAccessOutcome.Unavailable, "连接服务器时出现错误。");
+                }
+                StartupTimeline.Write($"Desktop access outcome: {access.Outcome}.");
+                if (access.Outcome is Core.Contracts.Online.DesktopAccessOutcome.Granted or Core.Contracts.Online.DesktopAccessOutcome.NotConfigured)
+                {
+                    StartupSplash.Complete(StartupSplash.Stage.Connection);
+                    return true;
+                }
+                StartupSplash.SetVisibleAsync(false).GetAwaiter().GetResult();
+                var (outcome, _) = Lifecycle.LoginWindow.RunAsync(gate, Lifecycle.LoginWindow.Mode.Startup, access).GetAwaiter().GetResult();
+                StartupTimeline.Write($"Desktop login gate: {outcome}.");
+                if (outcome == Lifecycle.LoginWindow.Result.Recheck) continue;
+                if (outcome != Lifecycle.LoginWindow.Result.Granted) return false;
+                StartupSplash.Complete(StartupSplash.Stage.Connection);
+                RestoreStartupSplash(showStartupSplash);
+                return true;
+            }
         }
         catch (Exception exception)
         {
@@ -215,6 +245,15 @@ public static class Program
             MessageBoxW(0, $"无法打开登录窗口：{exception.Message}", "Identity Vision Bridge", 0x10);
             return false;
         }
+    }
+
+    private static void RestoreStartupSplash(bool enabled)
+    {
+        if (!enabled) return;
+        // Returning from logout starts with login only: there may be no splash to unhide yet.
+        // Show is idempotent, so normal login continues to reuse its existing message loop.
+        StartupSplash.Show();
+        StartupSplash.SetVisibleAsync(true).GetAwaiter().GetResult();
     }
 
     internal static void StopMemoryDiagnostics() => Interlocked.Exchange(ref _memoryDiagnostics, null)?.Dispose();

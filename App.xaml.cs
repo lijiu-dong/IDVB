@@ -79,6 +79,7 @@ namespace IDVBuff
                     return;
                 }
 
+                StartAccountSessionMonitor();
                 WriteStartupTrace("Creating the main window.");
                 _startupLaunchFocus = StartupSplash.LaunchFocus ?? StartupFocusSnapshot.Capture();
                 WriteStartupTrace("Preferences load begin.");
@@ -105,8 +106,10 @@ namespace IDVBuff
                     Exit();
                     return;
                 }
+                if (IsApplicationStopping) return;
                 window.Closed += (_, _) => StopStartupRenderObservation();
                 if (!await RequireVersionAccessAsync()) { Exit(); return; }
+                if (IsApplicationStopping) return;
                 window.AppWindow.Closing += AppWindow_Closing;
                 window.AppWindow.Changed += AppWindow_Changed;
                 window.Closed += Window_Closed;

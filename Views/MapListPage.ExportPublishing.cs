@@ -366,7 +366,7 @@ public sealed partial class MapListPage
                 {
                     var publishedMaps = publication.ExportedMaps;
                     MapOperationProgress.Report(.92, "正在登记发布结果……");
-                    var link = MapSubscriptionLink.Parse(linkText);
+                    var link = MapSubscriptionLink.Parse(publication.SubscriptionLink);
                     await _repository.MarkPublishedMapsAsSubscriptionAsync(
                         publishedMaps.Select(map => map.Id).ToArray(), publication.PublicationId,
                         publication.PublisherDisplayName, link.PublisherKeyId, publication.Version,

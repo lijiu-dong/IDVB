@@ -133,7 +133,13 @@ public sealed partial class MainPage : Page
                     Icon = new SymbolIcon(Symbol.LeaveChat),
                     Foreground = FluentTheme.Brush(this, "SystemFillColorCriticalBrush")
                 };
-                logout.Click += async (_, _) => await AccountSession.LogoutAsync();
+                logout.Click += async (_, _) =>
+                {
+                    try { await AccountSession.LogoutAsync(); }
+                    // Local logout has already stopped the runtime; a failed remote revoke must not
+                    // surface as an unhandled async event while the window is being retired.
+                    catch (Exception exception) { IDVBuff.Diagnostics.OutputLog.Write("ERROR", "ACCOUNT", "Logout revoke failed.", exception); }
+                };
                 new MenuFlyout { Items = { logout } }.ShowAt(button);
             }
             else

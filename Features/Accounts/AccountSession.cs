@@ -73,3 +73,18 @@ internal static partial class DesktopLoginGateHost
     }
     static partial void ConfigurePrivate(ref IDesktopLoginGate gate);
 }
+
+/// <summary>Optional resource capability. Public builds explicitly report unavailable.</summary>
+internal static partial class DesktopResourceUnlockHost
+{
+    private static readonly Lazy<IDesktopResourceUnlock> Instance = new(Create);
+    internal static IDesktopResourceUnlock Service => Instance.Value;
+    private static IDesktopResourceUnlock Create()
+    {
+        IDesktopResourceUnlock service = new UnavailableDesktopResourceUnlock();
+        ConfigurePrivate(ref service);
+        if (service is IDisposable disposable) AppDomain.CurrentDomain.ProcessExit += (_, _) => disposable.Dispose();
+        return service;
+    }
+    static partial void ConfigurePrivate(ref IDesktopResourceUnlock service);
+}
