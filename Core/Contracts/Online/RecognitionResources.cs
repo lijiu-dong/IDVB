@@ -5,6 +5,11 @@ using System.Runtime.CompilerServices;
 [assembly: InternalsVisibleTo("IDVB.RealCLI")]
 [assembly: InternalsVisibleTo("IdentityVisionBridge.Vision")]
 [assembly: InternalsVisibleTo("IDVBuff.WinUI.RegressionTests")]
+// The public suite exercises the same production paths as the shipped app, so it
+// has to bind the host-private recognition session itself (see
+// IDVBuff.Tests\RecognitionResourceTestHost.cs). Binding grants nothing: the
+// session only serves bytes from the test output's own Assets folder.
+[assembly: InternalsVisibleTo("IDVBuff.Tests")]
 
 namespace IDVBuff.Core.Contracts.Online;
 
