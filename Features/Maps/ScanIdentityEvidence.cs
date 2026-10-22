@@ -315,7 +315,8 @@ internal static class ScanIdentityVerifier
     internal const double SupportTolerancePixels = 5.5;
     internal const double MinimumSupport = .88;
     internal const double MinimumRefinementSupport = .80;
-    internal const double MaximumContinuousConflictPixels = 30;
+    internal const double MaximumContinuousConflictFraction = .15;
+    internal static double GetContinuousConflictLimitPixels(int width, int height) => Math.Min(width, height) * MaximumContinuousConflictFraction;
     internal static bool HasRefinablePose(ScanIdentityEvidence evidence) =>
         evidence.State == ScanIdentityState.Excluded && evidence.TestedPoints >= 80
         && evidence.TestedPoints + evidence.UnknownReferencePoints == evidence.TotalPoints
@@ -418,6 +419,7 @@ internal static class ScanIdentityVerifier
             return WithPose(ScanIdentityEvidence.Unverified("insufficient-strong-visible-structure")
                 with { TestedPoints = tested, TotalPoints = points.Length, UnknownReferencePoints = unknown,
                     StrongTestedPoints = strongTested });
+        var conflictLimit = GetContinuousConflictLimitPixels(frame.Source.Width, frame.Source.Height);
         var longest = 0d;
         Point? conflictStart = null, conflictEnd = null;
         var prepared = deep ? frame.PreparedConflictContours : null;
@@ -425,9 +427,9 @@ internal static class ScanIdentityVerifier
         {
             if (context is { CanCompute: false }) return WithPose(ScanIdentityEvidence.Unverified("deadline"));
             var measured = MeasureStraightConflict(frame.Contours[i], Distance, out var measuredStart, out var measuredEnd,
-                preparedVertices: prepared?[i]);
+                preparedVertices: prepared?[i], stopAtPixels: conflictLimit);
             if (measured > longest) { longest = measured; conflictStart = measuredStart; conflictEnd = measuredEnd; }
-            if (longest >= MaximumContinuousConflictPixels) break;
+            if (longest >= conflictLimit) break;
         }
         var support = hits / (double)tested;
         var spatialConflict = false;
@@ -435,7 +437,7 @@ internal static class ScanIdentityVerifier
         for (var cell = 0; cell < cellTotals.Length; cell++)
             if (cellTotals[cell] >= 30 && cellHits[cell] < cellTotals[cell] * .70)
             { spatialConflict = true; if (conflictCell < 0) conflictCell = cell; }
-        var accepted = support >= MinimumSupport && !spatialConflict && longest < MaximumContinuousConflictPixels;
+        var accepted = support >= MinimumSupport && !spatialConflict && longest < conflictLimit;
         return new(accepted ? ScanIdentityState.Supported : ScanIdentityState.Excluded,
             tested, points.Length, distance / tested, support, longest,
             accepted ? "visible-structure-supported" : support < MinimumSupport ? "unexplained-visible-structure"
@@ -451,12 +453,12 @@ internal static class ScanIdentityVerifier
             EvaluatedScale = scale, ViewportOffsetX = tx, ViewportOffsetY = ty
         };
     }
-
     internal static double MeasureStraightConflict(Point[] contour, Func<Point, double> distance)
         => MeasureStraightConflict(contour, distance, out _, out _);
 
     internal static double MeasureStraightConflict(Point[] contour, Func<Point, double> distance,
-        out Point? conflictStart, out Point? conflictEnd, Point[]? preparedVertices = null)
+        out Point? conflictStart, out Point? conflictEnd, Point[]? preparedVertices = null,
+        double stopAtPixels = double.PositiveInfinity)
     {
         conflictStart = null; conflictEnd = null;
         // A small badge's perimeter (or a contour visited twice) is not the length
@@ -485,7 +487,7 @@ internal static class ScanIdentityVerifier
                     var dx = p.X - runStart.Value.X; var dy = p.Y - runStart.Value.Y;
                     var run = Math.Sqrt((double)dx * dx + (double)dy * dy);
                     if (run > longest) { longest = run; conflictStart = runStart; conflictEnd = p; }
-                    if (longest >= MaximumContinuousConflictPixels) return longest;
+                    if (longest >= stopAtPixels) return longest;
                 }
                 else runStart = null;
                 if (p == end) break;

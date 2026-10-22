@@ -105,6 +105,25 @@ public static class Program
             string.Equals(argument, "--cli", StringComparison.OrdinalIgnoreCase));
         var isIsolatedDevelopmentInstance = args.Any(argument =>
             string.Equals(argument, "--isolated-dev-instance", StringComparison.OrdinalIgnoreCase));
+        var startupPreferences = !isCli ? MainProgramPreferences.Load() : null;
+        if (startupPreferences is { SafeMode: false })
+        {
+            // Elevate before login, single-instance ownership, or runtime initialization.
+            // Safe mode and Velopack's fast-exit hooks must remain usable without UAC.
+            try
+            {
+                // CLI can also be selected by --command, --script, or attach options.
+                if (!Cli.CliLaunchOptions.Parse(args).IsCli && AdministratorStartup.TryRelaunch(args))
+                    return 0;
+            }
+            catch (Exception exception) when (exception is System.ComponentModel.Win32Exception
+                or InvalidOperationException or IOException or UnauthorizedAccessException or ArgumentException)
+            {
+                MessageBoxW(0, $"无法以管理员权限启动 Identity Vision Bridge：{exception.Message}",
+                    "Identity Vision Bridge", 0x10);
+                return 2;
+            }
+        }
         if (!isCli && !isIsolatedDevelopmentInstance)
         {
             StartupTimeline.Write("GUI instance coordination begin.");
@@ -168,9 +187,8 @@ public static class Program
         StartupTimeline.Write($"Launch mode: cli={isCli}; isolatedDevelopment={isIsolatedDevelopmentInstance}.");
         try
         {
-            if (!isCli)
+            if (startupPreferences is not null)
             {
-                var startupPreferences = MainProgramPreferences.Load();
                 var connectToServer = Features.Accounts.DesktopLoginGateHost.Gate.IsConfigured;
                 StartupSplash.Configure(startupPreferences.SafeMode, connectToServer);
                 StartupSplash.Report(connectToServer ? "正在连接服务器…" : "正在准备界面…");

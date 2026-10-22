@@ -31,6 +31,9 @@ public sealed partial class SessionOrchestrator
             return;
         }
 
+        if (RejectUnauthorizedMatchOperation("quick-scan"))
+            return;
+
         CancelMapObservation(clearPreview: true);
         // Rescanning supersedes the old map's alignment before waiting for its
         // gate. Otherwise recovery of a wrong manual choice consumes this scan.

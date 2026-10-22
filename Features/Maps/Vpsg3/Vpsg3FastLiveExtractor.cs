@@ -32,6 +32,7 @@ public static class Vpsg3FastLiveExtractor
         Vpsg3LiveExtractorScratch? scratch = null)
     {
         ArgumentNullException.ThrowIfNull(source);
+        IDVBuff.Core.Contracts.Online.RecognitionResources.Demand();
         if (source.Empty())
             throw new ArgumentException("Source frame cannot be empty.", nameof(source));
 
@@ -195,11 +196,12 @@ public static class Vpsg3FastLiveExtractor
 
     private static void ClassifyStructurePureMorphology(Vpsg3LiveExtractorScratch s)
     {
-        Cv2.InRange(s.Hsv, new Scalar(0, 18, 82), new Scalar(25, 165, 200), s.Room1);
-        Cv2.InRange(s.Hsv, new Scalar(170, 18, 82), new Scalar(179, 165, 200), s.Room2);
+        var profile = NativeRecognitionProfile.Current;
+        Cv2.InRange(s.Hsv, profile.RoomLow, profile.RoomHigh, s.Room1);
+        Cv2.InRange(s.Hsv, profile.Room2Low, profile.Room2High, s.Room2);
         Cv2.BitwiseOr(s.Room1, s.Room2, s.Room);
 
-        Cv2.InRange(s.Hsv, new Scalar(95, 14, 82), new Scalar(130, 105, 200), s.Corridor);
+        Cv2.InRange(s.Hsv, profile.CorridorLow, profile.CorridorHigh, s.Corridor);
 
         s.Room.SetTo(Scalar.Black, s.Exclusion);
         s.Corridor.SetTo(Scalar.Black, s.Exclusion);
@@ -230,9 +232,10 @@ public static class Vpsg3FastLiveExtractor
 
     private static void RemoveWarmTextureBoundaries(Vpsg3LiveExtractorScratch s)
     {
+        var profile = NativeRecognitionProfile.Current;
         using var originalEdges = s.CandidateEdges.Clone();
-        Cv2.InRange(s.Hsv, new Scalar(0, 18, SemanticStructureContours.MinimumWarmFloorValue), new Scalar(25, 165, 200), s.Room1);
-        Cv2.InRange(s.Hsv, new Scalar(170, 18, SemanticStructureContours.MinimumWarmFloorValue), new Scalar(179, 165, 200), s.Room2);
+        Cv2.InRange(s.Hsv, profile.RoomLow with { Val2 = SemanticStructureContours.MinimumWarmFloorValue }, profile.RoomHigh, s.Room1);
+        Cv2.InRange(s.Hsv, profile.Room2Low with { Val2 = SemanticStructureContours.MinimumWarmFloorValue }, profile.Room2High, s.Room2);
         Cv2.BitwiseOr(s.Room1, s.Room2, s.Room);
         s.Room.SetTo(Scalar.Black, s.Exclusion);
         Cv2.MorphologyEx(s.Room, s.Room, MorphTypes.Open, s.K5);
@@ -279,7 +282,8 @@ public static class Vpsg3FastLiveExtractor
     {
         s.PrepareSupportForSize(bgr.Size());
         Cv2.CvtColor(bgr, s.Gray, ColorConversionCodes.BGR2GRAY);
-        Cv2.Canny(s.Gray, s.CannyStrong, 80d, 180d, apertureSize: 3, L2gradient: true);
+        var profile = NativeRecognitionProfile.Current;
+        Cv2.Canny(s.Gray, s.CannyStrong, profile.CannyLow, profile.CannyHigh, apertureSize: 3, L2gradient: true);
         Cv2.Dilate(s.CannyStrong, s.Support, s.K5);
         s.Support.CopyTo(s.StrongSupport);
         // Fog lowers wall contrast. Recover a sharp, bright rim only where the semantic

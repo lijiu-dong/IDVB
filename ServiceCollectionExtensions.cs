@@ -79,6 +79,14 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IMapPublicationService>(sp => new MapPublicationService(
             sp.GetRequiredService<MapRepository>()));
         services.AddSingleton<IAccountService>(_ => AccountSession.Service);
+        services.TryAddSingleton<IUsageMeter>(_ => DesktopUsageMeterHost.Meter);
+        services.TryAddSingleton<IEntitlementRedemptionService>(_ => DesktopEntitlementRedemptionHost.Service);
+#if !IDVB_HEADLESS
+        services.TryAddSingleton<SponsorshipPlanCatalog>();
+        services.AddTransient(sp => new AccountUsageViewModel(sp.GetRequiredService<IUsageMeter>(),
+            sp.GetRequiredService<IAccountService>(), sp.GetRequiredService<SponsorshipPlanCatalog>(),
+            action => dispatcher.TryEnqueue(() => action())));
+#endif
         services.AddSingleton<ICommunityService>(_ => CoCreationPublicationClient.Service);
         services.AddSingleton<IVersionPolicyService>(_ => VersionAccessClient.Service);
         services.AddSingleton<IApplicationUpdateService>(_ => AutomaticUpdateLauncher.Service);
@@ -240,7 +248,7 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<ICaptureProtectionService>(),
                 headless: headless,
                 // 只有桌面主程序的开始/结束对局计时；无界面宿主（RealCLI）不计时。
-                usageMeter: headless ? null : IDVBuff.Features.Accounts.DesktopUsageMeterHost.Meter));
+                usageMeter: sp.GetRequiredService<IUsageMeter>()));
         services.AddSingleton<ISessionOrchestrator>(sp =>
             sp.GetRequiredService<SessionOrchestrator>());
         // 插件对局控制能力：内置插件与第三方插件共用同一套语义

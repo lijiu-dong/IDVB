@@ -35,6 +35,8 @@ public sealed partial class SessionOrchestrator
 
     public HostVisionSnapshot GetPluginSnapshot()
     {
+        if (!IsMatchStarted)
+            return new() { IsMatchStarted = false, SelectedMapClass = LastSelectedMapClass, StatusMessage = StatusMessage };
         var session = SessionSnapshot;
         return new()
         {
@@ -55,6 +57,8 @@ public sealed partial class SessionOrchestrator
         cancellationToken.ThrowIfCancellationRequested();
         if (!_dispatcher.HasThreadAccess) throw new InvalidOperationException("Host scan must run on the dispatcher.");
         var operationId = Guid.NewGuid().ToString("N");
+        if (!_disposed && RejectUnauthorizedMatchOperation("plugin-scan"))
+            return new() { OperationId = operationId, Outcome = VisionOutcome.Rejected, Reason = "usage-authorization-unavailable" };
         if (_disposed || !_initialized || !_settings!.IsEnabled || !IsMatchStarted)
             return new() { OperationId = operationId, Outcome = VisionOutcome.NotReady, Reason = "host-not-ready-or-match-not-started" };
         if (PluginControlBusy)
@@ -104,6 +108,8 @@ public sealed partial class SessionOrchestrator
         cancellationToken.ThrowIfCancellationRequested();
         if (!_dispatcher.HasThreadAccess) throw new InvalidOperationException("Host alignment must run on the dispatcher.");
         var operationId = Guid.NewGuid().ToString("N");
+        if (!_disposed && RejectUnauthorizedMatchOperation("plugin-alignment"))
+            return new() { OperationId = operationId, Outcome = VisionOutcome.Rejected, Reason = "usage-authorization-unavailable" };
         if (_disposed || !_initialized || !_settings!.IsEnabled || !IsMatchStarted || !_gameMapToggleState.IsOpen
             || (LastRecognition is null && PendingAlignmentIdentity is null))
             return new() { OperationId = operationId, Outcome = VisionOutcome.NotReady, Reason = "host-or-identity-or-open-map-not-ready" };

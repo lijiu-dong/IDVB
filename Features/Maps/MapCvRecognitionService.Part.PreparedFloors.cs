@@ -72,13 +72,14 @@ public sealed partial class MapCvRecognitionService
         return Cv2.ImRead(GetAlignmentReferencePath(map, floor, tuning), ImreadModes.Unchanged);
     }
 
-    private Mat ReadCoverageReference(MapRecord map, string floor)
+    private Mat ReadCoverageGeometry(MapRecord map, string floor)
     {
         if (TryGetVpsg3FloorLease(map, floor, out var lease))
         {
             using (lease)
-                if (lease.Floor.CreateReferenceImage() is { } image) return image;
+                if (lease.Floor.CreateGeometryImage() is { } image) return image;
         }
-        return Cv2.ImRead(_repository.GetPrebuiltStructureLinePath(map, floor), ImreadModes.Unchanged);
+        using var input = Cv2.ImRead(_repository.GetPrebuiltStructureLinePath(map, floor), ImreadModes.Unchanged);
+        return SemanticStructureContours.Geometry(input);
     }
 }

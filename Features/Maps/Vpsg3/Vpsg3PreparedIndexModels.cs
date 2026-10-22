@@ -338,7 +338,10 @@ public sealed partial class Vpsg3PreparedFloor : IDisposable
 
             try
             {
-                using var input = CreateReferenceImage() ?? Cv2.ImRead(linePath, ImreadModes.Unchanged);
+                using var residentGeometry = CreateGeometryImage();
+                if (residentGeometry is not null)
+                    return EnsurePrecisionDistance(residentGeometry);
+                using var input = Cv2.ImRead(linePath, ImreadModes.Unchanged);
                 using var edgeImage = SemanticStructureContours.Geometry(input);
                 if (edgeImage.Empty() || edgeImage.Width != ReferenceWidth || edgeImage.Height != ReferenceHeight)
                     return false;

@@ -46,6 +46,8 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
     {
         if (_disposed)
             return;
+        if (RejectUnauthorizedMatchOperation("alignment"))
+            return;
         _lastAlignmentPhaseTimings = null;
         _lastAlignmentOperationTrace = null;
         if (!_initialized || _settings is null)
@@ -417,6 +419,8 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
                 _matchSession.End();
             _lifetimeCts.Cancel();
             CancelMatchOperations();
+            await SetMatchPluginsActivatedCoreAsync(false);
+            await StopUsageMeteringAsync();
             await DrainMatchOperationsAsync();
             await DrainMapCacheWritesAsync();
             await DrainHumanMapSelectionRecordingAsync();

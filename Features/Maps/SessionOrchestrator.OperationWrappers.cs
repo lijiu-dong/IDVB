@@ -98,6 +98,12 @@ public sealed partial class SessionOrchestrator
             outcome = "cancelled";
             terminalReason = "match-cancellation";
         }
+        catch (IDVBuff.Core.Contracts.Online.RecognitionAuthorizationException)
+        {
+            outcome = "rejected";
+            terminalReason = "usage-authorization-unavailable";
+            NotifyUsageUnavailable();
+        }
         catch (Exception ex)
         {
             outcome = "failed";

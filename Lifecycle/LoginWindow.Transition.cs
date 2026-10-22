@@ -91,6 +91,7 @@ internal sealed partial class LoginWindow
         }
         _transitionSurface.ClearFrames();
         _transitionFocus = null;
+        if (!IsDisposed) Invalidate(true);
     }
 
     private sealed class TransitionSurface : Forms.Control

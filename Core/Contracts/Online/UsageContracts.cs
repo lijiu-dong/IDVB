@@ -1,6 +1,6 @@
 namespace IDVBuff.Core.Contracts.Online;
 
-public enum UsagePoolKind { Daily, WeeklyExtra }
+public enum UsagePoolKind { Daily, WeeklyExtra, FreeDaily }
 
 /// <summary>One quota pool. A null limit means unlimited; a zero limit means the tier has no such pool.</summary>
 public sealed record UsagePool(UsagePoolKind Kind, long UsedSeconds, long? LimitSeconds, DateTimeOffset ResetsAt)
@@ -13,7 +13,9 @@ public sealed record UsageTier(string Key, string DisplayName, int Rank, bool Un
 
 /// <summary>Server view of the account's quota. Enforced is false while the master switch is off.</summary>
 public sealed record UsageSnapshot(bool Enforced, UsageTier? Tier, IReadOnlyList<UsagePool> Pools,
-    long? RemainingSeconds, DateTimeOffset ServerTime);
+    long? RemainingSeconds, DateTimeOffset ServerTime, UsagePoints? Points = null);
+
+public sealed record UsagePoints(decimal FreePoints, decimal PaidPoints, decimal HoursPerPoint);
 
 public enum UsageStartOutcome
 {

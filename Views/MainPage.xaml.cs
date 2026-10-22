@@ -70,6 +70,7 @@ public sealed partial class MainPage : Page
             if (ModuleContentHost.Content is HomePage home) home.UseBloomTextureCache(_bloomTextureCache);
             AccountSession.Changed += AccountSession_Changed;
             UpdateAccountNavigation();
+            _ = InitializeAccountUsageAsync();
             InitializeNotifications();
             _ = SupportMotion;
         };
@@ -79,6 +80,7 @@ public sealed partial class MainPage : Page
             ++_navigationRevision;
             _displayedModuleId = null;
             AccountSession.Changed -= AccountSession_Changed;
+            ReleaseAccountUsage();
             _feedbackDialog?.Hide();
             if (!_feedbackOpen) ReleaseFeedbackDialog();
             CleanupNotifications();
@@ -126,22 +128,7 @@ public sealed partial class MainPage : Page
         if (entry.ModuleId == "account")
         {
             if (AccountSession.Identity is not null)
-            {
-                var logout = new MenuFlyoutItem
-                {
-                    Text = "退出登录",
-                    Icon = new SymbolIcon(Symbol.LeaveChat),
-                    Foreground = FluentTheme.Brush(this, "SystemFillColorCriticalBrush")
-                };
-                logout.Click += async (_, _) =>
-                {
-                    try { await AccountSession.LogoutAsync(); }
-                    // Local logout has already stopped the runtime; a failed remote revoke must not
-                    // surface as an unhandled async event while the window is being retired.
-                    catch (Exception exception) { IDVBuff.Diagnostics.OutputLog.Write("ERROR", "ACCOUNT", "Logout revoke failed.", exception); }
-                };
-                new MenuFlyout { Items = { logout } }.ShowAt(button);
-            }
+                await ToggleAccountMenuAsync(button);
             else
             {
                 try { _ = await AccountSession.LoginAsync(); }

@@ -74,6 +74,8 @@ public sealed partial class MainPage : Page
                     ? taggedEntry.ExpansionVisibility
                     : Visibility.Visible;
         }
+        if (ReferenceEquals(button, AccountNavigationButton) && IDVBuff.Features.Accounts.AccountSession.Identity is null)
+            AccountNavigationPlan.Visibility = Visibility.Collapsed;
     }
 
     private NavigationEntry? GetVisibleNavigationEntry(NavigationEntry? entry)

@@ -85,6 +85,7 @@ public sealed partial class FloorIndicatorRecognizer : IDisposable
         MapFloorRecognitionTuning tuning)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        IDVBuff.Core.Contracts.Online.RecognitionResources.Demand();
         tuning ??= new MapFloorRecognitionTuning();
         tuning = tuning.Clone();
         tuning.Normalize();
@@ -224,6 +225,7 @@ public sealed partial class FloorIndicatorRecognizer : IDisposable
         MapFloorRecognitionTuning tuning)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        IDVBuff.Core.Contracts.Online.RecognitionResources.Demand();
         ArgumentNullException.ThrowIfNull(image);
         if (image.Empty())
         {

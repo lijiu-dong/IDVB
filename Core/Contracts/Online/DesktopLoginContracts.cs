@@ -15,12 +15,17 @@ public enum DesktopAccessOutcome
     Unavailable,
     /// <summary>Public build without the private online services: no gate.</summary>
     NotConfigured,
+    /// <summary>The product version is no longer allowed to start.</summary>
+    UpdateRequired,
 }
 
 public sealed record DesktopAccessResult(DesktopAccessOutcome Outcome, string? Message = null,
-    DateTimeOffset? OfflineUntil = null, AccountIdentity? Identity = null);
+    DateTimeOffset? OfflineUntil = null, AccountIdentity? Identity = null)
+{
+    public const string VersionUpdateMessage = "当前版本已停用，请更新后继续使用 IDVB。";
+}
 
-public enum DesktopAuthStepKind { SignedIn, VerificationRequired, CodeSent, PasswordChanged, Failed }
+public enum DesktopAuthStepKind { SignedIn, VerificationRequired, CodeSent, PasswordChanged, Failed, CodeVerified }
 
 /// <summary>One step of the native login / registration flow. Field errors are keyed by email, password, code, displayName.</summary>
 public sealed record DesktopAuthStep(DesktopAuthStepKind Kind, string? Message = null, string? MaskedEmail = null,
@@ -36,9 +41,11 @@ public interface IDesktopLoginGate
     Task<DesktopAuthStep> LoginAsync(string email, string password, CancellationToken cancellationToken = default);
     Task<DesktopAuthStep> ConfirmLoginAsync(string email, string password, string code, CancellationToken cancellationToken = default);
     Task<DesktopAuthStep> StartRegistrationAsync(string email, CancellationToken cancellationToken = default);
+    Task<DesktopAuthStep> VerifyRegistrationCodeAsync(string email, string code, CancellationToken cancellationToken = default);
     Task<DesktopAuthStep> ConfirmRegistrationAsync(string email, string code, string password, string displayName,
         CancellationToken cancellationToken = default);
     Task<DesktopAuthStep> RequestPasswordResetAsync(string email, CancellationToken cancellationToken = default);
+    Task<DesktopAuthStep> VerifyPasswordResetCodeAsync(string email, string code, CancellationToken cancellationToken = default);
     Task<DesktopAuthStep> ConfirmPasswordResetAsync(string email, string code, string newPassword,
         CancellationToken cancellationToken = default);
 }
@@ -55,9 +62,11 @@ public sealed class UnavailableDesktopLoginGate : IDesktopLoginGate
     public Task<DesktopAuthStep> LoginAsync(string email, string password, CancellationToken cancellationToken = default) => Unavailable();
     public Task<DesktopAuthStep> ConfirmLoginAsync(string email, string password, string code, CancellationToken cancellationToken = default) => Unavailable();
     public Task<DesktopAuthStep> StartRegistrationAsync(string email, CancellationToken cancellationToken = default) => Unavailable();
+    public Task<DesktopAuthStep> VerifyRegistrationCodeAsync(string email, string code, CancellationToken cancellationToken = default) => Unavailable();
     public Task<DesktopAuthStep> ConfirmRegistrationAsync(string email, string code, string password, string displayName,
         CancellationToken cancellationToken = default) => Unavailable();
     public Task<DesktopAuthStep> RequestPasswordResetAsync(string email, CancellationToken cancellationToken = default) => Unavailable();
+    public Task<DesktopAuthStep> VerifyPasswordResetCodeAsync(string email, string code, CancellationToken cancellationToken = default) => Unavailable();
     public Task<DesktopAuthStep> ConfirmPasswordResetAsync(string email, string code, string newPassword,
         CancellationToken cancellationToken = default) => Unavailable();
 }

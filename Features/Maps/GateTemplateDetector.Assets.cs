@@ -6,6 +6,19 @@ namespace IDVBuff.Features.Maps;
 
 public sealed partial class GateTemplateDetector
 {
+    private static Mat LoadGate(string gatePath)
+    {
+        using var gate = RecognitionAssetReader.Decode(gatePath, ImreadModes.Unchanged);
+        if (gate.Empty())
+            throw new InvalidOperationException($"无法读取门图标资源：{gatePath}");
+
+        using var gateEdges = CreateEdges(gate);
+        if (Cv2.CountNonZero(gateEdges) == 0)
+            throw new InvalidOperationException("门图标资源无法生成有效的边缘模板。");
+        return gate.Clone();
+    }
+
+
     public static Mat CreateEdges(Mat source)
     {
         using var gray = new Mat();
@@ -104,7 +117,7 @@ public sealed partial class GateTemplateDetector
         if (referenceImage.Empty())
             return null;
 
-        using var gate = Cv2.ImRead(ResolveGateAssetPath(), ImreadModes.Unchanged);
+        using var gate = RecognitionAssetReader.Decode(ResolveGateAssetPath(), ImreadModes.Unchanged);
         if (gate.Empty())
             return null;
 

@@ -157,6 +157,7 @@ public sealed partial class MainSettingsPage : Page
                 _preferences.EnhancedMiniMapEnabled,
                 value => SavePreferenceAsync(() => _preferences.EnhancedMiniMapEnabled = value)));
             content.Children.Add(CreateOverlayNotificationTestCard());
+            content.Children.Add(CreateClearAccountUsageCard());
         }
 
         content.Children.Add(new TextBlock

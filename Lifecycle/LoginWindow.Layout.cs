@@ -67,7 +67,7 @@ internal sealed partial class LoginWindow
         }
         Font = _bodyFont;
         _closeButton.Font = _titleFont;
-        _content.Bounds = new(Scale(32), Scale(76), Scale(BaseWidth - 64), Scale(height - 104));
+        _content.Bounds = new(Scale(32), Scale(44), Scale(BaseWidth - 64), Scale(height - 68));
         _closeButton.Bounds = new(Scale(BaseWidth - 44), Scale(8), Scale(32), Scale(32));
         Invalidate();
     }
@@ -79,8 +79,6 @@ internal sealed partial class LoginWindow
         g.SmoothingMode = SmoothingMode.AntiAlias;
         using var border = new Pen(Border);
         g.DrawRectangle(border, 0, 0, ClientSize.Width - 1, ClientSize.Height - 1);
-        using var muted = new SolidBrush(Muted);
-        g.DrawString("Identity Vision Bridge", _bodyFont, muted, Scale(31), Scale(27));
     }
 
     private int Scale(int value) => (int)Math.Round(value * _layoutScale);
@@ -90,6 +88,8 @@ internal sealed partial class LoginWindow
     {
         if (!_preparingTransition) StopTransition();
         _pageVersion++;
+        _agreement = null;
+        _agreementSubmit = null;
         AcceptButton = null;
         _content.SuspendLayout();
         foreach (Forms.Control control in _content.Controls.Cast<Forms.Control>().ToArray()) control.Dispose();
@@ -102,7 +102,13 @@ internal sealed partial class LoginWindow
             _content.Controls.Add(new Forms.Label { Text = message, Font = _smallFont, ForeColor = Muted,
                 Bounds = new(0, Scale(34), ContentWidth, Scale(messageHeight)) });
         _content.ResumeLayout();
-        return Scale(48 + (hasMessage ? messageHeight : 0));
+        return Scale(40 + (hasMessage ? messageHeight : 0));
+    }
+
+    private void FitPage()
+    {
+        var bottom = _content.Controls.Cast<Forms.Control>().Max(control => control.Bottom);
+        ApplyPageSize((int)Math.Ceiling(bottom / _layoutScale) + 68);
     }
 
     private Forms.TextBox Input(string label, ref int y, string value, bool secret = false, int? width = null)
@@ -128,19 +134,27 @@ internal sealed partial class LoginWindow
 
     private Forms.Button Button(string text, ref int y, int x = 0, int? width = null)
     {
-        var button = new ActionButton { Text = text, Font = _bodyFont, Bounds = new(x, y, width ?? ContentWidth, Scale(42)) };
+        var buttonWidth = width ?? Scale(136);
+        var button = new ActionButton { Text = text, Font = _bodyFont,
+            Bounds = new(width.HasValue ? x : ContentWidth - buttonWidth, y, buttonWidth, Scale(40)) };
         _content.Controls.Add(button);
         y += Scale(54);
         return button;
     }
 
-    private void Link(string text, int x, ref int y, Action action)
+    private void Links(ref int y, params (string Text, Action Action)[] actions)
     {
-        var link = new Forms.LinkLabel { Text = text, Font = _smallFont, LinkColor = Accent, ActiveLinkColor = Accent,
-            LinkBehavior = Forms.LinkBehavior.HoverUnderline, AutoSize = true, Location = new(x, y), Padding = new(0, Scale(2), 0, 0) };
-        link.LinkClicked += (_, _) => { if (!_busy) Navigate(action); };
-        _content.Controls.Add(link);
-        y += Scale(30);
+        foreach (var (text, action) in actions)
+        {
+            var link = new Forms.LinkLabel { Text = text, Font = _smallFont, LinkColor = Accent, ActiveLinkColor = Accent,
+                LinkBehavior = Forms.LinkBehavior.HoverUnderline, AutoSize = true,
+                Location = new(0, y), Padding = new(0, Scale(2), 0, 0) };
+            link.LinkClicked += (_, _) => { if (!_busy) Navigate(action); };
+            _content.Controls.Add(link);
+            if (actions.Length > 1 && text == actions[^1].Text)
+                link.Left = ContentWidth - link.PreferredWidth;
+        }
+        y += Scale(22);
     }
 
     private sealed class InputFrame : Forms.Panel

@@ -203,7 +203,10 @@ public sealed partial class SessionOrchestrator
                     ["longestConflictPixels"] = candidate.IdentityEvidence.LongestConflictPixels,
                     ["evidence"] = candidate.IdentityEvidence,
                     ["supportTolerancePixels"] = ScanIdentityVerifier.SupportTolerancePixels,
-                    ["continuousConflictLimitPixels"] = ScanIdentityVerifier.MaximumContinuousConflictPixels,
+                    ["continuousConflictLimitPixels"] = ScanIdentityVerifier.GetContinuousConflictLimitPixels(
+                        evidenceFrame.Source.Width, evidenceFrame.Source.Height),
+                    ["continuousConflictLimitFraction"] = ScanIdentityVerifier.MaximumContinuousConflictFraction,
+                    ["continuousConflictBasis"] = "viewport-short-side",
                     ["coordinateSpace"] = "viewport-pixels",
                     ["hypothesisCount"] = candidate.SearchHypotheses.Count,
                     ["hypotheses"] = candidate.SearchHypotheses

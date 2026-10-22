@@ -172,6 +172,6 @@ public sealed partial class GateTemplateDetector : IDisposable
         _disposed = true;
         if (_configProvider is not null)
             _configProvider.ConfigChanged -= OnConfigChanged;
-        _gateSource.Dispose();
+        if (_gateBytes.IsValueCreated) _gateBytes.Value.Dispose();
     }
 }

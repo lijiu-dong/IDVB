@@ -52,6 +52,7 @@
   <ItemGroup>
     <Compile Include="..\AppDataPaths.cs" Link="Production\AppDataPaths.cs" />
     <Compile Include="..\Features\Accounts\AccountSession.cs" />
+    <Compile Include="..\Features\Accounts\EntitlementRedemption.cs" />
     <Compile Include="..\Features\Accounts\CoCreationPublicationClient.cs" />
     <Compile Include="..\Lifecycle\AutomaticUpdateLauncher.cs" />
     <Compile Include="..\Features\Accounts\VersionAccessClient.cs" Link="Production\VersionAccessClient.cs" />
@@ -93,4 +94,16 @@
   <ItemGroup>
     <Content Include="..\Assets\FloorIndicators\**\*" Link="Assets\FloorIndicators\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+  <Target Name="GenerateCliProductIdentity" BeforeTargets="CoreCompile">
+    <XmlPeek XmlInputPath="$(MSBuildProjectDirectory)\..\IDVBuff.csproj"
+             Query="/Project/PropertyGroup/IDVBProductVersion/text()">
+      <Output TaskParameter="Result" PropertyName="_CliProductVersion" />
+    </XmlPeek>
+    <Error Condition="'$(_CliProductVersion)' == ''" Text="The desktop product version is required for CLI access checks." />
+    <WriteLinesToFile File="$(IntermediateOutputPath)CliProductVersion.g.cs" Overwrite="true" WriteOnlyWhenDifferent="true"
+                      Lines="namespace IDVBuff { internal static partial class BuildVersionInfo { public const string ProductVersion = &quot;$(_CliProductVersion)&quot;%3B } }" />
+    <ItemGroup>
+      <Compile Include="$(IntermediateOutputPath)CliProductVersion.g.cs" />
+    </ItemGroup>
+  </Target>
 </Project>

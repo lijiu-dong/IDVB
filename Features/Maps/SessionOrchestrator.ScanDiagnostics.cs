@@ -48,6 +48,8 @@ public sealed partial class SessionOrchestrator
 
     public async Task RunQuickScanAsync(IMapCandidateSelector? candidateSelector)
     {
+        if (!_disposed && RejectUnauthorizedMatchOperation("quick-scan"))
+            return;
         using var request = new ScanRequestDiagnostics();
         var input = MapInputOperationContext.Current;
         if (input is not null) input.ScanId = request.ScanId;
@@ -60,6 +62,11 @@ public sealed partial class SessionOrchestrator
         {
             request.Complete("cancelled", "operation-cancelled");
             throw;
+        }
+        catch (IDVBuff.Core.Contracts.Online.RecognitionAuthorizationException)
+        {
+            request.Complete("rejected", "usage-authorization-unavailable");
+            NotifyUsageUnavailable();
         }
         catch (Exception exception)
         {

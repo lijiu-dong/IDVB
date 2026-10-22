@@ -25,10 +25,20 @@ public sealed partial class MapCvRecognitionService
         try
         {
             var info = new FileInfo(recognitionImagePath);
+            IDVBuff.Core.Contracts.Online.RecognitionResources.Demand();
+#if IDVB_PRIVATE_ONLINE_SERVICES
+            var gateLength = 0L;
+            var gateWritten = 0L;
+            var recognitionContent = IDVBuff.Core.Contracts.Online.RecognitionResources.Version;
+#else
             var gateInfo = new FileInfo(GateTemplateDetector.ResolveGateAssetPath());
+            var gateLength = gateInfo.Length;
+            var gateWritten = gateInfo.LastWriteTimeUtc.Ticks;
+            var recognitionContent = "local";
+#endif
             var key = new GateSizeKey(map.Id, floorKey, MapFeatureCacheRules.ComputeContentFingerprint(map), recognitionImagePath,
-                info.Length, info.LastWriteTimeUtc.Ticks, mainRefBounds, sideRefBounds, gateInfo.Length, gateInfo.LastWriteTimeUtc.Ticks);
-            var diskKey = Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new { algorithm = "gate-size-roi-v1", key })));
+                info.Length, info.LastWriteTimeUtc.Ticks, mainRefBounds, sideRefBounds, gateLength, gateWritten);
+            var diskKey = Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new { algorithm = "gate-size-roi-v1", recognitionContent, key })));
             if (_referenceGateSizes.TryGetValue(key, out var remembered))
             {
                 (iconWidth, iconHeight) = remembered;

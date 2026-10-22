@@ -1,4 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <Compile Include="..\Features\Maps\RecognitionAssetReader.cs" Link="Production\RecognitionAssetReader.cs" />
+    <Compile Include="..\Features\Maps\NativeRecognitionProfile.cs" Link="Production\NativeRecognitionProfile.cs" />
+  </ItemGroup>
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>

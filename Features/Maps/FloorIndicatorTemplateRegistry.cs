@@ -19,7 +19,7 @@ internal sealed class FloorIndicatorTemplateRegistry
     {
         get
         {
-            try { return Instance.Value; }
+            try { IDVBuff.Core.Contracts.Online.RecognitionResources.Demand(); return Instance.Value; }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
                 System.Diagnostics.Debug.WriteLine(exception);
@@ -35,8 +35,9 @@ internal sealed class FloorIndicatorTemplateRegistry
     {
         var root = Path.Combine(AppContext.BaseDirectory, "Assets", "FloorIndicators");
         var manifest = Path.Combine(root, "registry.json");
-        if (!File.Exists(manifest)) return;
-        foreach (var group in JsonSerializer.Deserialize<Group[]>(File.ReadAllText(manifest)) ?? [])
+        if (!RecognitionAssetReader.Exists(manifest)) return;
+        using var resource = new RecognitionAssetReader.Bytes(manifest);
+        foreach (var group in JsonSerializer.Deserialize<Group[]>(resource.Data) ?? [])
         {
             if (string.IsNullOrWhiteSpace(group.Key) || group.States.Count < 2
                 || !double.IsFinite(group.X + group.Y + group.Width + group.Height)
@@ -51,7 +52,7 @@ internal sealed class FloorIndicatorTemplateRegistry
             {
                 if (string.IsNullOrWhiteSpace(floor) || Path.GetFileName(filename) != filename)
                     throw new InvalidDataException("Invalid floor indicator state.");
-                using var source = Cv2.ImRead(Path.Combine(root, filename), ImreadModes.Grayscale);
+                using var source = RecognitionAssetReader.Decode(Path.Combine(root, filename), ImreadModes.Grayscale);
                 if (source.Empty()) throw new InvalidDataException($"Missing indicator: {filename}");
                 var normalized = new Mat();
                 if (source.Width > group.PixelWidth || source.Height > group.PixelHeight)
@@ -94,6 +95,7 @@ internal sealed class FloorIndicatorTemplateRegistry
         double minScore = DefaultMinScore,
         double minMargin = DefaultMinMargin)
     {
+        IDVBuff.Core.Contracts.Online.RecognitionResources.Demand();
         var timer = System.Diagnostics.Stopwatch.StartNew();
         if (image is null || image.Empty())
         {

@@ -15,6 +15,8 @@ public sealed partial class MainPage
         var identity = AccountSession.Identity;
         var name = identity?.DisplayName.TrimStart('@') ?? "未登录";
         AccountNavigationLabel.Text = name;
+        AccountNavigationPlan.Visibility = identity is not null && !_navigationIsCompact
+            ? Visibility.Visible : Visibility.Collapsed;
         AccountNavigationAvatar.DisplayName = name;
         AccountNavigationAvatar.ProfilePicture = Uri.TryCreate(identity?.AvatarUrl, UriKind.Absolute, out var avatar)
             ? new BitmapImage(avatar)

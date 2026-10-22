@@ -19,7 +19,7 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
         finally { _matchLifecycleGate.Release(); }
     }
 
-    private async Task EndMatchCoreAsync(bool saveAutomaticMapCache)
+    private async Task EndMatchCoreAsync(bool saveAutomaticMapCache, bool notify = true)
     {
         try
         {
@@ -32,18 +32,16 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
                 ?? _pendingAlignmentIdentity?.Map.Id
                 ?? _lastRecognition?.Map.Id;
 
-            if (_matchPluginsActivated)
-                await SetMatchPluginsActivatedCoreAsync(false);
-
             Volatile.Write(ref _matchEnding, 1);
             // Invalidate the match identity first. Any scan/alignment already
             // running may finish native work, but can no longer commit state.
             _matchSession.End();
-            StopUsageMetering();
-            if (!_headless)
+            CancelMatchOperations();
+            await SetMatchPluginsActivatedCoreAsync(false);
+            await StopUsageMeteringAsync();
+            if (!_headless && notify)
                 IDVBuff.Features.Notifications.OverlayNotificationCenter.Warning("已结束对局状态。");
             MapDiagnosticModeCapture.EndMatch();
-            CancelMatchOperations();
             var isSurvey = endingMatch.Mode == MapRunMode.Survey;
             _statusMessage = isSurvey
                 ? "正在结束测绘对局并保存测绘项目……"
@@ -109,11 +107,30 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
 
     private async Task SetMatchPluginsActivatedCoreAsync(bool active)
     {
+        if (active)
+            (_matchUsageAuthorization ?? throw new InvalidOperationException("缺少对局时长授权。")).Demand();
         var handlers = MatchPluginActivationChanged;
         if (handlers is not null)
         {
             foreach (Func<bool, Task> handler in handlers.GetInvocationList())
-                await handler(active);
+            {
+                if (active)
+                    _matchUsageAuthorization!.Demand();
+                try
+                {
+                    var operation = handler(active);
+                    if (active)
+                        await operation.WaitAsync(TimeSpan.FromSeconds(15), _matchUsageAuthorization!.Ended);
+                    else
+                        await operation.WaitAsync(TimeSpan.FromSeconds(5));
+                }
+                catch (Exception exception) when (!active)
+                {
+                    // One plugin cannot prevent authorization revocation or other plugins stopping.
+                    _logCollector.Append(MapLogCategory.Session, MapLogLevel.Error,
+                        $"停止对局插件失败：{exception}");
+                }
+            }
         }
         _matchPluginsActivated = active;
     }

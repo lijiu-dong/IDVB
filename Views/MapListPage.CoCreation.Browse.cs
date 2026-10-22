@@ -211,11 +211,11 @@ public sealed partial class MapListPage
         var result = await RunMapOperationAsync(installed is null ? "正在获取社区地图……" : "正在更新社区地图……", async () =>
         {
             if (installed is null)
-                await _mapSubscriptionService.AddAsync(publication.SubscriptionLink, token);
+                installed = await _mapSubscriptionService.AddAsync(publication.SubscriptionLink, token);
             else if (!installed.Enabled)
                 await _mapSubscriptionService.SetEnabledAsync(installed.Id, true, token);
             var checkedResult = await MapOperationProgress.RunAsync(0, .95,
-                () => Task.Run(() => _mapSubscriptionService.CheckAndApplyAsync(token), token));
+                () => Task.Run(() => _mapSubscriptionService.CheckAndApplyAsync(installed.Id, token), token));
             if (checkedResult.AppliedCount > 0 && !App.IsSafeMode)
             {
                 MapOperationProgress.Report(.95, "正在刷新地图……");

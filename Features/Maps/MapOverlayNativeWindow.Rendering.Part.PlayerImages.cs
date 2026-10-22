@@ -49,7 +49,7 @@ internal static partial class MapOverlayBitmapRenderer
 
     private static Bitmap LoadEncodedSourceImage(string imagePath)
     {
-        var bytes = File.ReadAllBytes(imagePath);
+        var bytes = IDVBuff.Core.Contracts.Online.RecognitionResources.ReadAllBytes(imagePath);
         MemoryJournal.ObserveManagedArray(bytes, "Overlay.SourceImage.EncodedBytes");
         var request = MemoryJournal.Request("Overlay.SourceImage", nativeModule: "gdiplus.dll");
         var stream = new MemoryStream(bytes, writable: false);

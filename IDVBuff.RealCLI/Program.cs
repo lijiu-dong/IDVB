@@ -24,6 +24,14 @@ using System.Text;
 Console.OutputEncoding = Encoding.UTF8;
 Console.InputEncoding = Encoding.UTF8;
 
+var startupAccess = await IDVBuff.Features.Accounts.DesktopLoginGateHost.Gate.CheckAccessAsync();
+if (startupAccess.Outcome is not (IDVBuff.Core.Contracts.Online.DesktopAccessOutcome.Granted
+    or IDVBuff.Core.Contracts.Online.DesktopAccessOutcome.GrantedOffline
+    or IDVBuff.Core.Contracts.Online.DesktopAccessOutcome.NotConfigured))
+{
+    Console.Error.WriteLine(startupAccess.Message ?? "请先正常启动 Identity Vision Bridge 并登录。");
+    return 1;
+}
 var access = await IDVBuff.Features.Accounts.VersionAccessClient.CheckAsync(BuildVersionInfo.ProductVersion);
 if (!access.Allowed) { Console.Error.WriteLine(access.Message); return 1; }
 _ = IDVBuff.Features.Accounts.VersionAccessClient.MonitorHeadlessAsync(BuildVersionInfo.ProductVersion);

@@ -138,7 +138,11 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
             action => _dispatcher.TryEnqueue(() => action()),
             ApplyRealtimeMapTransform);
         _learningEngine = learningEngine ?? new MapSampleProviderEngine();
+#if IDVB_PRIVATE_ONLINE_SERVICES
+        _usageMeter = usageMeter ?? throw new InvalidOperationException("私有服务模式必须配置对局时长授权。");
+#else
         _usageMeter = usageMeter ?? new UnavailableUsageMeter();
+#endif
         _surveyCoordinator.StatusChanged += SurveyCoordinator_StatusChanged;
         _headless = headless;
 
@@ -390,7 +394,7 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
     public MapAlignmentResearchCollector ResearchCollector => _researchCollector;
     public ISurveyCoordinator SurveyCoordinator => _surveyCoordinator;
     public MapMatchSnapshot MatchSnapshot => _matchSession.Snapshot;
-    public bool IsMatchStarted => _matchSession.Snapshot.IsStarted;
+    public bool IsMatchStarted => _matchSession.Snapshot.IsStarted && HasMatchUsageAuthorization;
     public string? CurrentMatchId => _matchSession.Snapshot is { IsStarted: true }
         ? _matchSession.Snapshot.MatchId.ToString()
         : null;

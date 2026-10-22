@@ -33,6 +33,7 @@ public sealed partial class MapSubscriptionService : IMapSubscriptionService
     public Task SetEnabledAsync(Guid id, bool enabled, CancellationToken cancellationToken = default) => _service.SetEnabledAsync(id, enabled, cancellationToken);
     public Task RemoveAsync(Guid id, CancellationToken cancellationToken = default) => _service.RemoveAsync(id, cancellationToken);
     public Task<MapSubscriptionCheckResult> CheckAndApplyAsync(CancellationToken cancellationToken = default) => _service.CheckAndApplyAsync(cancellationToken);
+    public Task<MapSubscriptionCheckResult> CheckAndApplyAsync(Guid subscriptionId, CancellationToken cancellationToken = default) => _service.CheckAndApplyAsync(subscriptionId, cancellationToken);
     public Task RegisterMetadataAsync(MapPublicationMetadataUpdate update, CancellationToken cancellationToken = default) => _service.RegisterMetadataAsync(update, cancellationToken);
     static partial void ConfigurePrivate(ISubscriptionMapInstallation installation, string dataRoot, ref IMapSubscriptionService service);
 }
@@ -49,5 +50,6 @@ internal sealed class UnavailableMapSubscriptionService : IMapSubscriptionServic
     public Task SetEnabledAsync(Guid id, bool enabled, CancellationToken cancellationToken = default) => Task.FromException(Unavailable());
     public Task RemoveAsync(Guid id, CancellationToken cancellationToken = default) => Task.FromException(Unavailable());
     public Task<MapSubscriptionCheckResult> CheckAndApplyAsync(CancellationToken cancellationToken = default) => Task.FromException<MapSubscriptionCheckResult>(Unavailable());
+    public Task<MapSubscriptionCheckResult> CheckAndApplyAsync(Guid subscriptionId, CancellationToken cancellationToken = default) => Task.FromException<MapSubscriptionCheckResult>(Unavailable());
     public Task RegisterMetadataAsync(MapPublicationMetadataUpdate update, CancellationToken cancellationToken = default) => Task.FromException(Unavailable());
 }

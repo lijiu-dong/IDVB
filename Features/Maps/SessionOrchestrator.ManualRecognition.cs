@@ -14,6 +14,8 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
     {
         if (_disposed || !_settings!.IsEnabled)
             return;
+        if (RejectUnauthorizedMatchOperation("manual-recognition"))
+            return;
         var operationMatch = _matchSession.Snapshot;
         if (!operationMatch.IsStarted || IsMatchEnding)
             return;
@@ -55,6 +57,12 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
                 $"手动识别已取消 · matchVersion={operationMatch.Version}");
             outcome = "cancelled";
             terminalReason = "match-cancellation";
+        }
+        catch (IDVBuff.Core.Contracts.Online.RecognitionAuthorizationException)
+        {
+            outcome = "rejected";
+            terminalReason = "usage-authorization-unavailable";
+            NotifyUsageUnavailable();
         }
         catch (Exception ex)
         {

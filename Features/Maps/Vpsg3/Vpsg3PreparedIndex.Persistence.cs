@@ -3,12 +3,25 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using IDVBuff.Core.Collections;
 using IDVBuff.Core.Diagnostics;
+using IDVBuff.Core.Imaging;
 using OpenCvSharp;
 
 namespace IDVBuff.Features.Maps;
 
 public sealed partial class Vpsg3PreparedFloor
 {
+    // The precision field's zero set is exactly the source geometry. Borrow it
+    // when resident; no decoded raster or cross-floor cache is retained here.
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    internal Mat? CreateGeometryImage()
+    {
+        if (IsDisposed) return null;
+        using var precision = RentPrecisionDistance();
+        if (precision is null)
+            return SemanticIndex?.CreateGeometryImage() ?? CreateReferenceImage();
+        return NativeDistanceMetrics.ZeroMask(precision.Span, ReferenceWidth, ReferenceHeight);
+    }
+
     internal void WriteTo(BinaryWriter writer)
     {
         writer.Write(EdgePixelCount); writer.Write(_deriveGeometryK3); writer.Write(_deriveGeometryK5);

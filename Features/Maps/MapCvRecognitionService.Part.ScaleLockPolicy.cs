@@ -126,8 +126,7 @@ public sealed partial class MapCvRecognitionService
                 }
                 if (string.IsNullOrWhiteSpace(path) || !System.IO.File.Exists(path))
                     return null;
-                using var input = ReadCoverageReference(recognition.Map, recognition.Result.Floor);
-                using var lines = SemanticStructureContours.Geometry(input);
+                using var lines = ReadCoverageGeometry(recognition.Map, recognition.Result.Floor);
                 if (lines.Empty())
                     return null;
                 reference = AdaptiveScaleCoverageReference.Create(lines);

@@ -15,6 +15,7 @@ public interface IMapSubscriptionService
     Task SetEnabledAsync(Guid id, bool enabled, CancellationToken cancellationToken = default);
     Task RemoveAsync(Guid id, CancellationToken cancellationToken = default);
     Task<MapSubscriptionCheckResult> CheckAndApplyAsync(CancellationToken cancellationToken = default);
+    Task<MapSubscriptionCheckResult> CheckAndApplyAsync(Guid subscriptionId, CancellationToken cancellationToken = default);
     Task RegisterMetadataAsync(MapPublicationMetadataUpdate update, CancellationToken cancellationToken = default);
 }
 

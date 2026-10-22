@@ -22,6 +22,17 @@ public partial class App
 
     private async Task<bool> RequireCliVersionAccessAsync()
     {
+        var startup = await DesktopLoginGateHost.Gate.CheckAccessAsync();
+        if (startup.Outcome is not (IDVBuff.Core.Contracts.Online.DesktopAccessOutcome.Granted
+            or IDVBuff.Core.Contracts.Online.DesktopAccessOutcome.GrantedOffline
+            or IDVBuff.Core.Contracts.Online.DesktopAccessOutcome.NotConfigured))
+        {
+            AttachCliConsole();
+            Console.Error.WriteLine(startup.Message ?? "请先正常启动 Identity Vision Bridge 并登录。");
+            Environment.ExitCode = IDVBuff.Cli.RealCliExitCodes.Fatal;
+            Exit();
+            return false;
+        }
         var access = await VersionAccessClient.CheckAsync(BuildVersionInfo.ProductVersion);
         if (access.Allowed && UsageNotice.IsAccepted()) return true;
         AttachCliConsole();

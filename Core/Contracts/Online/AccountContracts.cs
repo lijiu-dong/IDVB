@@ -8,7 +8,7 @@ public sealed record AccountIdentity(string DisplayName, string PublisherHandle,
 
 public sealed record AccountSessionSnapshot(string? Token, AccountIdentity? Identity, long Generation,
     CancellationToken Lifetime = default);
-public sealed record StoredAccountSession(string Token, AccountIdentity Identity);
+public sealed record StoredAccountSession(string Token, AccountIdentity Identity, string? ProductVersion = null);
 
 public interface IAccountService
 {

@@ -30,6 +30,7 @@ public sealed class IdvaNativeObservedExtractor
 
     public static Result Process(Mat source)
     {
+        IDVBuff.Core.Contracts.Online.RecognitionResources.Demand();
         _ = Definition.Value;
         ArgumentNullException.ThrowIfNull(source);
         if (source.Empty())
@@ -116,10 +117,11 @@ public sealed class IdvaNativeObservedExtractor
             "Assets",
             "Algorithms",
             "structure-native-observed-v2.idva");
-        if (!File.Exists(path))
+        if (!RecognitionAssetReader.Exists(path))
             throw new InvalidDataException($"缺少实时结构算法包：{path}");
 
-        var bytes = File.ReadAllBytes(path);
+        using var resource = new RecognitionAssetReader.Bytes(path);
+        var bytes = resource.Data;
         if (!string.Equals(
             Convert.ToHexString(SHA256.HashData(bytes)),
             PackageSha256,
@@ -267,15 +269,16 @@ public sealed class IdvaNativeObservedExtractor
 
     private static (Mat Room, Mat Corridor) ClassifyStructure(Mat hsv, Mat exclusion)
     {
+        var profile = NativeRecognitionProfile.Current;
         var room = new Mat();
         using var room1 = new Mat();
         using var room2 = new Mat();
-        Cv2.InRange(hsv, new Scalar(0, 18, SemanticStructureContours.MinimumWarmFloorValue), new Scalar(25, 165, 200), room1);
-        Cv2.InRange(hsv, new Scalar(170, 18, SemanticStructureContours.MinimumWarmFloorValue), new Scalar(179, 165, 200), room2);
+        Cv2.InRange(hsv, profile.RoomLow with { Val2 = SemanticStructureContours.MinimumWarmFloorValue }, profile.RoomHigh, room1);
+        Cv2.InRange(hsv, profile.Room2Low with { Val2 = SemanticStructureContours.MinimumWarmFloorValue }, profile.Room2High, room2);
         Cv2.BitwiseOr(room1, room2, room);
 
         var corridor = new Mat();
-        Cv2.InRange(hsv, new Scalar(95, 14, 82), new Scalar(130, 105, 200), corridor);
+        Cv2.InRange(hsv, profile.CorridorLow, profile.CorridorHigh, corridor);
 
         room.SetTo(Scalar.Black, exclusion);
         corridor.SetTo(Scalar.Black, exclusion);

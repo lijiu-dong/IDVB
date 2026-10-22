@@ -12,7 +12,7 @@ public sealed class MapFloorRecognitionWorker : IDisposable
     private readonly BlockingCollection<Request> _requests =
         new(new ConcurrentQueue<Request>(), boundedCapacity: 1);
     private readonly FloorIndicatorCaptureService _capture = new();
-    private readonly FloorIndicatorRecognizer _recognizer;
+    private readonly Lazy<FloorIndicatorRecognizer> _recognizer;
     private readonly MapFloorStabilityTracker _presenceStability = new();
     private readonly Thread _thread;
     private readonly CancellationTokenSource _shutdownCancellation = new();
@@ -23,9 +23,9 @@ public sealed class MapFloorRecognitionWorker : IDisposable
         string firstFloorReferencePath,
         string secondFloorReferencePath)
     {
-        _recognizer = new FloorIndicatorRecognizer(
+        _recognizer = new(() => new FloorIndicatorRecognizer(
             firstFloorReferencePath,
-            secondFloorReferencePath);
+            secondFloorReferencePath));
         _thread = new Thread(WorkLoop)
         {
             IsBackground = true,
@@ -112,7 +112,7 @@ public sealed class MapFloorRecognitionWorker : IDisposable
         }
         var presenceTuning = tuning?.Clone() ?? new MapFloorRecognitionTuning();
         presenceTuning.Normalize();
-        var result = _recognizer.Recognize(
+        var result = _recognizer.Value.Recognize(
             frame.Pixels,
             frame.Width,
             frame.Height,
@@ -251,7 +251,7 @@ public sealed class MapFloorRecognitionWorker : IDisposable
                 continue;
             }
             captureMilliseconds += captureElapsed;
-            var classification = _recognizer.Recognize(
+            var classification = _recognizer.Value.Recognize(
                 frame.Pixels,
                 frame.Width,
                 frame.Height,
@@ -457,7 +457,7 @@ public sealed class MapFloorRecognitionWorker : IDisposable
     {
         if (Interlocked.Exchange(ref _resourcesReleased, 1) != 0)
             return;
-        _recognizer.Dispose();
+        if (_recognizer.IsValueCreated) _recognizer.Value.Dispose();
         _capture.Dispose();
         _requests.Dispose();
         _shutdownCancellation.Dispose();

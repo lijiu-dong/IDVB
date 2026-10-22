@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Numerics;
 using IDVBuff.Core.Collections;
 using IDVBuff.Core.Imaging;
 using OpenCvSharp;
@@ -8,6 +9,51 @@ namespace IDVBuff.Features.Maps;
 
 public sealed partial class SemanticStructureIndex
 {
+    // K3 contains every source seed. Decode distances only inside those words;
+    // the rest is known background, without rebuilding an RGB raster first.
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    internal Mat CreateGeometryImage()
+    {
+        var image = new Mat(Height, Width, MatType.CV_8UC1, Scalar.Black);
+        try
+        {
+            var stride = (Width + 63) / 64;
+            var hasBits = _warmK3.Length == stride * Height && _coolK3.Length == stride * Height;
+            for (var y = 0; y < Height; y++)
+            {
+                var row = MemoryMarshal.CreateSpan(ref image.At<byte>(y, 0), Width);
+                if (!hasBits)
+                {
+                    // Scan-only indices may intentionally omit correlation bits.
+                    for (var x = 0; x < Width; x++)
+                        if (ReadDistancePixel(x, y, SemanticStructureContours.Warm) == 0
+                            || ReadDistancePixel(x, y, SemanticStructureContours.Cool) == 0)
+                            row[x] = 255;
+                    continue;
+                }
+                for (var column = 0; column < stride; column++)
+                {
+                    var warm = _warmK3[y * stride + column];
+                    var cool = _coolK3[y * stride + column];
+                    var remaining = warm | cool;
+                    while (remaining != 0)
+                    {
+                        var bit = BitOperations.TrailingZeroCount(remaining);
+                        var mask = 1UL << bit;
+                        var x = column * 64 + bit;
+                        if (x < Width
+                            && (((warm & mask) != 0 && ReadDistancePixel(x, y, SemanticStructureContours.Warm) == 0)
+                                || ((cool & mask) != 0 && ReadDistancePixel(x, y, SemanticStructureContours.Cool) == 0)))
+                            row[x] = 255;
+                        remaining &= remaining - 1;
+                    }
+                }
+            }
+            return image;
+        }
+        catch { image.Dispose(); throw; }
+    }
+
     // The producer computed this mask while erasing this exact source Mat.
     // Callers cannot infer equality from filenames or from another floor.
     internal static SemanticStructureIndex FromMaskedLabels(Mat labels, SemanticStructureIndex source,

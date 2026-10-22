@@ -32,7 +32,7 @@
         <Product>Identity Vision Bridge</Product>
         <Company>Identity Vision Bridge</Company>
         <!-- Canonical SemVer product identity. The UI adds the conventional v prefix. -->
-        <IDVBProductVersion>1.7.1-preview.2</IDVBProductVersion>
+        <IDVBProductVersion>1.7.1-preview.3</IDVBProductVersion>
         <IDVBReleaseLine>b01.7</IDVBReleaseLine>
         <Version>$(IDVBProductVersion)</Version>
         <AssemblyVersion>1.7.1.0</AssemblyVersion>
@@ -133,6 +133,8 @@
         <EmbeddedResource Include="Assets\Sponsorship\*.png"
                           LogicalName="IDVB.Sponsorship.%(Filename)%(Extension)" />
         <Content Include="LICENSE" CopyToOutputDirectory="PreserveNewest" />
+        <EmbeddedResource Include="LICENSE" LogicalName="IDVB.Legal.LICENSE.txt" />
+        <EmbeddedResource Include="TERMS.md" LogicalName="IDVB.Legal.TERMS.txt" />
         <Content Remove="Assets\ThirdParty\**\*" />
         <None Remove="Assets\ThirdParty\**\*" />
         <EmbeddedResource Include="Assets\ThirdParty\**\*"
@@ -222,6 +224,9 @@
         <Page Remove=".claude\**\*.xaml" />
         <Page Remove="scratch\**\*.xaml" />
         <Page Include="Views\MainPage.xaml" />
+        <Page Include="Views\SponsorshipPlanDialog.xaml" />
+        <Page Include="Views\AccountMenu.xaml" />
+        <Page Include="Views\EntitlementRedemptionDialog.xaml" />
         <None Remove="IDVBuff.slnx" />
     </ItemGroup>
 

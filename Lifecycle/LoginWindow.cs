@@ -18,7 +18,7 @@ internal sealed partial class LoginWindow : Forms.Form
     internal enum Mode { Startup, Interactive }
     internal enum Result { Granted, Cancelled, Recheck }
 
-    private const int BaseWidth = 460;
+    private const int BaseWidth = 420;
     private static readonly Color Background = Color.FromArgb(250, 251, 253);
     private static readonly Color Border = Color.FromArgb(224, 229, 237);
     private static readonly Color Title = Color.FromArgb(28, 38, 56);
@@ -35,6 +35,7 @@ internal sealed partial class LoginWindow : Forms.Form
     private Font _bodyFont = new("Segoe UI", 14f, FontStyle.Regular, GraphicsUnit.Pixel);
     private Font _smallFont = new("Segoe UI", 12f, FontStyle.Regular, GraphicsUnit.Pixel);
     private bool _busy;
+    private bool _versionUpdatePending;
     // Values carried between the two steps of a flow; cleared when the window closes.
     private string _email = "", _password = "", _displayName = "";
 
@@ -46,7 +47,7 @@ internal sealed partial class LoginWindow : Forms.Form
         _gate = gate;
         _mode = mode;
         _startupAccess = startupAccess;
-        Text = "Identity Vision Bridge · 登录";
+        Text = "登录";
         FormBorderStyle = Forms.FormBorderStyle.None;
         StartPosition = Forms.FormStartPosition.CenterScreen;
         ShowInTaskbar = true;
@@ -56,6 +57,7 @@ internal sealed partial class LoginWindow : Forms.Form
         BackColor = Background;
         Font = _bodyFont;
         DoubleBuffered = true;
+        SetStyle(Forms.ControlStyles.ResizeRedraw, true);
         KeyPreview = true;
         try
         {
@@ -69,7 +71,7 @@ internal sealed partial class LoginWindow : Forms.Form
         Controls.Add(_closeButton);
         InitializeTransition();
         MouseDown += (_, e) => DragWindow(e);
-        KeyDown += (_, e) => { if (e.KeyCode == Forms.Keys.Escape && !_busy) Close(); };
+        KeyDown += (_, e) => { if (e.KeyCode == Forms.Keys.Escape && !_busy && !_versionUpdatePending) Close(); };
     }
 
     protected override void OnShown(EventArgs e)
@@ -82,6 +84,11 @@ internal sealed partial class LoginWindow : Forms.Form
 
     protected override void OnFormClosing(Forms.FormClosingEventArgs e)
     {
+        if (_versionUpdatePending && e.CloseReason == Forms.CloseReason.UserClosing)
+        {
+            e.Cancel = true;
+            return;
+        }
         base.OnFormClosing(e);
         StopTransition();
         _lifetime.Cancel();
@@ -109,6 +116,16 @@ internal sealed partial class LoginWindow : Forms.Form
     {
         switch (result.Outcome)
         {
+            case DesktopAccessOutcome.UpdateRequired:
+                _versionUpdatePending = true;
+                _closeButton.Visible = false;
+                Text = "Identity Vision Bridge";
+                ShowMessage("需要更新", DesktopAccessResult.VersionUpdateMessage, ("确认", () =>
+                {
+                    _versionUpdatePending = false;
+                    Close();
+                }));
+                break;
             case DesktopAccessOutcome.Granted or DesktopAccessOutcome.NotConfigured:
                 Finish(result.Identity);
                 break;
@@ -141,12 +158,14 @@ internal sealed partial class LoginWindow : Forms.Form
         var email = Input("邮箱", ref y, _email);
         var password = Input("密码", ref y, "", secret: true);
         var error = ErrorLabel(ref y);
+        var agreement = Agreement(ref y, error);
         var submit = Button("登录", ref y);
-        Link("注册新账户", 0, ref y, () => ShowRegister(null));
-        y -= Scale(30);
-        Link("忘记密码", Scale(160), ref y, () => ShowResetRequest(email.Text));
+        BindAgreement(agreement, submit);
+        Links(ref y, ("注册新账户", () => ShowRegister(null)), ("忘记密码", () => ShowResetRequest(email.Text)));
+        FitPage();
         submit.Click += async (_, _) =>
         {
+            if (!Require(agreement.Checked, error, "请先阅读并同意软件许可和使用条款。")) return;
             if (!ValidEmail(email.Text, error) || !Require(password.Text.Length > 0, error, "请输入密码。")) return;
             _email = email.Text.Trim(); _password = password.Text;
             await RunAsync(error, () => _gate.LoginAsync(_email, _password, _lifetime.Token), step =>
@@ -162,30 +181,23 @@ internal sealed partial class LoginWindow : Forms.Form
 
     private void ShowRegister(string? notice)
     {
-        var y = Page("注册", notice ?? "", 580);
-        var name = Input("邮箱", ref y, "", width: Scale(244));
+        var y = Page("创建账户", notice ?? "先验证邮箱，再设置昵称和密码。");
+        var name = Input("邮箱", ref y, "", width: Scale(204));
         var domain = new DomainSelector(_gate.RegistrationDomains) { Font = _bodyFont,
             AccessibleName = "邮箱后缀",
-            Bounds = new Rectangle(Scale(252), y - Scale(50), ContentWidth - Scale(252), Scale(40)) };
+            Bounds = new Rectangle(Scale(212), y - Scale(50), ContentWidth - Scale(212), Scale(40)) };
         _content.Controls.Add(domain);
-        var display = Input("昵称", ref y, _displayName);
-        display.PlaceholderText = "2–32 个字符";
-        var password = Input("密码", ref y, "", secret: true);
-        password.PlaceholderText = "至少 10 个字符";
-        var confirm = Input("确认密码", ref y, "", secret: true);
         var error = ErrorLabel(ref y);
         var submit = Button("发送验证码", ref y);
-        Link("已有账户？返回登录", 0, ref y, () => ShowLogin(null));
+        Links(ref y, ("已有账户？返回登录", () => ShowLogin(null)));
+        FitPage();
         submit.Click += async (_, _) =>
         {
             var local = name.Text.Trim().ToLowerInvariant();
             if (!Require(LocalPart().IsMatch(local) && !local.Contains(".."), error, "邮箱用户名只能包含字母、数字、点、下划线和连字符。")
-                || !Require(domain.SelectedDomain is not null, error, "请选择邮箱后缀。")
-                || !Require(display.Text.Trim().Length is >= 2 and <= 32, error, "昵称需要 2–32 个字符。")
-                || !Require(password.Text.Length is >= 10 and <= 128, error, "密码需要 10–128 个字符。")
-                || !Require(password.Text == confirm.Text, error, "两次输入的密码不一致。")) return;
+                || !Require(domain.SelectedDomain is not null, error, "请选择邮箱后缀。")) return;
             // The suffix comes only from the list; the server enforces the same list again.
-            _email = local + "@" + domain.SelectedDomain; _password = password.Text; _displayName = display.Text.Trim();
+            _email = local + "@" + domain.SelectedDomain;
             await RunAsync(error, () => _gate.StartRegistrationAsync(_email, _lifetime.Token), step =>
             {
                 if (step.Kind == DesktopAuthStepKind.CodeSent) ShowCode(CodeFlow.Register, step.Message);
@@ -202,7 +214,8 @@ internal sealed partial class LoginWindow : Forms.Form
         var input = Input("邮箱", ref y, email?.Trim() ?? _email);
         var error = ErrorLabel(ref y);
         var submit = Button("发送验证码", ref y);
-        Link("返回登录", 0, ref y, () => ShowLogin(null));
+        Links(ref y, ("返回登录", () => ShowLogin(null)));
+        FitPage();
         submit.Click += async (_, _) =>
         {
             if (!ValidEmail(input.Text, error)) return;
@@ -221,23 +234,16 @@ internal sealed partial class LoginWindow : Forms.Form
 
     private void ShowCode(CodeFlow flow, string? notice)
     {
-        var heading = flow switch { CodeFlow.Login => "邮箱验证", CodeFlow.Register => "完成注册", _ => "设置新密码" };
-        var y = Page(heading, notice ?? "验证码已发送，请查收邮件。", flow == CodeFlow.Reset ? 540 : 420);
+        var y = Page("邮箱验证", notice ?? "验证码已发送，请查收邮件。");
         _content.Controls.Add(new Forms.Label { Text = "6 位验证码", Font = _smallFont, ForeColor = Muted,
             TextAlign = ContentAlignment.MiddleCenter, Bounds = new(0, y, ContentWidth, Scale(18)) });
         var code = new VerificationCodeInput { Font = _bodyFont,
             Bounds = new(0, y + Scale(22), ContentWidth, Scale(40)) };
         _content.Controls.Add(code);
         y += Scale(72);
-        Forms.TextBox? password = null, confirm = null;
-        if (flow == CodeFlow.Reset)
-        {
-            password = Input("新密码（至少 10 个字符）", ref y, "", secret: true);
-            confirm = Input("确认新密码", ref y, "", secret: true);
-        }
         var error = ErrorLabel(ref y);
-        var submit = Button(flow switch { CodeFlow.Login => "验证并登录", CodeFlow.Register => "完成注册", _ => "修改密码" }, ref y);
-        Link("重新发送验证码", 0, ref y, async () => await RunAsync(error, () => flow switch
+        var submit = Button(flow == CodeFlow.Login ? "验证并登录" : "验证并继续", ref y);
+        Links(ref y, ("重新发送验证码", async () => await RunAsync(error, () => flow switch
         {
             CodeFlow.Login => _gate.LoginAsync(_email, _password, _lifetime.Token),
             CodeFlow.Register => _gate.StartRegistrationAsync(_email, _lifetime.Token),
@@ -247,28 +253,64 @@ internal sealed partial class LoginWindow : Forms.Form
             if (step.Kind is DesktopAuthStepKind.Failed) Fail(error, step);
             else if (step.Kind == DesktopAuthStepKind.SignedIn) AfterSignIn(step.Identity);
             else { error.ForeColor = Muted; error.Text = step.Message ?? "验证码已重新发送。"; }
+        })), ("返回", () =>
+        {
+            if (flow == CodeFlow.Register) ShowRegister(null);
+            else if (flow == CodeFlow.Reset) ShowResetRequest(_email);
+            else ShowLogin(null);
         }));
-        y -= Scale(30);
-        Link("返回", Scale(200), ref y, () => { if (flow == CodeFlow.Register) ShowRegister(null); else ShowLogin(null); });
+        FitPage();
         submit.Click += async (_, _) =>
         {
             if (!Require(Regex.IsMatch(code.Value, "^[0-9]{6}$"), error, "请输入邮件中的 6 位数字验证码。")) { code.FocusFirstEmpty(); return; }
-            if (flow == CodeFlow.Reset && (!Require(password!.Text.Length is >= 10 and <= 128, error, "密码需要 10–128 个字符。")
-                || !Require(password.Text == confirm!.Text, error, "两次输入的密码不一致。"))) return;
+            var verifiedCode = code.Value;
             await RunAsync(error, () => flow switch
             {
                 CodeFlow.Login => _gate.ConfirmLoginAsync(_email, _password, code.Value, _lifetime.Token),
-                CodeFlow.Register => _gate.ConfirmRegistrationAsync(_email, code.Value, _password, _displayName, _lifetime.Token),
-                _ => _gate.ConfirmPasswordResetAsync(_email, code.Value, password!.Text, _lifetime.Token),
+                CodeFlow.Register => _gate.VerifyRegistrationCodeAsync(_email, verifiedCode, _lifetime.Token),
+                _ => _gate.VerifyPasswordResetCodeAsync(_email, verifiedCode, _lifetime.Token),
             }, step =>
             {
                 if (step.Kind == DesktopAuthStepKind.SignedIn) AfterSignIn(step.Identity);
-                else if (step.Kind == DesktopAuthStepKind.PasswordChanged) { _password = ""; ShowLogin(step.Message); }
+                else if (step.Kind == DesktopAuthStepKind.CodeVerified && flow != CodeFlow.Login) ShowAccountDetails(flow, verifiedCode);
                 else Fail(error, step);
             });
         };
         AcceptButton = submit;
         code.FocusFirstEmpty();
+    }
+
+    private void ShowAccountDetails(CodeFlow flow, string verifiedCode)
+    {
+        var register = flow == CodeFlow.Register;
+        var y = Page(register ? "设置账户信息" : "设置新密码", "邮箱验证通过。", register ? 500 : 420);
+        var display = register ? Input("昵称（2–32 个字符）", ref y, _displayName) : null;
+        var password = Input(register ? "密码（至少 10 个字符）" : "新密码（至少 10 个字符）", ref y, "", secret: true);
+        var confirm = Input(register ? "确认密码" : "确认新密码", ref y, "", secret: true);
+        var error = ErrorLabel(ref y);
+        var agreement = register ? Agreement(ref y, error) : null;
+        var submit = Button(register ? "创建账户" : "修改密码", ref y);
+        if (agreement is not null) BindAgreement(agreement, submit);
+        Links(ref y, ("返回邮箱验证", () => ShowCode(flow, null)));
+        FitPage();
+        submit.Click += async (_, _) =>
+        {
+            if (agreement is not null && !Require(agreement.Checked, error, "请先阅读并同意软件许可和使用条款。")) return;
+            if (register && !Require(display!.Text.Trim().Length is >= 2 and <= 32, error, "昵称需要 2–32 个字符。")) return;
+            if (!Require(password.Text.Length is >= 10 and <= 128, error, "密码需要 10–128 个字符。")
+                || !Require(password.Text == confirm.Text, error, "两次输入的密码不一致。")) return;
+            if (register) _displayName = display!.Text.Trim();
+            await RunAsync(error, () => register
+                ? _gate.ConfirmRegistrationAsync(_email, verifiedCode, password.Text, _displayName, _lifetime.Token)
+                : _gate.ConfirmPasswordResetAsync(_email, verifiedCode, password.Text, _lifetime.Token), step =>
+            {
+                if (register && step.Kind == DesktopAuthStepKind.SignedIn) AfterSignIn(step.Identity);
+                else if (!register && step.Kind == DesktopAuthStepKind.PasswordChanged) { _password = ""; ShowLogin(step.Message); }
+                else Fail(error, step);
+            });
+        };
+        AcceptButton = submit;
+        (display ?? password).Select();
     }
 
     private void ShowMessage(string heading, string message, params (string Text, Action Action)[] actions)
@@ -283,6 +325,7 @@ internal sealed partial class LoginWindow : Forms.Form
             x += Scale(166);
             y -= Scale(54);
         }
+        FitPage();
     }
 
     private void AfterSignIn(AccountIdentity? identity)
@@ -349,6 +392,7 @@ internal sealed partial class LoginWindow : Forms.Form
             _busy = false;
             UseWaitCursor = false;
             if (!IsDisposed) foreach (Forms.Control control in _content.Controls) if (control is Forms.Button) control.Enabled = true;
+            UpdateAgreementButton();
         }
     }
 

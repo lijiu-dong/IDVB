@@ -23,7 +23,7 @@ public sealed partial class SessionOrchestrator
         _matchCancellation?.Token ?? new CancellationToken(canceled: true);
 
     private bool IsCurrentMatchOperation(MapMatchSnapshot operationMatch) =>
-        !IsMatchEnding && _matchSession.IsCurrent(operationMatch);
+        !IsMatchEnding && HasMatchUsageAuthorization && _matchSession.IsCurrent(operationMatch);
 
     private MapOpenOperationContext CaptureMapOpenOperationContext(
         MapGameToggleTransition toggle,
@@ -82,7 +82,7 @@ public sealed partial class SessionOrchestrator
         _matchCancellation?.Cancel();
         _matchCancellation?.Dispose();
         _matchCancellation = CancellationTokenSource.CreateLinkedTokenSource(
-            _lifetimeCts.Token);
+            _lifetimeCts.Token, _matchUsageAuthorization?.Ended ?? new CancellationToken(true));
         var nativeMiniMapToken = _matchCancellation.Token;
         _nativeMiniMapCaptureTask = Task.Run(() => RunNativeMiniMapCaptureAsync(nativeMiniMapToken));
     }
@@ -317,30 +317,23 @@ public sealed partial class SessionOrchestrator
     private async Task BeginMatchAsync(string mapClass, Task pendingSettingsSave)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        if (!_headless && _captureSvc.TryGetForegroundClientBounds(out var bounds, out _, out _)
-            && bounds is MapScreenRect gameBounds)
-            OverlayNotificationCenter.UpdateGameBounds(gameBounds);
-        using var loading = new MatchLoadingNotification(_headless ? null
-            : OverlayNotificationCenter.Notice("正在加载…\n准备开始对局 · 0%", 0, Timeout.InfiniteTimeSpan));
-        using var progress = MapOperationProgress.Begin(loading);
         try
         {
             await pendingSettingsSave;
-            MapOperationProgress.Report(.02, "同步地图库");
-            await MapOperationProgress.RunAsync(.02, .15, EnsureMapCacheSynchronizedAsync);
-            MapOperationProgress.Report(.15, "等待对局初始化");
+            await EnsureMapCacheSynchronizedAsync();
             await _matchLifecycleGate.WaitAsync();
             try
             {
-                await MapOperationProgress.RunAsync(.15, .99, () => BeginMatchCoreAsync(mapClass));
-                if (!_disposed && _matchSession.Snapshot.IsStarted)
-                    loading.Complete();
+                await BeginMatchCoreAsync(mapClass);
             }
             finally { _matchLifecycleGate.Release(); }
         }
+        catch (MatchUsageUnavailableException)
+        {
+            throw;
+        }
         catch (Exception exception)
         {
-            loading.Dispose();
             if (!_headless)
                 OverlayNotificationCenter.Error($"进入对局失败：{exception.Message}");
             throw;
@@ -355,27 +348,58 @@ public sealed partial class SessionOrchestrator
                 return;
             if (_matchSession.Snapshot.IsStarted)
                 throw new InvalidOperationException("A match is already in progress.");
-            ResetMatchTransientState(resetAutomaticCacheSamples: true);
-            _statusMessage = $"正在准备对局地图 · {mapClass}";
-            StateChanged?.Invoke(this, EventArgs.Empty);
-            MapOperationProgress.Report(.05, "重置对局状态");
-            await MapOperationProgress.RunAsync(.05, .92, () => _recognition.PrepareMatchResourcesAsync(mapClass));
-            if (_disposed)
-                return;
-            _matchPluginsActivated = false;
-            StartMatchCancellationScope();
-            var match = _matchSession.Begin(mapClass);
-            StartUsageMetering(match);
-            if (_settings?.DiagnosticModeEnabled is true)
-                MapDiagnosticModeCapture.BeginMatch();
-            MapOperationProgress.Report(.94, "激活对局插件");
-            await SetMatchPluginsActivatedCoreAsync(true);
-            _statusMessage = $"对局已开始 · {mapClass}";
-            _logCollector.Append(
-                MapLogCategory.Session,
-                MapLogLevel.Info,
-                $"进入对局 · version={match.Version} · class={match.MapClass}");
-            StateChanged?.Invoke(this, EventArgs.Empty);
+            MapOperationProgress.Report(.02, "校验对局时长授权");
+            await AuthorizeMatchUsageAsync();
+            if (!_headless && _captureSvc.TryGetForegroundClientBounds(out var bounds, out _, out _)
+                && bounds is MapScreenRect gameBounds)
+                OverlayNotificationCenter.UpdateGameBounds(gameBounds);
+            using var loading = new MatchLoadingNotification(_headless ? null
+                : OverlayNotificationCenter.Notice("正在加载…\n准备开始对局 · 0%", 0, Timeout.InfiniteTimeSpan));
+            using var progress = MapOperationProgress.Begin(loading);
+            try
+            {
+                ResetMatchTransientState(resetAutomaticCacheSamples: true);
+                _statusMessage = $"正在准备对局地图 · {mapClass}";
+                StateChanged?.Invoke(this, EventArgs.Empty);
+                MapOperationProgress.Report(.05, "重置对局状态");
+                await MapOperationProgress.RunAsync(.05, .92, () => _recognition.PrepareMatchResourcesAsync(mapClass));
+                if (_disposed)
+                {
+                    await StopUsageMeteringAsync();
+                    return;
+                }
+                _matchUsageAuthorization!.Demand();
+                _matchPluginsActivated = false;
+                StartMatchCancellationScope();
+                var match = _matchSession.Begin(mapClass);
+                ObserveMatchUsage(match);
+                if (_settings?.DiagnosticModeEnabled is true)
+                    MapDiagnosticModeCapture.BeginMatch();
+                MapOperationProgress.Report(.94, "激活对局插件");
+                await SetMatchPluginsActivatedCoreAsync(true);
+                _matchUsageAuthorization.Demand();
+                _statusMessage = $"对局已开始 · {mapClass}";
+                _logCollector.Append(
+                    MapLogCategory.Session,
+                    MapLogLevel.Info,
+                    $"进入对局 · version={match.Version} · class={match.MapClass}");
+                StateChanged?.Invoke(this, EventArgs.Empty);
+                loading.Complete();
+            }
+            catch (Exception exception)
+            {
+                var authorizationLost = !HasMatchUsageAuthorization;
+                if (_matchSession.Snapshot.IsStarted)
+                    await EndMatchCoreAsync(saveAutomaticMapCache: false, notify: !authorizationLost);
+                else
+                    await StopUsageMeteringAsync();
+                if (authorizationLost)
+                {
+                    NotifyUsageUnavailable();
+                    throw new MatchUsageUnavailableException(exception);
+                }
+                throw;
+            }
 
             // Native capture is acquired by its actual consumers. Starting a WGC
             // session here records every game frame even when heading is disabled
