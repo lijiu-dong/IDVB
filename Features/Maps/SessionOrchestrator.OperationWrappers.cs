@@ -80,11 +80,15 @@ public sealed partial class SessionOrchestrator
                 if (restoreMainContent)
                     _overlay.SetMainContentVisible(false);
             }
-            await RunMapOpenAlignmentCoreAsync(
-                toggle,
-                operationMatch,
-                cancellationToken,
-                independentAlignment);
+            if (_lastRecognition is null && _pendingAlignmentIdentity is null
+                && !_settings!.SelectMapByTagsEnabled)
+                await RunFrontEntranceMapOpenIdentityAsync(toggle, operationMatch, cancellationToken);
+            else
+                await RunMapOpenAlignmentCoreAsync(
+                    toggle,
+                    operationMatch,
+                    cancellationToken,
+                    independentAlignment);
             if (independentAlignment)
                 _overlayStatus.KeepCurrent();
         }

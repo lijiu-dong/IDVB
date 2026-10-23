@@ -141,6 +141,31 @@ public sealed partial class SessionOrchestrator
         validation.Complete();
         // This automatic transaction includes the deferred final present.
         // Dispose order closes present before its containing trace phase.
+        PublishAutomaticRecognition(recognition, result.PendingSideEntranceSeed, frame, match,
+            $"已确认 {recognition.Map.DisplayName} · 结构支持 {final.SupportedFraction:P0}");
+        _logCollector.Append(MapLogCategory.ScanLifecycle, MapLogLevel.Info,
+            $"扫描自动提交成功 · map={recognition.Map.SequenceNumber}#{recognition.Result.Floor}",
+            details: new()
+            {
+                ["mapId"] = recognition.Map.Id,
+                ["scanId"] = execution.ScanId,
+                ["floor"] = recognition.Result.Floor,
+                ["matchVersion"] = match.Version,
+                ["identityLocked"] = true,
+                ["alignmentCommitted"] = true,
+                ["overlayVisible"] = _overlay.IsVisible,
+                ["selectionPolicy"] = result.IdentitySelectionPolicy.ToString(),
+                ["variantGroup"] = execution.VariantGroups.FirstOrDefault(g => g.Contains(recognition.Map.Id)),
+                ["support"] = final.SupportedFraction,
+                ["decisionElapsedMs"] = execution.ElapsedMilliseconds
+            });
+        return true;
+    }
+
+    private void PublishAutomaticRecognition(RuntimeMapRecognition recognition,
+        MapAlignmentSession? seed, CapturedGameFrame frame, MapMatchSnapshot match, string status)
+    {
+        var transform = recognition.Result.OverlayTransform!;
         using var publication = MapOperationTraceAmbient.StartTopLevel(
             "automatic_commit_and_publish", MapOperationWaitKind.Compute,
             mapId: recognition.Map.Id.ToString("D"), floorKey: recognition.Result.Floor);
@@ -159,7 +184,7 @@ public sealed partial class SessionOrchestrator
         _mapLease.Bind(match, recognition.Map.Id);
         _pendingAlignmentIdentity = null;
         _pendingAlignmentSeed = null;
-        _lastAlignmentSession = UpdateAlignmentSession(result.PendingSideEntranceSeed, recognition);
+        _lastAlignmentSession = UpdateAlignmentSession(seed, recognition);
         RememberPrimaryFloorSession(recognition, _lastAlignmentSession);
         RememberReliableFloorAlignment(match, recognition, _lastAlignmentSession, frame, true);
         RememberMapViewportPresenceReference(recognition, frame);
@@ -172,26 +197,9 @@ public sealed partial class SessionOrchestrator
             _overlay.Show();
         }
         RefreshMiniMapForCurrentFloor();
-        _statusMessage = $"已确认 {recognition.Map.DisplayName} · 结构支持 {final.SupportedFraction:P0}";
-        _logCollector.Append(MapLogCategory.ScanLifecycle, MapLogLevel.Info,
-            $"扫描自动提交成功 · map={recognition.Map.SequenceNumber}#{recognition.Result.Floor}",
-            details: new()
-            {
-                ["mapId"] = recognition.Map.Id,
-                ["scanId"] = execution.ScanId,
-                ["floor"] = recognition.Result.Floor,
-                ["matchVersion"] = match.Version,
-                ["identityLocked"] = true,
-                ["alignmentCommitted"] = true,
-                ["overlayVisible"] = _overlay.IsVisible,
-                ["selectionPolicy"] = result.IdentitySelectionPolicy.ToString(),
-                ["variantGroup"] = execution.VariantGroups.FirstOrDefault(g => g.Contains(recognition.Map.Id)),
-                ["support"] = final.SupportedFraction,
-                ["decisionElapsedMs"] = execution.ElapsedMilliseconds
-            });
+        _statusMessage = status;
         StateChanged?.Invoke(this, EventArgs.Empty);
         QueueSelectedMapResourcePreparation(recognition.Map.Id); QueueVariantIdentityNotification(recognition.Map.Id, userConfirmed: false);
-        return true;
     }
 
     public async Task SetScanPerformanceModeAsync(ScanPerformanceMode mode)

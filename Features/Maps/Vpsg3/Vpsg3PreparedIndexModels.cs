@@ -210,7 +210,7 @@ public sealed partial class Vpsg3PreparedFloor : IDisposable
     public Vpsg3ScalePrior ScalePrior { get; }
     public int WordsPerRow { get; }
     internal IDVBuff.Core.Collections.CompactBitWords? ReferenceSeeds { get; set; }
-    public long MemoryBytes => _baseMemoryBytes + DerivedGeometryK3Bytes + DerivedGeometryK5Bytes + (SemanticIndex?.MemoryBytes ?? 0) + (_precisionDistance?.MemoryBytes ?? 0L) + (ReferenceSeeds?.MemoryBytes ?? 0);
+    public long MemoryBytes => _baseMemoryBytes + DerivedGeometryK3Bytes + DerivedGeometryK5Bytes + (SemanticIndex?.MemoryBytes ?? 0) + (_precisionDistance?.MemoryBytes ?? 0L) + (ReferenceSeeds?.MemoryBytes ?? 0) + (AutomaticEntryIndex?.EstimatedManagedBytes ?? 0);
 
     public bool IsDisposed => Volatile.Read(ref _disposed) != 0;
 
@@ -424,6 +424,7 @@ public sealed partial class Vpsg3PreparedFloor : IDisposable
                 _dilatedBitsetK5 = null;
                 _dilatedBitsetK3 = null;
                 ReferenceSeeds = null;
+                AutomaticEntryIndex = null;
                 _derivedGeometryK3Ownership?.Dispose();
                 _derivedGeometryK3Ownership = null;
                 _derivedGeometryK5Ownership?.Dispose();

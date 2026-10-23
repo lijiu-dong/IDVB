@@ -33,6 +33,11 @@ public readonly record struct Vpsg3SparseSamplingDiagnostics(
 /// </summary>
 public sealed class Vpsg3LiveObservation : IDisposable
 {
+    internal const double AutomaticPoseTolerancePixels = 3d;
+    private Mat? _visibleInterior;
+    private Mat? _automaticWallEvidence;
+    internal Mat? VisibleInterior => _visibleInterior;
+    internal Mat? AutomaticWallEvidence => _automaticWallEvidence;
     private Mat? _observedEdges;
     private Mat? _validMask;
     private Mat? _proposalEdges;
@@ -157,12 +162,15 @@ public sealed class Vpsg3LiveObservation : IDisposable
         int maxSparsePoints = 150,
         Point[]? sparseEdgePoints = null,
         double extractionMilliseconds = 0,
-        Mat? proposalEdges = null, Mat? semanticLabels = null)
+        Mat? proposalEdges = null, Mat? semanticLabels = null,
+        Mat? visibleInterior = null, Mat? automaticWallEvidence = null)
     {
         _observedEdges = observedEdges ?? throw new ArgumentNullException(nameof(observedEdges));
         _validMask = validMask ?? throw new ArgumentNullException(nameof(validMask));
         _proposalEdges = proposalEdges;
         SemanticLabels = semanticLabels;
+        _visibleInterior = visibleInterior;
+        _automaticWallEvidence = automaticWallEvidence;
         Width = width;
         Height = height;
         EdgePixelCount = edgePixelCount;
@@ -210,6 +218,10 @@ public sealed class Vpsg3LiveObservation : IDisposable
             _validMask = null;
             _proposalEdges?.Dispose();
             _proposalEdges = null;
+            _visibleInterior?.Dispose();
+            _visibleInterior = null;
+            _automaticWallEvidence?.Dispose();
+            _automaticWallEvidence = null;
         }
     }
 }

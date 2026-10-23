@@ -93,6 +93,7 @@
   </ItemGroup>
   <ItemGroup>
     <Content Include="..\Assets\FloorIndicators\**\*" Link="Assets\FloorIndicators\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\Assets\Algorithms\*.idva" Link="Assets\Algorithms\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <Target Name="GenerateCliProductIdentity" BeforeTargets="CoreCompile">
     <XmlPeek XmlInputPath="$(MSBuildProjectDirectory)\..\IDVBuff.csproj"
