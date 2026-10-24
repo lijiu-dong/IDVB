@@ -11,6 +11,8 @@ public sealed partial class SessionOrchestrator
     {
         Interlocked.Increment(ref _orbTrackingGeneration);
         _realtimeMapTransformPublisher.DiscardPending();
+        Interlocked.Exchange(ref _nativeDragPresentation, null);
+        Interlocked.Exchange(ref _pendingOrbTrackingCommit, null);
         CancellationTokenSource? cancellation;
         Task? task;
         lock (_orbTrackingGate)

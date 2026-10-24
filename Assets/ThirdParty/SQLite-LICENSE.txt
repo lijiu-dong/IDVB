@@ -1,0 +1,7 @@
+===== SQLitePCLRaw.lib.e_sqlite3/3.53.3 / LICENSE.txt =====
+
+
+SQLite is Public Domain
+
+https://sqlite.org/copyright.html
+

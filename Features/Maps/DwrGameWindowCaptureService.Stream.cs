@@ -5,6 +5,8 @@ namespace IDVBuff.Features.Maps;
 public sealed partial class DwrGameWindowCaptureService
 {
     private readonly object _streamGate = new();
+    private readonly CaptureDeviceOwner<Windows.Graphics.DirectX.Direct3D11.IDirect3DDevice> _streamDevice =
+        new(GameFrameStream.CreateDevice);
     private GameFrameStream? _stream;
     private IntPtr _streamWindow;
     private MapScreenRect _streamBounds;
@@ -14,29 +16,48 @@ public sealed partial class DwrGameWindowCaptureService
 
     public void PrepareViewportCapture()
     {
+#if IDVB_DEVELOPMENT_BUILD
+        if (IDVBuff.Lifecycle.BackgroundTestRuntime.Enabled) return;
+#endif
         if (!TryGetForegroundClientBounds(out var bounds, out var window, out _)) return;
+        GameFrameStream? previous;
+        long version;
         lock (_streamGate)
         {
             _streamDemand.Request(Environment.TickCount64);
             // Cache failures for this window geometry too; do not repeatedly initialize a failed GPU device.
             if (_streamWindow == window && _streamBounds == bounds) return;
-            _streamIdleTimer ??= new Timer(_ => ReleaseIdleFrameStream(), null, 1000, 1000);
-            _stream?.Dispose();
+            if (_streamIdleTimer is null)
+            {
+                // This timer outlives the current scan. Do not retain its
+                // AsyncLocal frame, operation trace or alignment context.
+                if (ExecutionContext.IsFlowSuppressed())
+                    _streamIdleTimer = new Timer(_ => ReleaseIdleFrameStream(), null, 1000, 1000);
+                else
+                {
+                    using var flow = ExecutionContext.SuppressFlow();
+                    _streamIdleTimer = new Timer(_ => ReleaseIdleFrameStream(), null, 1000, 1000);
+                }
+            }
+            previous = _stream;
             _stream = null;
             _streamWindow = window;
             _streamBounds = bounds;
-            var version = ++_streamVersion;
-            // Device/session creation is cold work (including driver/JIT startup), never a map-open wait.
-            _ = Task.Run(() => InitializeFrameStream(window, version));
+            version = ++_streamVersion;
         }
+        previous?.Dispose();
+        // Native creation and shutdown share an owner; neither blocks map-open/UI work.
+        _ = CaptureStreamWorker.RunAsync(() => InitializeFrameStream(window, version));
     }
 
     private void InitializeFrameStream(IntPtr window, long version)
     {
+        lock (_streamGate)
+            if (_streamVersion != version) return;
         GameFrameStream? created = null;
         try
         {
-            if (GraphicsCaptureSession.IsSupported()) created = new GameFrameStream(window);
+            if (GraphicsCaptureSession.IsSupported()) created = new GameFrameStream(window, _streamDevice);
             lock (_streamGate)
             {
                 if (_streamVersion == version)
@@ -50,6 +71,7 @@ public sealed partial class DwrGameWindowCaptureService
         {
             MapLogCollector.Instance.Append(MapLogCategory.ViewportCapture, MapLogLevel.Warning,
                 $"新帧捕获初始化失败，回退 GDI · {exception.Message}");
+            _streamDevice.Reset();
         }
         finally { created?.Dispose(); }
     }
@@ -60,6 +82,15 @@ public sealed partial class DwrGameWindowCaptureService
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (!viewport.IsValid || maximumWait <= TimeSpan.Zero) return null;
+#if IDVB_DEVELOPMENT_BUILD
+        if (IDVBuff.Lifecycle.BackgroundTestRuntime.Enabled)
+        {
+            // Render a new OG frame into this process's owned DIB. No cached
+            // screenshot and no capture of another application's desktop.
+            await Task.Delay(1, cancellationToken).ConfigureAwait(false);
+            return TryCaptureViewport(viewport, out var backgroundFrame, out _) ? backgroundFrame : null;
+        }
+#endif
         PrepareViewportCapture();
         GameFrameStream? stream;
         MapScreenRect client;
@@ -161,15 +192,25 @@ public sealed partial class DwrGameWindowCaptureService
 
     private void ResetFrameStream()
     {
+        GameFrameStream? previous;
         lock (_streamGate)
         {
             _streamIdleTimer?.Dispose();
             _streamIdleTimer = null;
-            _stream?.Dispose();
+            previous = _stream;
             _stream = null;
             _streamWindow = IntPtr.Zero;
             _streamBounds = default;
             _streamVersion++;
+            // Queue retirement while holding the version gate: a subsequent
+            // match cannot enqueue acquisition ahead of this retirement.
+            _ = CaptureStreamWorker.RunAsync(() =>
+            {
+                using var memory = IDVBuff.Diagnostics.RealtimePerformanceTracker.TrackScope(
+                    "WGC.MatchDeviceReset", forceLog: true);
+                try { previous?.Dispose(); }
+                finally { _streamDevice.Reset(); }
+            });
         }
     }
 }

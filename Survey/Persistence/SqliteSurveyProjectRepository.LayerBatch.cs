@@ -35,7 +35,7 @@ public sealed partial class SqliteSurveyProjectRepository
         {
             if (mutation.ReplaceManualTransform)
             {
-                var transform = connection.CreateCommand();
+                using var transform = connection.CreateCommand();
                 transform.Transaction = sqlite;
                 transform.CommandText = """
                     UPDATE layers SET manual_tx = $tx, manual_ty = $ty,
@@ -55,7 +55,7 @@ public sealed partial class SqliteSurveyProjectRepository
                     throw new InvalidOperationException("Survey layer was not found.");
             }
 
-            var state = connection.CreateCommand();
+            using var state = connection.CreateCommand();
             state.Transaction = sqlite;
             state.CommandText = """
                 UPDATE layer_edit_state SET
@@ -96,7 +96,7 @@ public sealed partial class SqliteSurveyProjectRepository
 
             if (mutation.ReplaceObservationStatus)
             {
-                var observation = connection.CreateCommand();
+                using var observation = connection.CreateCommand();
                 observation.Transaction = sqlite;
                 observation.CommandText = """
                     UPDATE observations SET state = $state, error_code = $error,

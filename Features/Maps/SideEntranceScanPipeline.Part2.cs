@@ -4,6 +4,9 @@ namespace IDVBuff.Features.Maps;
 
 public sealed partial class SideEntranceScanPipeline
 {
+    private static byte[]? SampleSemanticLabels(ScanFrameEvidence frame, Point[] points) =>
+        frame.Observation.SemanticLabels is { } labels ? points.Select(p => labels.At<byte>(p.Y, p.X)).ToArray() : null;
+
     private readonly record struct SearchPeak(double Scale, double X, double Y, double Score);
 
     internal static IReadOnlyList<SideEntranceScanCandidate> RefineVariant(
@@ -16,6 +19,7 @@ public sealed partial class SideEntranceScanPipeline
         if (index is null || profile is null || anchor?.Bounds?.IsValid != true) return [];
         var points = ScanFrameEvidence.SampleUniform(frame.DensePoints,
             frame.Observation.ObservedEdges.Width, frame.Observation.ObservedEdges.Height, 1024);
+        var labels = SampleSemanticLabels(frame, points);
         var refined = new List<SideEntranceScanCandidate>();
         // Refinement is optional. Leave room for three variant registrations and
         // final evidence/commit instead of exhausting the scan's shared deadline.
@@ -28,7 +32,7 @@ public sealed partial class SideEntranceScanPipeline
             var gx = gate.ScreenBounds.CenterX - viewport.X;
             var gy = gate.ScreenBounds.CenterY - viewport.Y;
             var best = new SearchPeak(seed.MatchScale, seed.MatchLocation.X, seed.MatchLocation.Y,
-                index.Score(points, seed.MatchScale, seed.MatchLocation.X, seed.MatchLocation.Y));
+                index.Score(points, seed.MatchScale, seed.MatchLocation.X, seed.MatchLocation.Y, semanticLabels: labels));
             for (var step = -4; step <= 4; step++)
             {
                 if (!context.CanCompute || context.RemainingMilliseconds <= verificationReserve)
@@ -40,7 +44,7 @@ public sealed partial class SideEntranceScanPipeline
                 {
                     var x = gx + dx - ax * scale;
                     var y = gy + dy - ay * scale;
-                    var score = index.Score(points, scale, x, y);
+                    var score = index.Score(points, scale, x, y, best.Score, labels);
                     context.TestedHypotheses++;
                     if (score > best.Score) best = new(scale, x, y, score);
                 }
@@ -69,14 +73,14 @@ public sealed partial class SideEntranceScanPipeline
     }
 
     private static IReadOnlyList<SideEntranceScanCandidate> SearchFloor(
-        MapRecord map, string floorKey, Mat line, ScanFrameEvidence frame,
+        MapRecord map, string floorKey, ScanStructureIndex line, ScanFrameEvidence frame,
         GateDetection gate, int gateIndex, MapScreenRect viewport, ScanExecutionPolicy policy,
         ScanExecutionContext? context)
     {
         var profile = MapFloorRules.GetFloorProfile(map, floorKey);
         var anchor = MapScanFloorRules.GetScanFeatureAnchor(map, floorKey);
-        if (profile is null || anchor?.Bounds?.IsValid != true || line.Empty()) return [];
-        var index = ScanStructureIndex.Get(line);
+        if (profile is null || anchor?.Bounds?.IsValid != true) return [];
+        var index = line.WithScanAnchor(map, floorKey);
         var ax = (anchor.Bounds.X + anchor.Bounds.Width / 2) * profile.RecognitionPixelWidth;
         var ay = (anchor.Bounds.Y + anchor.Bounds.Height / 2) * profile.RecognitionPixelHeight;
         var gx = gate.ScreenBounds.CenterX - viewport.X;
@@ -90,7 +94,7 @@ public sealed partial class SideEntranceScanPipeline
             if ((int)mode > (int)policy.Mode) break;
             var stage = ScanExecutionPolicy.For(mode) with
             { MinimumScale = policy.MinimumScale, MaximumScale = policy.MaximumScale };
-            retained.AddRange(SearchPeaks(index, frame.SearchPoints, ax, ay, gx, gy, stage, context));
+            retained.AddRange(SearchPeaks(index, frame.SearchPoints, SampleSemanticLabels(frame, frame.SearchPoints), ax, ay, gx, gy, stage, context));
         }
         var unique = new List<SearchPeak>();
         foreach (var peak in retained.OrderByDescending(p => p.Score))
@@ -115,7 +119,7 @@ public sealed partial class SideEntranceScanPipeline
         }).ToArray();
     }
 
-    private static IReadOnlyList<SearchPeak> SearchPeaks(ScanStructureIndex index, Point[] points,
+    private static IReadOnlyList<SearchPeak> SearchPeaks(ScanStructureIndex index, Point[] points, byte[]? labels,
         double ax, double ay, double gx, double gy, ScanExecutionPolicy policy, ScanExecutionContext? context)
     {
         var min = policy.MinimumScale;
@@ -125,7 +129,12 @@ public sealed partial class SideEntranceScanPipeline
         var peaks = new List<SearchPeak>();
         void Add(SearchPeak peak)
         {
-            var duplicate = peaks.FindIndex(p => Math.Abs(Math.Log(p.Scale / peak.Scale)) < policy.CoarseScaleStep * 2);
+            // Preserve the first matching basin without allocating a captured
+            // predicate for every coarse pose in every floor search.
+            var duplicate = -1;
+            for (var i = 0; i < peaks.Count; i++)
+                if (Math.Abs(Math.Log(peaks[i].Scale / peak.Scale)) < policy.CoarseScaleStep * 2)
+                { duplicate = i; break; }
             if (duplicate >= 0)
             {
                 if (peaks[duplicate].Score >= peak.Score) return;
@@ -143,7 +152,8 @@ public sealed partial class SideEntranceScanPipeline
             {
                 var x = gx + dx - ax * scale;
                 var y = gy + dy - ay * scale;
-                Add(new(scale, x, y, index.Score(points, scale, x, y)));
+                var competitiveScore = peaks.Count == policy.BasinCount ? peaks[^1].Score : 0;
+                Add(new(scale, x, y, index.Score(points, scale, x, y, competitiveScore, labels)));
                 if (context is not null) Interlocked.Increment(ref context.TestedHypotheses);
             }
         }
@@ -163,7 +173,7 @@ public sealed partial class SideEntranceScanPipeline
                 {
                     var x = gx + dx - ax * scale;
                     var y = gy + dy - ay * scale;
-                    var score = index.Score(points, scale, x, y);
+                    var score = index.Score(points, scale, x, y, best.Score, labels);
                     if (score > best.Score) best = new(scale, x, y, score);
                     if (context is not null) Interlocked.Increment(ref context.TestedHypotheses);
                 }

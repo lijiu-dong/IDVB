@@ -4,7 +4,6 @@ using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
-using System.Reflection;
 
 namespace IDVBuff.Views;
 
@@ -14,8 +13,8 @@ namespace IDVBuff.Views;
 /// </summary>
 public sealed partial class PluginsPage : Page
 {
-    private static Brush PrimaryTextBrush => FluentTheme.Brush("TextFillColorPrimaryBrush");
-    private static Brush SecondaryTextBrush => FluentTheme.Brush("TextFillColorSecondaryBrush");
+    private Brush PrimaryTextBrush => FluentTheme.Brush(this, "TextFillColorPrimaryBrush");
+    private Brush SecondaryTextBrush => FluentTheme.Brush(this, "TextFillColorSecondaryBrush");
 
     /// <summary>root Grid，同时是 TTM 的 tip 宿主（overlay 槽）。</summary>
     private Panel? _tipHost;
@@ -76,7 +75,7 @@ public sealed partial class PluginsPage : Page
                 },
                 new TextBlock
                 {
-                    Text = "这里的开关是主开关；插件只会在对局控件开始对局后运行，并在结束对局时自动停用。",
+                    Text = "这里的开关是主开关；对局插件随对局启停，直播模式等常驻插件在局外也可运行。",
                     FontSize = 14,
                     Foreground = SecondaryTextBrush
                 }
@@ -126,9 +125,9 @@ public sealed partial class PluginsPage : Page
         return root;
     }
 
-    private static Border CreatePluginCard(IPlugin plugin, PluginManager manager)
+    private Border CreatePluginCard(IPlugin plugin, PluginManager manager)
     {
-        var metadata = plugin.GetType().GetCustomAttribute<PluginAttribute>();
+        var metadata = PluginMetadata.For(plugin.GetType());
         var grid = new Grid();
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -140,11 +139,11 @@ public sealed partial class PluginsPage : Page
             Width = 44,
             Height = 44,
             CornerRadius = new CornerRadius(8),
-            Background = FluentTheme.Brush("AccentFillColorTertiaryBrush"),
+            Background = FluentTheme.Brush(this, "AccentFillColorTertiaryBrush"),
             VerticalAlignment = VerticalAlignment.Top,
             Child = new SymbolIcon(Symbol.AllApps)
             {
-                Foreground = FluentTheme.Brush("TextOnAccentFillColorPrimaryBrush")
+                Foreground = FluentTheme.Brush(this, "TextOnAccentFillColorPrimaryBrush")
             }
         };
         grid.Children.Add(iconSurface);
@@ -261,7 +260,7 @@ public sealed partial class PluginsPage : Page
                 Content = new FontIcon { Glyph = "", FontSize = 14 },
                 Padding = new Thickness(8),
                 CornerRadius = new CornerRadius(4),
-                Background = FluentTheme.Brush("SubtleFillColorSecondaryBrush"),
+                Background = FluentTheme.Brush(this, "SubtleFillColorSecondaryBrush"),
                 BorderThickness = new Thickness(0),
                 Margin = new Thickness(14, -6, 0, 0),
                 HorizontalAlignment = HorizontalAlignment.Right,
@@ -277,8 +276,8 @@ public sealed partial class PluginsPage : Page
         return new Border
         {
             Padding = new Thickness(20),
-            Background = FluentTheme.CardBrush(),
-            BorderBrush = FluentTheme.Brush("CardStrokeColorDefaultBrush"),
+            Background = FluentTheme.CardBrush(this),
+            BorderBrush = FluentTheme.Brush(this, "CardStrokeColorDefaultBrush"),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(8),
             Child = grid

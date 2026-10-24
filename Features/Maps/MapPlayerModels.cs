@@ -190,8 +190,18 @@ public static class MapPlayerAssetCatalog
         return File.Exists(current) ? current : deployed;
     }
 
-    public static bool AreAllAvailable =>
-        Slots.All(slot => File.Exists(ResolvePath(slot)));
+    public static bool AreAllAvailable
+    {
+        get
+        {
+#if IDVB_PRIVATE_ONLINE_SERVICES
+            IDVBuff.Core.Contracts.Online.RecognitionResources.Demand();
+            return true;
+#else
+            return Slots.All(slot => File.Exists(ResolvePath(slot)));
+#endif
+        }
+    }
 }
 
 /// <summary>

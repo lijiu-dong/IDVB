@@ -15,6 +15,8 @@ public sealed partial class MapListPage : UserControl
     {
         if (_modernCanvas is null || _modernViewport is null)
             return;
+        if (!_modernToolState.CanUse(_modernToolState.ActiveTool)) return;
+        FocusModernEditor();
         var pointer = e.GetCurrentPoint(_modernCanvas);
         var temporaryPan = pointer.Properties.IsMiddleButtonPressed || IsModernKeyDown(VirtualKey.Space);
         _modernPointerStart = pointer.Position;
@@ -23,6 +25,7 @@ public sealed partial class MapListPage : UserControl
 
         if (temporaryPan || _modernToolState.ActiveTool == MapEditorTool.Pan)
         {
+            CancelModernCanvasFit();
             _modernInteraction = EditorInteractionKind.Pan;
             _modernPanStart = e.GetCurrentPoint(_modernViewport).Position;
             _modernPanHorizontalOffset = _modernViewport.HorizontalOffset;
@@ -53,7 +56,12 @@ public sealed partial class MapListPage : UserControl
                     return;
                 }
                 _modernSelection = hit;
-                if (hit.Kind == EditorSelectionKind.Background)
+                if (FindModernSelectedAnnotation()?.Type == MapAnnotationType.Route)
+                {
+                    RefreshModernLayerList(); RenderModernEditor(); e.Handled = true;
+                    return;
+                }
+                if (hit.Kind == MapEditorElementKind.Background)
                 {
                     RefreshModernLayerList();
                     RenderModernEditor();
@@ -63,6 +71,20 @@ public sealed partial class MapListPage : UserControl
                 CaptureModernOriginalGeometry();
                 RefreshModernLayerList();
             }
+        }
+        else if (_modernToolState.ActiveTool == MapEditorTool.Marker)
+        {
+            if (pointer.Properties.IsLeftButtonPressed && ToModernNormalizedPoint(pointer.Position, false) is { } markerPoint)
+                PlaceModernMarker(markerPoint);
+            e.Handled = true;
+            return;
+        }
+        else if (_modernToolState.ActiveTool == MapEditorTool.AutomaticRoute)
+        {
+            if (pointer.Properties.IsLeftButtonPressed && ToModernNormalizedPoint(pointer.Position, false) is { } routePoint)
+                _ = CommitModernRoutePointAsync(routePoint);
+            e.Handled = true;
+            return;
         }
         else if (_modernToolState.ActiveTool == MapEditorTool.Line
             && _editorPreferenceState.LineDefaults.Mode == MapEditorLineMode.Continuous)
@@ -136,6 +158,12 @@ public sealed partial class MapListPage : UserControl
         _modernPointerCurrent = point;
         if (_modernInteraction == EditorInteractionKind.None)
         {
+            if (_modernToolState.ActiveTool == MapEditorTool.AutomaticRoute)
+            {
+                var routePoint = ToModernNormalizedPoint(point, false);
+                _modernRouteHover = routePoint is null ? null : ResolveModernRoutePoint(routePoint);
+                RenderModernEditor(); return;
+            }
             UpdateModernConcealHover(point);
             if (_modernToolState.ActiveTool == MapEditorTool.Gate)
                 _modernGateHoverPoint = ToModernNormalizedPoint(point, true);
@@ -238,38 +266,6 @@ public sealed partial class MapListPage : UserControl
         e.Handled = true;
     }
 
-    private void ModernCanvas_PointerCanceled(object sender, PointerRoutedEventArgs e)
-    {
-        if (_modernCanvas is not null && _modernCapturedPointerId == e.Pointer.PointerId)
-            _modernCanvas.ReleasePointerCapture(e.Pointer);
-        _modernCapturedPointerId = null;
-        CancelModernInteraction(restoreGeometry: true);
-        e.Handled = true;
-    }
-
-    private void ModernCanvas_PointerWheelChanged(object sender, PointerRoutedEventArgs e)
-    {
-        if (_modernViewport is null || _modernCanvas is null)
-            return;
-        var pointer = e.GetCurrentPoint(_modernCanvas);
-        if (IsModernKeyDown(VirtualKey.Control) && (_modernToolState.ActiveTool is MapEditorTool.Conceal or MapEditorTool.Gate))
-        {
-            ApplyModernConcealBrushWheel(pointer.Properties.MouseWheelDelta);
-            e.Handled = true;
-            return;
-        }
-        var viewportPoint = e.GetCurrentPoint(_modernViewport).Position;
-        var oldZoom = _modernViewport.ZoomFactor;
-        var multiplier = pointer.Properties.MouseWheelDelta > 0 ? 1.12f : 1f / 1.12f;
-        var newZoom = Math.Clamp(oldZoom * multiplier, .1f, 8f);
-        _modernViewport.ChangeView(
-            Math.Max(0, pointer.Position.X * newZoom - viewportPoint.X),
-            Math.Max(0, pointer.Position.Y * newZoom - viewportPoint.Y),
-            newZoom,
-            false);
-        e.Handled = true;
-    }
-
     private async void ModernCanvas_DoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
     {
         if (_modernCanvas is null)
@@ -278,7 +274,7 @@ public sealed partial class MapListPage : UserControl
         if (normalized is null)
             return;
         var hit = HitModernElement(normalized);
-        if (hit is not { Kind: EditorSelectionKind.Annotation })
+        if (hit is not { Kind: MapEditorElementKind.Annotation })
             return;
         _modernSelection = hit;
         _modernSelectedAnnotationIds.Clear();
@@ -290,6 +286,7 @@ public sealed partial class MapListPage : UserControl
 
     private async Task CommitModernCreationAsync()
     {
+        if (!_modernToolState.CanUse(_modernToolState.ActiveTool)) return;
         var tool = _modernToolState.ActiveTool;
         var bounds = _modernPendingBounds?.Clone();
         var start = _modernPendingStart?.Clone();
@@ -309,7 +306,7 @@ public sealed partial class MapListPage : UserControl
             }
             var concealProfile = GetActiveFloorProfile();
             concealProfile.BackgroundLayers.Add(concealLayer);
-            _modernSelection = new EditorSelection(EditorSelectionKind.Background, concealLayer.Id);
+            _modernSelection = new EditorSelection(MapEditorElementKind.Background, concealLayer.Id);
             RecordModernCreation("已撤销最新遮瑕层。", () =>
                 concealProfile.BackgroundLayers.RemoveAll(layer => layer.Id == concealLayer.Id));
             CompleteModernCreation("已创建遮瑕层。", returnToSelect: false);
@@ -354,7 +351,7 @@ public sealed partial class MapListPage : UserControl
                 if (!annotation.IsValid)
                     break;
                 profile.Annotations.Add(annotation);
-                _modernSelection = new EditorSelection(EditorSelectionKind.Annotation, annotation.Id);
+                _modernSelection = new EditorSelection(MapEditorElementKind.Annotation, annotation.Id);
                 RecordModernAnnotationCreation(profile, annotation);
                 await RememberEditorColorAsync(_currentAnnotationColor);
                 CompleteModernCreation("已创建直线。", returnToSelect: false);
@@ -370,7 +367,7 @@ public sealed partial class MapListPage : UserControl
                     Bounds = bounds
                 };
                 profile.Annotations.Add(annotation);
-                _modernSelection = new EditorSelection(EditorSelectionKind.Annotation, annotation.Id);
+                _modernSelection = new EditorSelection(MapEditorElementKind.Annotation, annotation.Id);
                 RecordModernAnnotationCreation(profile, annotation);
                 await RememberEditorColorAsync(_currentAnnotationColor);
                 CompleteModernCreation("已创建矩形。", returnToSelect: false);
@@ -388,7 +385,7 @@ public sealed partial class MapListPage : UserControl
                     profile.FreeCropPoints = priorCropPoints.Select(point => point.Clone()).ToList();
                     profile.Anchors = priorCropAnchors.Select(anchor => anchor.Clone()).ToList();
                 });
-                _modernSelection = new EditorSelection(EditorSelectionKind.Crop);
+                _modernSelection = new EditorSelection(MapEditorElementKind.Crop);
                 CompleteModernCreation("已更新画布裁剪范围，范围外锚点已清除。", returnToSelect: true);
                 break;
             case MapEditorTool.Anchor when bounds?.IsValid is true:
@@ -417,7 +414,7 @@ public sealed partial class MapListPage : UserControl
             CloseButtonText = "取消",
             DefaultButton = ContentDialogButton.Primary
         };
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary || string.IsNullOrWhiteSpace(textBox.Text))
+        if (await dialog.ShowThemedAsync(this) != ContentDialogResult.Primary || string.IsNullOrWhiteSpace(textBox.Text))
         {
             SetModernStatus("已取消添加文字。", false);
             RenderModernEditor();
@@ -440,7 +437,7 @@ public sealed partial class MapListPage : UserControl
         };
         GetActiveFloorProfile().Annotations.Add(annotation);
         RecordModernAnnotationCreation(GetActiveFloorProfile(), annotation);
-        _modernSelection = new EditorSelection(EditorSelectionKind.Annotation, annotation.Id);
+        _modernSelection = new EditorSelection(MapEditorElementKind.Annotation, annotation.Id);
         await RememberEditorColorAsync(_currentAnnotationColor);
         CompleteModernCreation("已创建文字。", returnToSelect: false);
     }
@@ -477,7 +474,7 @@ public sealed partial class MapListPage : UserControl
         {
             profile.Anchors = previousAnchors.Select(candidate => candidate.Clone()).ToList();
         });
-        _modernSelection = new EditorSelection(EditorSelectionKind.Anchor, anchor.Id);
+        _modernSelection = new EditorSelection(MapEditorElementKind.Anchor, anchor.Id);
         CompleteModernCreation("已创建锚点，可继续拖动添加。", returnToSelect: false);
     }
 

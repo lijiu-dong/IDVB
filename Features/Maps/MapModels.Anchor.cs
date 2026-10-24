@@ -14,7 +14,8 @@ public enum MapAnnotationType
 {
     Text = 1,
     Outline = 2,
-    Line = 3
+    Line = 3,
+    Route = 4
 }
 
 /// <summary>Canonical RGB colors used by map annotations.</summary>
@@ -136,6 +137,9 @@ public sealed class RecognitionAnchor
 public sealed class MapAnnotation
 {
     public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid? RoutePlanId { get; set; }
+    // Text remains a readable fallback for clients predating the marker tool.
+    public bool IsMarker { get; set; }
     public MapAnnotationType Type { get; set; }
     /// <summary>Legacy nine-color palette index retained for old catalogs and packages.</summary>
     public int ColorIndex { get; set; }
@@ -144,6 +148,7 @@ public sealed class MapAnnotation
     public NormalizedRectangle? Bounds { get; set; }
     public NormalizedPoint? Start { get; set; }
     public NormalizedPoint? End { get; set; }
+    public List<NormalizedPoint> Points { get; set; } = [];
     public string? Text { get; set; }
     /// <summary>Optional requested font family for text annotations; null keeps legacy rendering.</summary>
     public string? FontFamily { get; set; }
@@ -159,10 +164,15 @@ public sealed class MapAnnotation
         : MapAnnotationColor.FromLegacyIndex(ColorIndex);
 
     [JsonIgnore]
-    public bool IsValid => HasValidColor && Type switch
+    public bool IsValid => (!IsMarker || Type == MapAnnotationType.Text && MapMarkerTool.IsValidLabel(Text)) && HasValidColor && Type switch
     {
         MapAnnotationType.Text or MapAnnotationType.Outline => Bounds?.IsValid is true,
         MapAnnotationType.Line => IsValidLine(Start, End),
+        MapAnnotationType.Route => Start?.IsValid is true && End?.IsValid is true && Points is { Count: >= 2 and <= 8192 }
+            && Points.All(point => point?.IsValid is true)
+            && MapNavigationRules.Same(Start, Points[0]) && MapNavigationRules.Same(End, Points[^1])
+            && (IsValidLine(Start, End) || Points.Count >= 3
+                && Points.Any(point => IsValidLine(Start, point))),
         _ => false
     };
 
@@ -173,12 +183,15 @@ public sealed class MapAnnotation
     public MapAnnotation Clone() => new()
     {
         Id = Id,
+        RoutePlanId = RoutePlanId,
+        IsMarker = IsMarker,
         Type = Type,
         ColorIndex = ColorIndex,
         ColorHex = ColorHex,
         Bounds = Bounds?.Clone(),
         Start = Start?.Clone(),
         End = End?.Clone(),
+        Points = Points.Select(point => point.Clone()).ToList(),
         Text = Text,
         FontFamily = FontFamily,
         FontSize = FontSize,

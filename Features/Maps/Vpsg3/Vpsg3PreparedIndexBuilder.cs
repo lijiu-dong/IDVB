@@ -11,91 +11,121 @@ namespace IDVBuff.Features.Maps;
 /// </summary>
 public static class Vpsg3PreparedIndexBuilder
 {
+    private static SemanticStructureIndex CreateSemanticIndex(Mat input, SemanticStructureIndex? reuseDistancesFrom, bool nativeSemanticStorage)
+    {
+        using var labels = SemanticStructureContours.Decode(input);
+        return new(labels, reuseDistancesFrom: reuseDistancesFrom, nativeStorage: nativeSemanticStorage);
+    }
+
     private const double Epsilon = 1e-9d;
+
+    internal static Vpsg3PreparedFloor? BuildFromPrebuiltFile(string path, Vpsg3IndexCacheKey cacheKey,
+        Vpsg3TuningConfig? tuning = null, bool preparePrecision = false,
+        SemanticStructureIndex? reuseSemanticDistancesFrom = null, bool nativeSemanticStorage = false)
+    {
+        using var operation = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("VPSG3.BuildPrebuiltFile", cacheKey.ToString());
+        if (IDVBuff.Core.Imaging.PrebuiltContourLabels.TryRead(path, out var labels, out var semantic,
+            $"VPSG3.Labels/{cacheKey}"))
+        {
+            try { return BuildFromPreparedLabels(labels, semantic, cacheKey, tuning, preparePrecision, reuseSemanticDistancesFrom, nativeSemanticStorage); }
+            finally { labels.Dispose(); IDVBuff.Core.Diagnostics.MemoryJournal.ReleaseResource(labels); }
+        }
+        var resource = $"VPSG3.SourceContour/{cacheKey}";
+        var request = IDVBuff.Core.Diagnostics.MemoryJournal.Request(resource, nativeModule: "OpenCvSharpExtern.dll");
+        Mat? image = null;
+        try
+        {
+            image = Cv2.ImRead(path, ImreadModes.Unchanged);
+            IDVBuff.Core.Diagnostics.MemoryJournal.TrackResource(image, resource, image.Total() * image.ElemSize(),
+                "OpenCvSharpExtern.dll", request);
+            return image.Empty() ? null : BuildFromMat(image, cacheKey, tuning, preparePrecision, reuseSemanticDistancesFrom, nativeSemanticStorage);
+        }
+        finally
+        {
+            if (image is not null) { image.Dispose(); IDVBuff.Core.Diagnostics.MemoryJournal.ReleaseResource(image); }
+        }
+    }
+
+    // Labels are borrowed from the original validated decoder, without scan
+    // anchor erasure. Geometry and semantic fields own independent storage.
+    internal static Vpsg3PreparedFloor BuildFromPreparedLabels(Mat labels, bool semantic,
+        Vpsg3IndexCacheKey cacheKey, Vpsg3TuningConfig? tuning = null, bool preparePrecision = false,
+        SemanticStructureIndex? reuseSemanticDistancesFrom = null, bool nativeSemanticStorage = false)
+    {
+        ArgumentNullException.ThrowIfNull(labels);
+        if (labels.Empty() || labels.Type() != MatType.CV_8UC1)
+            throw new ArgumentException("Prepared labels must be nonempty single-channel bytes.", nameof(labels));
+        var geometryResource = $"VPSG3.Geometry/{cacheKey}";
+        var geometryRequest = IDVBuff.Core.Diagnostics.MemoryJournal.Request(geometryResource, labels.Total(), "OpenCvSharpExtern.dll");
+        using var edgeImage = new Mat();
+        try
+        {
+            Cv2.Threshold(labels, edgeImage, 0, 255, ThresholdTypes.Binary);
+            IDVBuff.Core.Diagnostics.MemoryJournal.TrackResource(edgeImage, geometryResource, edgeImage.Total(),
+                "OpenCvSharpExtern.dll", geometryRequest);
+            return BuildFromGeometry(edgeImage, cacheKey, semantic,
+                () => semantic ? new SemanticStructureIndex(labels, reuseDistancesFrom: reuseSemanticDistancesFrom, nativeStorage: nativeSemanticStorage) : null,
+                tuning, preparePrecision);
+        }
+        finally { edgeImage.Dispose(); IDVBuff.Core.Diagnostics.MemoryJournal.ReleaseResource(edgeImage); }
+    }
 
     /// <summary>
     /// Builds a prepared VPSG 3.0 floor index synchronously from a reference edge image.
     /// </summary>
     public static Vpsg3PreparedFloor BuildFromMat(
-        Mat edgeImage,
+        Mat inputImage,
         Vpsg3IndexCacheKey cacheKey,
         Vpsg3TuningConfig? tuning = null,
-        bool preparePrecision = false)
+        bool preparePrecision = false,
+        SemanticStructureIndex? reuseSemanticDistancesFrom = null, bool nativeSemanticStorage = false)
     {
-        ArgumentNullException.ThrowIfNull(edgeImage);
-        if (edgeImage.Empty())
-            throw new ArgumentException("Edge image cannot be empty.", nameof(edgeImage));
+        ArgumentNullException.ThrowIfNull(inputImage);
+        if (inputImage.Empty())
+            throw new ArgumentException("Edge image cannot be empty.", nameof(inputImage));
+        using var edgeImage = SemanticStructureContours.Geometry(inputImage);
+        return BuildFromGeometry(edgeImage, cacheKey, inputImage.Channels() == 3,
+            () => inputImage.Channels() == 3 ? CreateSemanticIndex(inputImage, reuseSemanticDistancesFrom, nativeSemanticStorage) : null,
+            tuning, preparePrecision);
+    }
+
+    // Owns the caller-created geometry scratch, which ends before the semantic
+    // callback. Neither geometry nor the callback is retained by the floor.
+    private static Vpsg3PreparedFloor BuildFromGeometry(Mat edgeImage, Vpsg3IndexCacheKey cacheKey,
+        bool semantic, Func<SemanticStructureIndex?> buildSemantic, Vpsg3TuningConfig? tuning, bool preparePrecision)
+    {
+        using var memoryOperation = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("VPSG3.BuildFloor", cacheKey.ToString());
         if (edgeImage.Type() != MatType.CV_8UC1)
             throw new ArgumentException("Edge image must be single-channel 8-bit.", nameof(edgeImage));
-
-        var cfg = tuning ?? Vpsg3TuningConfig.Default;
         var width = edgeImage.Width;
         var height = edgeImage.Height;
-
-        // 1. Edge pixel count
         var edgePixelCount = Cv2.CountNonZero(edgeImage);
-
-        // 2. Compute reference scale prior via normalized autocorrelation
-        var scalePrior = ComputeReferenceScalePrior(edgeImage, edgePixelCount, cfg);
-
-        // 3. Morphological dilation for structural matching tolerance (K5 for 5x5 / +/-2px and K3 for 3x3 / +/-1px)
-        using var dilatedK5 = new Mat();
-        using var dilatedK3 = new Mat();
-        using var kernel5 = Cv2.GetStructuringElement(MorphShapes.Rect, new Size(5, 5));
-        using var kernel3 = Cv2.GetStructuringElement(MorphShapes.Rect, new Size(3, 3));
-        Cv2.Dilate(edgeImage, dilatedK5, kernel5);
-        Cv2.Dilate(edgeImage, dilatedK3, kernel3);
-
-        // 4. Pack into 64-bit row-major bitsets
+        // RGB retains exact seeds in its semantic fields. Gray retains one
+        // compressed seed bitmap; K3/K5 are derived only by active consumers.
+        var seeds = semantic ? null : new IDVBuff.Core.Collections.CompactBitWords(
+            MemoryMarshal.CreateReadOnlySpan(ref edgeImage.At<byte>(0, 0), checked(width * height)),
+            width, height, 0, "VPSG3.ReferenceSeeds", invert: true);
+        var scalePrior = ComputeReferenceScalePrior(edgeImage, edgePixelCount, tuning ?? Vpsg3TuningConfig.Default);
         var wordsPerRow = (width + 63) / 64;
-        var bitsetK5 = new ulong[height * wordsPerRow];
-        var bitsetK3 = new ulong[height * wordsPerRow];
-
-        for (var y = 0; y < height; y++)
-        {
-            var rowOffset = y * wordsPerRow;
-            for (var x = 0; x < width; x++)
-            {
-                if (dilatedK5.At<byte>(y, x) > 128)
-                {
-                    bitsetK5[rowOffset + (x >> 6)] |= 1UL << (x & 63);
-                }
-                if (dilatedK3.At<byte>(y, x) > 128)
-                {
-                    bitsetK3[rowOffset + (x >> 6)] |= 1UL << (x & 63);
-                }
-            }
-        }
-
-        // 5. Calculate memory footprint
-        var objectOverhead = 160L;
-        var bitsetBytes = ((bitsetK5.Length + bitsetK3.Length) * 8L) + 48L;
+        var memoryRequest = IDVBuff.Core.Diagnostics.MemoryJournal.Request($"VPSG3.Base/{cacheKey}", 160);
         float[]? precisionDistance = null;
         if (preparePrecision)
         {
-            using var binary = new Mat();
-            using var inverse = new Mat();
-            using var distance = new Mat();
-            Cv2.Threshold(edgeImage, binary, 128, 255, ThresholdTypes.Binary);
-            Cv2.BitwiseNot(binary, inverse);
-            Cv2.DistanceTransform(inverse, distance, DistanceTypes.L2, DistanceTransformMasks.Precise);
-            precisionDistance = new float[checked(width * height)];
-            Marshal.Copy(distance.Data, precisionDistance, 0, precisionDistance.Length);
+            precisionDistance = Vpsg3PreparedFloor.CreatePrecisionDistance(edgeImage);
+            IDVBuff.Core.Diagnostics.MemoryJournal.ObserveManagedArray(precisionDistance, "VPSG3.Precision");
         }
-        var totalBytes = objectOverhead + bitsetBytes
-            + (precisionDistance is null ? 0L : precisionDistance.LongLength * sizeof(float) + 24L);
-
-        return new Vpsg3PreparedFloor(
-            cacheKey,
-            width,
-            height,
-            edgePixelCount,
-            scalePrior,
-            wordsPerRow,
-            bitsetK5,
-            bitsetK3,
-            totalBytes,
-            precisionDistance);
+        var totalBytes = 160L + (precisionDistance is null ? 0L : precisionDistance.LongLength * sizeof(float) + 24L);
+        edgeImage.Dispose();
+        IDVBuff.Core.Diagnostics.MemoryJournal.ReleaseResource(edgeImage);
+        var semanticIndex = buildSemantic();
+        try
+        {
+            return new Vpsg3PreparedFloor(cacheKey, width, height, edgePixelCount, scalePrior,
+                wordsPerRow, [], [], totalBytes, precisionDistance, memoryRequest,
+                deriveGeometryK3: true, deriveGeometryK5: true)
+                { SemanticIndex = semanticIndex, ReferenceSeeds = seeds };
+        }
+        catch { semanticIndex?.Dispose(); throw; }
     }
 
     /// <summary>
@@ -104,14 +134,17 @@ public static class Vpsg3PreparedIndexBuilder
     /// Outer lifecycle ensures ownedMat is always disposed even if cancellation occurs before task dispatch.
     /// </summary>
     public static async Task<Vpsg3IndexBuildResult> BuildFromMatAsync(
-        Mat edgeImage,
+        Mat inputImage,
         Vpsg3IndexCacheKey cacheKey,
         Vpsg3TuningConfig? tuning = null,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(edgeImage);
-        if (edgeImage.Empty())
-            throw new ArgumentException("Edge image cannot be empty.", nameof(edgeImage));
+        ArgumentNullException.ThrowIfNull(inputImage);
+        if (inputImage.Empty())
+            throw new ArgumentException("Edge image cannot be empty.", nameof(inputImage));
+        // Keep the existing synchronous validation, without retaining its
+        // unused full-size geometry throughout the background build.
+        using (SemanticStructureContours.Geometry(inputImage)) { }
 
         if (cancellationToken.IsCancellationRequested)
         {
@@ -122,7 +155,7 @@ public static class Vpsg3PreparedIndexBuilder
                 BuildMilliseconds: 0);
         }
 
-        var ownedMat = edgeImage.Clone();
+        var ownedMat = inputImage.Clone();
         var sw = Stopwatch.StartNew();
         var taskExecuted = false;
 
@@ -191,7 +224,7 @@ public static class Vpsg3PreparedIndexBuilder
             return await Task.Run(() =>
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                using var image = Cv2.ImRead(imagePath, ImreadModes.Grayscale);
+                using var image = Cv2.ImRead(imagePath, ImreadModes.Unchanged);
                 if (image.Empty())
                 {
                     sw.Stop();
@@ -264,18 +297,19 @@ public static class Vpsg3PreparedIndexBuilder
         var width = edgeMask.Width;
         var height = edgeMask.Height;
 
+        // Counts are exact in double regardless of summation order, so walk
+        // rows once instead of issuing a native Mat.At call for every pixel.
         if (axis == 0) // Column projection along X
         {
             var proj = new double[width];
-            for (var x = 0; x < width; x++)
+            for (var y = 0; y < height; y++)
             {
-                var sum = 0.0;
-                for (var y = 0; y < height; y++)
+                var row = MemoryMarshal.CreateReadOnlySpan(ref edgeMask.At<byte>(y, 0), width);
+                for (var x = 0; x < width; x++)
                 {
-                    if (edgeMask.At<byte>(y, x) > 128)
-                        sum++;
+                    if (row[x] > 128)
+                        proj[x]++;
                 }
-                proj[x] = sum;
             }
             return proj;
         }
@@ -284,10 +318,11 @@ public static class Vpsg3PreparedIndexBuilder
             var proj = new double[height];
             for (var y = 0; y < height; y++)
             {
+                var row = MemoryMarshal.CreateReadOnlySpan(ref edgeMask.At<byte>(y, 0), width);
                 var sum = 0.0;
                 for (var x = 0; x < width; x++)
                 {
-                    if (edgeMask.At<byte>(y, x) > 128)
+                    if (row[x] > 128)
                         sum++;
                 }
                 proj[y] = sum;

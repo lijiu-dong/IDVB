@@ -14,22 +14,30 @@ public sealed partial class MapListPage : UserControl
     private EditorSelection? HitModernElement(NormalizedPoint point)
     {
         var profile = GetActiveFloorProfile();
-        for (var index = profile.Annotations.Count - 1; index >= 0; index--)
+        var ordered = profile.Annotations.OrderBy(a => a.IsMarker).ToArray();
+        for (var index = ordered.Length - 1; index >= 0; index--)
         {
-            var annotation = profile.Annotations[index];
+            var annotation = ordered[index];
             if (!annotation.IsValid || !IsModernItemVisible("graphics", ModernAnnotationKey(annotation.Id)))
                 continue;
+            if (annotation.Type == MapAnnotationType.Route)
+            {
+                for (var pointIndex = 1; pointIndex < annotation.Points.Count; pointIndex++)
+                    if (ModernDistanceToLinePixels(point, annotation.Points[pointIndex - 1], annotation.Points[pointIndex]) <= 8 / ModernZoomFactor)
+                        return new EditorSelection(MapEditorElementKind.Annotation, annotation.Id);
+            }
             if (annotation.Type == MapAnnotationType.Line)
             {
                 if (annotation.Start is not null && annotation.End is not null
                     && ModernDistanceToLinePixels(point, annotation.Start, annotation.End) <= 8 / ModernZoomFactor)
-                    return new EditorSelection(EditorSelectionKind.Annotation, annotation.Id);
+                    return new EditorSelection(MapEditorElementKind.Annotation, annotation.Id);
             }
             else if (annotation.Bounds is not null && ModernRectangleContains(annotation.Bounds, point, 5))
             {
-                return new EditorSelection(EditorSelectionKind.Annotation, annotation.Id);
+                return new EditorSelection(MapEditorElementKind.Annotation, annotation.Id);
             }
         }
+        if (_modernToolState.SpecialElementsReadOnly) return null;
         for (var index = profile.Anchors.Count - 1; index >= 0; index--)
         {
             var anchor = profile.Anchors[index];
@@ -48,11 +56,11 @@ public sealed partial class MapListPage : UserControl
                 var dx = (point.X - centerX) * width;
                 var dy = (point.Y - centerY) * height;
                 if (dx * dx + dy * dy <= brushRadius * brushRadius || ModernRectangleContains(sourceBounds, point, 5))
-                    return new EditorSelection(EditorSelectionKind.Anchor, anchor.Id);
+                    return new EditorSelection(MapEditorElementKind.Anchor, anchor.Id);
             }
             else if (ModernRectangleContains(ToModernSourceBounds(anchor.Bounds), point, 5))
             {
-                return new EditorSelection(EditorSelectionKind.Anchor, anchor.Id);
+                return new EditorSelection(MapEditorElementKind.Anchor, anchor.Id);
             }
         }
         for (var index = profile.BackgroundLayers.Count - 1; index >= 0; index--)
@@ -60,12 +68,12 @@ public sealed partial class MapListPage : UserControl
             var layer = profile.BackgroundLayers[index];
             if (layer.IsValid && IsModernItemVisible("special", ModernBackgroundKey(layer.Id))
                 && layer.Points.Any(candidate => ModernBackgroundPointContains(layer, candidate, point)))
-                return new EditorSelection(EditorSelectionKind.Background, layer.Id);
+                return new EditorSelection(MapEditorElementKind.Background, layer.Id);
         }
         if (profile.RecognitionRegion?.IsValid is true && profile.FreeCropPoints.Count < 3
             && IsModernItemVisible("special", "crop")
             && ModernRectangleBorderContains(profile.RecognitionRegion, point, 8))
-            return new EditorSelection(EditorSelectionKind.Crop);
+            return new EditorSelection(MapEditorElementKind.Crop);
         return null;
     }
 
@@ -83,16 +91,16 @@ public sealed partial class MapListPage : UserControl
 
     private string? HitModernSelectionHandle(Point pixelPoint)
     {
-        if (_modernSelection is null || _modernCanvas is null)
+        if (_modernSelection is null || _modernCanvas is null || !CanEditModernSelection())
             return null;
-        if (_modernSelection.Kind == EditorSelectionKind.Anchor
+        if (_modernSelection.Kind == MapEditorElementKind.Anchor
             && FindModernSelectedAnchor() is { } anchor
             && IsGateAnchor(anchor.Key))
         {
             return null;
         }
         var radius = 10 / ModernZoomFactor;
-        if (_modernSelection.Kind == EditorSelectionKind.Annotation
+        if (_modernSelection.Kind == MapEditorElementKind.Annotation
             && FindModernSelectedAnnotation() is { Type: MapAnnotationType.Line } line
             && line.Start is not null && line.End is not null)
         {
@@ -130,7 +138,7 @@ public sealed partial class MapListPage : UserControl
         var annotation = FindModernSelectedAnnotation();
         _modernOriginalStart = annotation?.Start?.Clone();
         _modernOriginalEnd = annotation?.End?.Clone();
-        if (_modernSelection?.Kind == EditorSelectionKind.Crop)
+        if (_modernSelection?.Kind == MapEditorElementKind.Crop)
             _modernPendingBounds = _modernOriginalBounds?.Clone();
     }
 
@@ -194,12 +202,13 @@ public sealed partial class MapListPage : UserControl
 
     private void ApplyModernSelectedBounds(NormalizedRectangle bounds)
     {
-        if (_modernSelection?.Kind == EditorSelectionKind.Crop)
+        if (!CanEditModernSelection()) return;
+        if (_modernSelection?.Kind == MapEditorElementKind.Crop)
         {
             _modernPendingBounds = bounds;
             return;
         }
-        if (_modernSelection?.Kind == EditorSelectionKind.Annotation)
+        if (_modernSelection?.Kind == MapEditorElementKind.Annotation)
         {
             var annotation = FindModernSelectedAnnotation();
             if (annotation is not null)
@@ -223,7 +232,8 @@ public sealed partial class MapListPage : UserControl
 
     private void CommitModernSelectionTransform()
     {
-        if (_modernSelection?.Kind == EditorSelectionKind.Crop && _modernPendingBounds?.IsValid is true)
+        if (!CanEditModernSelection()) return;
+        if (_modernSelection?.Kind == MapEditorElementKind.Crop && _modernPendingBounds?.IsValid is true)
         {
             MapRecognitionCoordinates.ApplyRecognitionRegion(GetActiveFloorProfile(), _modernPendingBounds);
             GetActiveFloorProfile().FreeCropPoints.Clear();
@@ -243,7 +253,7 @@ public sealed partial class MapListPage : UserControl
         {
             if (_modernOriginalStart is not null && _modernOriginalEnd is not null)
                 ApplyModernSelectedLine(_modernOriginalStart, _modernOriginalEnd);
-            else if (_modernOriginalBounds?.IsValid is true && _modernSelection?.Kind != EditorSelectionKind.Crop)
+            else if (_modernOriginalBounds?.IsValid is true && _modernSelection?.Kind != MapEditorElementKind.Crop)
                 ApplyModernSelectedBounds(_modernOriginalBounds);
         }
         _modernInteraction = EditorInteractionKind.None;
@@ -266,28 +276,12 @@ public sealed partial class MapListPage : UserControl
 
     private void DeleteModernSelection()
     {
-        if (_modernSelection is null)
-            return;
-        var profile = GetActiveFloorProfile();
-        if (_modernSelection.Kind == EditorSelectionKind.Annotation && _modernSelection.Id is { } annotationId)
-            profile.Annotations.RemoveAll(annotation => annotation.Id == annotationId);
-        else if (_modernSelection.Kind == EditorSelectionKind.Crop)
-        {
-            MapRecognitionCoordinates.ApplyRecognitionRegion(profile, new NormalizedRectangle { Width = 1, Height = 1 });
-            profile.RecognitionRegion = null;
-            profile.FreeCropPoints.Clear();
-        }
-        else if (_modernSelection.Kind == EditorSelectionKind.Anchor && FindModernSelectedAnchor() is { } anchor)
-        {
-            if (anchor.IsBuiltIn)
-                anchor.Bounds = null;
-            else
-                profile.Anchors.Remove(anchor);
-        }
-        else if (_modernSelection.Kind == EditorSelectionKind.Background
-            && _modernSelection.Id is { } backgroundId)
-            profile.BackgroundLayers.RemoveAll(layer => layer.Id == backgroundId);
+        if (_draft is null || IsModernTextInputFocused()) return;
+        if (!MapEditorElementEditing.Delete(GetActiveFloorProfile(), _modernToolState.SpecialElementsReadOnly,
+            _modernSelection?.Kind, _modernSelection?.Id, _modernSelectedAnnotationIds)) return;
         _modernSelection = null;
+        _modernSelectedAnnotationIds.Clear();
+        _modernAnnotationSelectionAnchorId = null;
         UpdateMarkerConfirmState();
         SetModernStatus("已删除选中元素。", false);
         RefreshModernLayerList();
@@ -309,8 +303,13 @@ public sealed partial class MapListPage : UserControl
             CloseButtonText = "取消",
             DefaultButton = ContentDialogButton.Primary
         };
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary || string.IsNullOrWhiteSpace(textBox.Text))
+        if (await dialog.ShowThemedAsync(this) != ContentDialogResult.Primary || string.IsNullOrWhiteSpace(textBox.Text))
             return;
+        if (annotation.IsMarker && !MapMarkerTool.IsValidLabel(textBox.Text.Trim()))
+        {
+            SetModernStatus("标记仅支持 ⇅、★、数字，以及按 ⇅、★、序号顺序组合的图案。", true);
+            return;
+        }
         annotation.Text = textBox.Text.Trim();
         RefreshModernLayerList();
         RenderModernEditor();
@@ -318,7 +317,7 @@ public sealed partial class MapListPage : UserControl
 
     private bool HandleModernMarkerEditorKeyDown(KeyRoutedEventArgs e)
     {
-        if (!_modernEditorActive)
+        if (!_modernEditorActive || IsModernTextInputFocused())
             return false;
         if (e.Key == VirtualKey.Z && IsModernKeyDown(VirtualKey.Control) && !IsModernTextInputFocused())
         {
@@ -326,7 +325,7 @@ public sealed partial class MapListPage : UserControl
             e.Handled = true;
             return true;
         }
-        if (e.Key == VirtualKey.Delete)
+        if (e.Key is VirtualKey.Delete or VirtualKey.Back && !IsModernTextInputFocused())
         {
             DeleteModernSelection();
             e.Handled = true;
@@ -350,7 +349,13 @@ public sealed partial class MapListPage : UserControl
         }
         if (e.Key != VirtualKey.Escape)
             return false;
-        if (_modernInteraction != EditorInteractionKind.None)
+        if (_modernRouteStart is not null || _modernRouteBusy)
+        {
+            ResetModernAutomaticRoute();
+            SetModernStatus("已取消当前路线阶段，请重新点击起点。", false);
+            RenderModernEditor();
+        }
+        else if (_modernInteraction != EditorInteractionKind.None)
         {
             CancelModernInteraction(restoreGeometry: true);
             SetModernStatus("已取消当前拖动。", false);
@@ -383,9 +388,20 @@ public sealed partial class MapListPage : UserControl
 
     private bool IsModernTextInputFocused()
     {
-        var focused = FocusManager.GetFocusedElement(XamlRoot);
-        return focused is TextBox or AutoSuggestBox;
+        if (XamlRoot is null) return false;
+        var focused = FocusManager.GetFocusedElement(XamlRoot) as DependencyObject;
+        while (focused is not null)
+        {
+            if (focused is TextBox or RichEditBox or AutoSuggestBox) return true;
+            focused = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetParent(focused);
+        }
+        return false;
     }
+
+    private bool CanEditModernSelection() => _modernSelection is { } selection
+        && MapEditorElementEditing.CanEdit(_modernToolState.SpecialElementsReadOnly, selection.Kind);
+
+    private void FocusModernEditor() => _modernViewport?.Focus(FocusState.Programmatic);
 
     private NormalizedPoint? ToModernNormalizedPoint(Point point, bool clamp)
     {

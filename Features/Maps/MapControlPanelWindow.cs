@@ -4,10 +4,11 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using System.Runtime.InteropServices;
 using Windows.Graphics;
-using Windows.UI;
 using IDVBuff.Survey.Domain;
 using XamlWindow = Microsoft.UI.Xaml.Window;
 using IDVBuff.Core.Contracts;
+using IDVBuff.Appearance;
+using IDVBuff.Presentation.Theming;
 using WinRT.Interop;
 
 namespace IDVBuff.Features.Maps;
@@ -15,9 +16,9 @@ namespace IDVBuff.Features.Maps;
 /// Small interactive match controller. This window is intentionally separate
 /// from both the click-through map overlay and the full-screen manual selector.
 /// </summary>
-public sealed partial class MapControlPanelWindow : IDisposable
+public sealed partial class MapControlPanelWindow : IMapControlPanelView
 {
-    private readonly Func<string, Task> _beginMatch;
+    private readonly Func<string, Task, Task> _beginMatch;
     private readonly Func<string, Task> _beginSurveyMatch;
     private readonly Func<Task<IReadOnlyList<string>>> _getMapClasses;
     private readonly Func<string?> _getLastSelectedMapClass;
@@ -32,13 +33,11 @@ public sealed partial class MapControlPanelWindow : IDisposable
     private readonly ICaptureProtectionService? _captureProtection;
     private readonly TextBlock _stateText = new()
     {
-        FontSize = 14,
-        Foreground = new SolidColorBrush(Color.FromArgb(255, 210, 218, 229))
+        FontSize = 14
     };
     private readonly TextBlock _messageText = new()
     {
         FontSize = 12,
-        Foreground = new SolidColorBrush(Color.FromArgb(255, 255, 184, 77)),
         TextWrapping = TextWrapping.Wrap
     };
     private readonly Button _beginButton = new()
@@ -63,11 +62,7 @@ public sealed partial class MapControlPanelWindow : IDisposable
     };
     private readonly ComboBox _classComboBox = new()
     {
-        Header = new TextBlock
-        {
-            Text = "地图模式（Class）",
-            Foreground = new SolidColorBrush(Color.FromArgb(255, 255, 255, 255))
-        },
+        Header = "地图模式（Class）",
         MinHeight = 38,
         HorizontalAlignment = HorizontalAlignment.Stretch,
         PlaceholderText = "请选择地图模式"
@@ -76,7 +71,6 @@ public sealed partial class MapControlPanelWindow : IDisposable
     {
         Text = "可能存在的变体",
         FontSize = 13,
-        Foreground = new SolidColorBrush(Color.FromArgb(255, 174, 184, 198)),
         Visibility = Visibility.Collapsed
     };
     private readonly StackPanel _variantButtons = new() { Spacing = 8 };
@@ -88,13 +82,17 @@ public sealed partial class MapControlPanelWindow : IDisposable
         Visibility = Visibility.Collapsed
     };
     private XamlWindow? _window;
+    private Border? _rootBorder;
+    private UIElement? _content;
+    private ThemeScope? _themeScope;
     private string? _pendingClass;
     private MapVariantSelectionContext? _variantContext;
     private IReadOnlyList<string> _mapClasses = [];
     private IReadOnlyList<MapClassDiagnostic> _mapClassDiagnostics = [];
     private IReadOnlyList<MapClassDiagnostic> _renderedMapClassDiagnostics = [];
+    private IReadOnlyList<MapVariantOption> _renderedVariantOptions = [];
     private MapMatchSnapshot _snapshot;
-    private IntPtr _gameWindowHandle;
+
     private bool _isVisible;
     private bool _updatingSurveyToggle;
     private bool _suppressClassSelectionChanged;
@@ -116,9 +114,14 @@ public sealed partial class MapControlPanelWindow : IDisposable
         Func<Task<MapVariantSelectionContext?>>? getVariantContext = null,
         Func<Guid, Task>? switchVariant = null,
         ICaptureProtectionService? captureProtection = null,
-        Func<Task>? correctMap = null)
+        Func<Task>? correctMap = null,
+        Func<string, Task, Task>? beginMatchWithPendingSave = null)
     {
-        _beginMatch = beginMatch;
+        _beginMatch = beginMatchWithPendingSave ?? (async (mapClass, pendingSave) =>
+        {
+            await pendingSave;
+            await beginMatch(mapClass);
+        });
         _beginSurveyMatch = beginSurveyMatch ?? beginMatch;
         _getMapClasses = getMapClasses;
         _getLastSelectedMapClass = getLastSelectedMapClass;
@@ -137,6 +140,9 @@ public sealed partial class MapControlPanelWindow : IDisposable
         _endButton.Click += EndButton_Click;
         _correctMapButton.Click += CorrectMapButton_Click;
         _surveyModeToggle.Toggled += SurveyModeToggle_Toggled;
+        _classComboBox.SelectionChanged += ClassComboBox_SelectionChanged;
+        ApplyControlTheme();
+        ThemeService.For(_classComboBox).Changed += OnClassThemeChanged;
     }
 
     public bool IsVisible => _isVisible;
@@ -150,7 +156,7 @@ public sealed partial class MapControlPanelWindow : IDisposable
         if (!gameBounds.IsValid || gameWindowHandle == IntPtr.Zero)
             throw new ArgumentException("Game window bounds are unavailable.");
 
-        _gameWindowHandle = gameWindowHandle;
+
         _snapshot = snapshot;
         _mapClasses = (await _getMapClasses())
             .Where(name => !string.IsNullOrWhiteSpace(name))
@@ -196,9 +202,7 @@ public sealed partial class MapControlPanelWindow : IDisposable
             (int)Math.Round(gameBounds.Y) + margin,
             width,
             height));
-        _window.Activate();
-        RegisterCaptureProtection();
-        _isVisible = true;
+        BeginEnterTransition();
     }
 
     public void Refresh(MapMatchSnapshot snapshot)
@@ -238,12 +242,7 @@ public sealed partial class MapControlPanelWindow : IDisposable
         _classComboBox.IsEnabled = !snapshot.IsStarted;
         var selectedDiagnostic = _mapClassDiagnostics.FirstOrDefault(item =>
             string.Equals(item.MapClass, _pendingClass, StringComparison.OrdinalIgnoreCase));
-        _classComboBox.BorderBrush = selectedDiagnostic?.IsHealthy is false
-            ? new SolidColorBrush(Color.FromArgb(255, 255, 185, 0))
-            : new SolidColorBrush(Color.FromArgb(255, 52, 59, 69));
-        _classComboBox.Background = selectedDiagnostic?.IsHealthy is false
-            ? new SolidColorBrush(Color.FromArgb(36, 255, 185, 0))
-            : new SolidColorBrush(Color.FromArgb(255, 30, 35, 43));
+        ApplyClassTheme(selectedDiagnostic?.IsHealthy is false);
         if (snapshot.IsStarted)
             SetSurveyToggle(snapshot.Mode == MapRunMode.Survey);
         else if (!_isSurveyModeAllowed())
@@ -276,14 +275,7 @@ public sealed partial class MapControlPanelWindow : IDisposable
         Refresh(snapshot);
     }
 
-    public void Hide(bool restoreGameFocus = true)
-    {
-        if (_window is not null)
-            _window.AppWindow.Hide();
-        _isVisible = false;
-        if (restoreGameFocus && _gameWindowHandle != IntPtr.Zero)
-            SetForegroundWindow(_gameWindowHandle);
-    }
+    public void Hide() => BeginExitTransition();
 
     private void EnsureWindow()
     {
@@ -292,24 +284,37 @@ public sealed partial class MapControlPanelWindow : IDisposable
 
         var root = new Border
         {
-            RequestedTheme = ElementTheme.Dark,
-            Background = new SolidColorBrush(Color.FromArgb(255, 15, 20, 28)),
-            BorderBrush = new SolidColorBrush(Color.FromArgb(255, 62, 72, 86)),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(12),
             Padding = new Thickness(16),
-            Child = BuildContent()
+            Child = _content ??= BuildContent()
         };
-        _window = new XamlWindow { Content = root, ExtendsContentIntoTitleBar = false };
-        _window.Closed += (_, _) =>
+        Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.SetIsTranslationEnabled(root, true);
+        Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.SetIsTranslationEnabled(_content, true);
+        _rootBorder = root;
+        var window = new XamlWindow { Content = root, ExtendsContentIntoTitleBar = false };
+        var scope = ThemeService.AttachWindow(window, root, ThemeProfile.Application);
+        _window = window;
+        _themeScope = scope;
+        root.Background = scope.WindowBrush;
+        root.BorderBrush = scope.Resources[ThemeToken.SurfaceBorder];
+        void OnWindowClosed(object sender, WindowEventArgs args)
         {
+            window.Closed -= OnWindowClosed;
+            scope.Dispose();
+            // Retain the controls without retaining their closed window parent.
+            // Reopening must not rebuild content or subscribe selection twice.
+            root.Child = null;
+            if (!ReferenceEquals(_window, window)) return;
+            StopAndResetTransition();
+            _rootBorder = null;
+            _themeScope = null;
             _captureProtectionRegistration?.Dispose();
             _captureProtectionRegistration = null;
             _window = null;
             _isVisible = false;
-            if (_gameWindowHandle != IntPtr.Zero)
-                SetForegroundWindow(_gameWindowHandle);
-        };
+        }
+        window.Closed += OnWindowClosed;
         if (_window.AppWindow.Presenter is OverlappedPresenter presenter)
         {
             presenter.SetBorderAndTitleBar(false, false);
@@ -321,20 +326,33 @@ public sealed partial class MapControlPanelWindow : IDisposable
 
         var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(_window);
         BorderlessWindowHelper.Apply(hwnd);
+        GameInputPreservingWindow.Apply(hwnd);
+        GameInputPreservingWindow.ApplyLayered(hwnd);
     }
 
     private void RefreshVariantOptions(MapMatchSnapshot snapshot)
     {
-        _variantButtons.Children.Clear();
         var visible = snapshot.IsStarted
             && snapshot.Mode == MapRunMode.Normal
             && _variantContext is { Options.Count: > 1 };
         _variantHeading.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
         _variantScroller.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
         if (!visible || _variantContext is null)
+        {
+            if (_variantButtons.Children.Count > 0)
+                ClearVariantButtons();
             return;
+        }
 
-        foreach (var option in _variantContext.Options.OrderBy(item => item.SequenceNumber))
+        var ordered = _variantContext.Options.OrderBy(item => item.SequenceNumber).ToArray();
+        if (_renderedVariantOptions.SequenceEqual(ordered)
+            && _variantButtons.Children.Count == ordered.Length)
+        {
+            return;
+        }
+
+        ClearVariantButtons();
+        foreach (var option in ordered)
         {
             var title = option.IsPending
                 ? $"变体 {option.VariantNumber} · 待对齐"
@@ -362,11 +380,9 @@ public sealed partial class MapControlPanelWindow : IDisposable
                 HorizontalAlignment = HorizontalAlignment.Stretch,
                 HorizontalContentAlignment = HorizontalAlignment.Stretch,
                 BorderThickness = new Thickness(option.IsCurrent ? 3 : 1),
-                BorderBrush = new SolidColorBrush(option.IsCurrent
-                    ? Color.FromArgb(255, 46, 132, 225)
-                    : Color.FromArgb(255, 72, 80, 92)),
                 IsEnabled = !option.IsCurrent
             };
+            ApplyVariantTheme(button, option.IsCurrent);
             ToolTipService.SetToolTip(button, option.MapName);
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(
                 button,
@@ -374,6 +390,7 @@ public sealed partial class MapControlPanelWindow : IDisposable
             button.Click += VariantButton_Click;
             _variantButtons.Children.Add(button);
         }
+        _renderedVariantOptions = ordered;
     }
 
     private void RegisterCaptureProtection()
@@ -435,7 +452,6 @@ public sealed partial class MapControlPanelWindow : IDisposable
         SetActionsEnabled(false);
         try
         {
-            await _lastMapClassSaveTask;
             var startSurvey = _surveyModeToggle.IsOn;
             if (startSurvey && !_isSurveyModeAllowed())
             {
@@ -447,10 +463,16 @@ public sealed partial class MapControlPanelWindow : IDisposable
             // 无论测绘还是正常对局，点击开始后立即隐藏面板并将前台焦点还给游戏
             Hide();
 
-            var begin = startSurvey
-                ? _beginSurveyMatch
-                : _beginMatch;
-            await begin(mapClass);
+            if (startSurvey)
+            {
+                await _lastMapClassSaveTask;
+                await _beginSurveyMatch(mapClass);
+            }
+            else
+            {
+                // The orchestrator posts loading before awaiting this save or resource preparation.
+                await _beginMatch(mapClass, _lastMapClassSaveTask);
+            }
         }
         catch (Exception exception)
         {

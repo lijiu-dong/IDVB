@@ -25,6 +25,7 @@ public sealed partial class MainPage : Page
     private const double CompactNavigationWidth = 68d;
 
     private readonly ModuleCatalog _catalog = ModuleRegistration.CreateCatalog();
+    private ScanModeBloomTextureCache _bloomTextureCache = new();
     private readonly IReadOnlyList<NavigationNode> _navigationNodes = ModuleRegistration.CreateNavigation();
     private NavigationEntry? _selectedNavigationEntry;
     private NavigationEntry? _pendingSelectionTarget;
@@ -54,23 +55,41 @@ public sealed partial class MainPage : Page
         InitializeScanModeVisuals();
         DisplaySkeletonPreviewHost.Children.Add(_displaySkeletonPreview);
         PrepareDisplayPreviewMotion();
-        FluentTheme.RegisterThemeRoot(this);
-        RootSurface.Background = FluentTheme.WindowBrush();
         foreach (var entry in NavigationEntry.CreateRoots(_navigationNodes)) NavigationItems.Add(entry);
+        SupportNavigationItem = CreateFooterNavigationEntry("支持开发", Symbol.Favorite, "sponsorship");
         TutorialNavigationItem = CreateFooterNavigationEntry("教程", Symbol.Help, "help");
         MainSettingsNavigationItem = CreateFooterNavigationEntry("主设置", Symbol.Setting, "main-settings");
         AccountNavigationItem = CreateFooterNavigationEntry("账户", Symbol.Contact, "account");
-        AccountSession.Changed += AccountSession_Changed;
         UpdateAccountNavigation();
         _navigationCompactPreference = _layoutMemory.NavigationCompact;
         ApplyInitialNavigationCompactPreference();
         Loaded += MainPage_Loaded;
-        Loaded += (_, _) => InitializeNotifications();
-        Unloaded += (_, _) => CleanupNotifications();
+        Loaded += (_, _) =>
+        {
+            if (_bloomTextureCache.IsDisposed) _bloomTextureCache = new();
+            if (ModuleContentHost.Content is HomePage home) home.UseBloomTextureCache(_bloomTextureCache);
+            AccountSession.Changed += AccountSession_Changed;
+            UpdateAccountNavigation();
+            _ = InitializeAccountUsageAsync();
+            InitializeNotifications();
+            _ = SupportMotion;
+        };
+        Unloaded += (_, _) =>
+        {
+            _bloomTextureCache.Dispose();
+            ++_navigationRevision;
+            _displayedModuleId = null;
+            AccountSession.Changed -= AccountSession_Changed;
+            ReleaseAccountUsage();
+            _feedbackDialog?.Hide();
+            if (!_feedbackOpen) ReleaseFeedbackDialog();
+            CleanupNotifications();
+        };
     }
 
     public ObservableCollection<NavigationEntry> NavigationItems { get; } = [];
     public Task InitialReady => _initialReady.Task;
+    public NavigationEntry SupportNavigationItem { get; }
     public NavigationEntry TutorialNavigationItem { get; }
     public NavigationEntry MainSettingsNavigationItem { get; }
     public NavigationEntry AccountNavigationItem { get; }
@@ -81,8 +100,11 @@ public sealed partial class MainPage : Page
     {
         try
         {
-            NavigateTo("home", NavigationItems.First(entry => entry.ModuleId == "home"));
-            _ = AccountSession.RefreshAsync();
+            await NavigateToAsync("home", NavigationItems.First(entry => entry.ModuleId == "home"));
+            // With the access gate disabled, persisted credentials still need validation.
+            // When enabled, the gate owns validation, including its offline policy.
+            if (!VersionAccessClient.Enabled)
+                _ = AccountSession.RefreshAsync();
             if (ModuleContentHost.Content is HomePage homePage)
                 await homePage.InitialReady;
         }
@@ -100,21 +122,13 @@ public sealed partial class MainPage : Page
             return;
         }
 
+        if (TryOpenSponsorship(entry)) return;
         PlayDetailTriggerFeedback(button);
 
         if (entry.ModuleId == "account")
         {
             if (AccountSession.Identity is not null)
-            {
-                var logout = new MenuFlyoutItem
-                {
-                    Text = "退出登录",
-                    Icon = new SymbolIcon(Symbol.LeaveChat),
-                    Foreground = FluentTheme.Brush("SystemFillColorCriticalBrush")
-                };
-                logout.Click += async (_, _) => await AccountSession.LogoutAsync();
-                new MenuFlyout { Items = { logout } }.ShowAt(button);
-            }
+                await ToggleAccountMenuAsync(button);
             else
             {
                 try { _ = await AccountSession.LoginAsync(); }
@@ -127,7 +141,7 @@ public sealed partial class MainPage : Page
                         Title = "账户登录失败",
                         Content = exception.Message,
                         CloseButtonText = "确定"
-                    }.ShowAsync();
+                    }.ShowThemedAsync();
                 }
             }
             return;
@@ -399,37 +413,10 @@ public sealed partial class MainPage : Page
             return;
 
         DispatcherQueue.TryEnqueue(() =>
-            TryPositionInitialNavigationIndicator(entry));
-    }
-
-    private void NavigationSurface_LayoutUpdated(object sender, object e)
-    {
-        if (!_selectionIndicatorPositioned
-            && _selectedNavigationEntry is { } entry)
         {
-            TryPositionInitialNavigationIndicator(entry);
-        }
-
-        if (!_navigationLayoutRefreshPending)
-            return;
-
-        _navigationLayoutRefreshPending = false;
-        var selectionTarget = GetVisibleNavigationEntry(_selectedNavigationEntry);
-        if (selectionTarget is not null)
-            QueueSelectionIndicatorAnimation(selectionTarget);
-
-        if (_hoveredNavigationEntry is { } hovered
-            && IsNavigationEntryVisible(hovered))
-        {
-            TryAnimateNavigationIndicator(
-                NavigationHoverIndicator,
-                hovered,
-                NavigationHoverEnterDuration);
-        }
-        else if (_hoveredNavigationEntry is not null)
-        {
-            HideNavigationHoverIndicator();
-        }
+            if (GetVisibleNavigationEntry(_selectedNavigationEntry) is { } target)
+                TryPositionInitialNavigationIndicator(target);
+        });
     }
 
     private void RequestNavigationLayoutRefresh() =>

@@ -15,19 +15,22 @@ public sealed class ThirdPartyPluginCapabilitySource : IPluginCapabilitySource
     private readonly LegacyScreenshotService _screenshots;
     private readonly PluginNotificationCenter _notifications;
     private readonly Action<string, Exception>? _reportFault;
+    private readonly VisionCapabilityProvider? _vision;
 
     public ThirdPartyPluginCapabilitySource(
         ThirdPartyHostEventHub events,
         IPluginInputService input,
         LegacyScreenshotService screenshots,
         PluginNotificationCenter notifications,
-        Action<string, Exception>? reportFault = null)
+        Action<string, Exception>? reportFault = null,
+        VisionCapabilityProvider? vision = null)
     {
         _events = events;
         _input = input;
         _screenshots = screenshots;
         _notifications = notifications;
         _reportFault = reportFault;
+        _vision = vision;
     }
 
     public ValueTask<IReadOnlyDictionary<Type, IPluginCapability>> CreateAsync(
@@ -39,6 +42,7 @@ public sealed class ThirdPartyPluginCapabilitySource : IPluginCapabilitySource
         CancellationToken cancellationToken)
     {
         var capabilities = new Dictionary<Type, IPluginCapability>();
+        _vision?.AddCapabilities(capabilities, grantedCapabilities, pluginLifetime);
         if (grantedCapabilities.Contains(PluginCapabilityIds.HostEventsRead))
             capabilities[typeof(IHostEventsCapability)] = _events.CreateCapability(
                 manifest.Id, pluginLifetime, _reportFault);
@@ -50,8 +54,8 @@ public sealed class ThirdPartyPluginCapabilitySource : IPluginCapabilitySource
         if (grantedCapabilities.Contains(PluginCapabilityIds.StoragePrivate))
             capabilities[typeof(IPluginStorageCapability)] = new StorageCapability(dataDirectory);
         if (grantedCapabilities.Contains(PluginCapabilityIds.NotificationsPost))
-            capabilities[typeof(IPluginNotificationsCapability)] = new NotificationsCapability(
-                manifest.Id, _notifications);
+            capabilities[typeof(IPluginNotificationsCapability)] = new ThirdPartyPluginNotificationsCapability(
+                manifest.Id, _notifications, pluginLifetime, reportFault: _reportFault);
         return ValueTask.FromResult<IReadOnlyDictionary<Type, IPluginCapability>>(capabilities);
     }
 
@@ -83,38 +87,6 @@ public sealed class ThirdPartyPluginCapabilitySource : IPluginCapabilitySource
                     ErrorCode = "capture_failed",
                     UserMessage = result.FailureReason
                 };
-        }
-    }
-
-    private sealed class NotificationsCapability(
-        string pluginId,
-        PluginNotificationCenter center) : IPluginNotificationsCapability
-    {
-        private readonly object _sync = new();
-        private readonly Queue<DateTimeOffset> _recent = new();
-
-        public ValueTask PostAsync(PluginNotification notification, CancellationToken cancellationToken)
-        {
-            ArgumentNullException.ThrowIfNull(notification);
-            cancellationToken.ThrowIfCancellationRequested();
-            if (string.IsNullOrWhiteSpace(notification.Title) || notification.Title.Length > 128 ||
-                string.IsNullOrWhiteSpace(notification.Message) || notification.Message.Length > 1000)
-            {
-                throw new ArgumentException("Plugin notification text is empty or too long.", nameof(notification));
-            }
-
-            lock (_sync)
-            {
-                var threshold = DateTimeOffset.UtcNow - TimeSpan.FromMinutes(1);
-                while (_recent.TryPeek(out var postedAt) && postedAt < threshold)
-                    _recent.Dequeue();
-                if (_recent.Count >= 5)
-                    throw new InvalidOperationException("Plugin notification rate limit exceeded.");
-                _recent.Enqueue(DateTimeOffset.UtcNow);
-            }
-
-            center.Post(pluginId, notification);
-            return ValueTask.CompletedTask;
         }
     }
 

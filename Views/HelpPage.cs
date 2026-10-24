@@ -8,7 +8,6 @@ namespace IDVBuff.Views;
 /// <summary>Library of guided tutorials.</summary>
 public sealed class HelpPage : Page
 {
-    private const string OnboardingVideoBaseUri = "https://download.xgflee.com/guides/onboarding/";
 
     public event EventHandler? ActivateGuideRequested;
     public event EventHandler? SubscribeMapsGuideRequested;
@@ -21,8 +20,7 @@ public sealed class HelpPage : Page
             MinWidth = 132,
             MinHeight = 40,
             HorizontalAlignment = HorizontalAlignment.Left,
-            Background = FluentTheme.Brush("AccentFillColorDefaultBrush"),
-            Foreground = FluentTheme.Brush("TextOnAccentFillColorPrimaryBrush"),
+            Style = (Style)Application.Current.Resources["AccentButtonStyle"],
             CornerRadius = new CornerRadius(7)
         };
         startTutorialButton.Click += (_, _) => ActivateGuideRequested?.Invoke(this, EventArgs.Empty);
@@ -36,7 +34,6 @@ public sealed class HelpPage : Page
         };
         subscribeTutorialButton.Click += (_, _) => SubscribeMapsGuideRequested?.Invoke(this, EventArgs.Empty);
 
-        var calibrationVideoButton = CreateVideoButton("vid1.mp4");
         var startMatchVideoButton = CreateVideoButton("vid2.mp4");
         var inGameVideoButton = CreateVideoButton("vid3.mp4");
         var endMatchVideoButton = CreateVideoButton("vid4.mp4");
@@ -52,7 +49,7 @@ public sealed class HelpPage : Page
                     Text = "新手教程",
                     FontSize = 20,
                     FontWeight = FontWeights.SemiBold,
-                    Foreground = FluentTheme.Brush("TextFillColorPrimaryBrush")
+                    Foreground = FluentTheme.Brush(this, "TextFillColorPrimaryBrush")
                 },
                 new TextBlock
                 {
@@ -60,7 +57,7 @@ public sealed class HelpPage : Page
                         ? "了解如何导入或选择地图，并以普通窗口形式展示。关闭安全模式后可使用完整的新手教程。"
                         : "从按键绑定开始，依次完成游戏地图、外置控件层、快捷扫描、楼层切换和地图缓存的配置。",
                     TextWrapping = TextWrapping.Wrap,
-                    Foreground = FluentTheme.Brush("TextFillColorSecondaryBrush")
+                    Foreground = FluentTheme.Brush(this, "TextFillColorSecondaryBrush")
                 },
                 startTutorialButton
             }
@@ -69,8 +66,8 @@ public sealed class HelpPage : Page
 
         var tutorialCard = new Border
         {
-            Background = FluentTheme.Brush("CardBackgroundFillColorDefaultBrush"),
-            BorderBrush = FluentTheme.Brush("CardStrokeColorDefaultBrush"),
+            Background = FluentTheme.Brush(this, "CardBackgroundFillColorDefaultBrush"),
+            BorderBrush = FluentTheme.Brush(this, "CardStrokeColorDefaultBrush"),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(10),
             Padding = new Thickness(24),
@@ -88,11 +85,11 @@ public sealed class HelpPage : Page
                         Width = 48,
                         Height = 48,
                         CornerRadius = new CornerRadius(24),
-                        Background = FluentTheme.Brush("AccentFillColorSecondaryBrush"),
+                        Background = FluentTheme.Brush(this, "AccentFillColorSecondaryBrush"),
                         Child = new SymbolIcon
                         {
                             Symbol = Symbol.Play,
-                            Foreground = FluentTheme.Brush("TextOnAccentFillColorPrimaryBrush")
+                            Foreground = FluentTheme.Brush(this, "TextOnAccentFillColorPrimaryBrush")
                         }
                     },
                     tutorialContent
@@ -113,20 +110,20 @@ public sealed class HelpPage : Page
                     Text = "教程",
                     FontSize = 32,
                     FontWeight = FontWeights.SemiBold,
-                    Foreground = FluentTheme.Brush("TextFillColorPrimaryBrush")
+                    Foreground = FluentTheme.Brush(this, "TextFillColorPrimaryBrush")
                 },
                 new TextBlock
                 {
                     Text = "按自己的节奏学习 Identity Vision Bridge。每个教程都可以随时重新开始。",
                     TextWrapping = TextWrapping.Wrap,
-                    Foreground = FluentTheme.Brush("TextFillColorSecondaryBrush")
+                    Foreground = FluentTheme.Brush(this, "TextFillColorSecondaryBrush")
                 },
                 new TextBlock
                 {
                     Text = "开始学习",
                     FontSize = 16,
                     FontWeight = FontWeights.SemiBold,
-                    Foreground = FluentTheme.Brush("TextFillColorPrimaryBrush")
+                    Foreground = FluentTheme.Brush(this, "TextFillColorPrimaryBrush")
                 },
                 tutorialCard,
                 new TextBlock
@@ -135,7 +132,7 @@ public sealed class HelpPage : Page
                     Margin = new Thickness(0, 16, 0, 0),
                     FontSize = 16,
                     FontWeight = FontWeights.SemiBold,
-                    Foreground = FluentTheme.Brush("TextFillColorPrimaryBrush")
+                    Foreground = FluentTheme.Brush(this, "TextFillColorPrimaryBrush")
                 },
                 CreateCompactTutorialCard(subscribeTutorialButton),
                 new TextBlock
@@ -144,9 +141,8 @@ public sealed class HelpPage : Page
                     Margin = new Thickness(0, 16, 0, 0),
                     FontSize = 16,
                     FontWeight = FontWeights.SemiBold,
-                    Foreground = FluentTheme.Brush("TextFillColorPrimaryBrush")
+                    Foreground = FluentTheme.Brush(this, "TextFillColorPrimaryBrush")
                 },
-                CreateCompactTutorialCard(calibrationVideoButton, "校准显示区域", "框选完整的游戏地图画布，让 IDVB 正确识别地图区域。", Symbol.Video),
                 CreateCompactTutorialCard(startMatchVideoButton, "如何开始对局", "打开外置控件层、选择本局地图并开始对局。", Symbol.Video),
                 CreateCompactTutorialCard(inGameVideoButton, "游戏实机操作", "在游戏中打开地图、快捷扫描并选择对应地图。", Symbol.Video),
                 CreateCompactTutorialCard(endMatchVideoButton, "结束游戏", "通过外置控件层结束本局。", Symbol.Video),
@@ -154,11 +150,11 @@ public sealed class HelpPage : Page
                 {
                     Padding = new Thickness(24, 20, 24, 20),
                     CornerRadius = new CornerRadius(10),
-                    Background = FluentTheme.Brush("ControlFillColorSecondaryBrush"),
+                    Background = FluentTheme.Brush(this, "ControlFillColorSecondaryBrush"),
                     Child = new TextBlock
                     {
                         Text = "更多地图操作和功能教程将在这里陆续加入。",
-                        Foreground = FluentTheme.Brush("TextFillColorSecondaryBrush")
+                        Foreground = FluentTheme.Brush(this, "TextFillColorSecondaryBrush")
                     }
                 }
             }
@@ -167,9 +163,11 @@ public sealed class HelpPage : Page
 
     private static Button CreateVideoButton(string fileName)
     {
+        var uri = IDVBuff.UpdateCore.OnlineServiceLinks.TryResolve("downloads.guide", ("file", fileName));
         var button = new Button
         {
-            Content = "观看视频",
+            Content = uri is null ? "在线视频未配置" : "观看视频",
+            IsEnabled = uri is not null,
             MinWidth = 104,
             MinHeight = 34,
             VerticalAlignment = VerticalAlignment.Center
@@ -178,7 +176,7 @@ public sealed class HelpPage : Page
         {
             try
             {
-                await Launcher.LaunchUriAsync(new Uri(OnboardingVideoBaseUri + fileName));
+                await Launcher.LaunchUriAsync(uri!);
             }
             catch
             {
@@ -188,10 +186,10 @@ public sealed class HelpPage : Page
         return button;
     }
 
-    private static Border CreateCompactTutorialCard(Button button) =>
-        CreateCompactTutorialCard(button, "订阅地图", "从地图社区选择地图包，并在 IDVB 中添加订阅。", Symbol.Download);
+    private Border CreateCompactTutorialCard(Button button) =>
+        CreateCompactTutorialCard(button, "获取社区地图", "在共创地图的社区页面获取地图；有新版本时直接点击地图卡片更新。", Symbol.Download);
 
-    private static Border CreateCompactTutorialCard(Button button, string title, string description, Symbol icon)
+    private Border CreateCompactTutorialCard(Button button, string title, string description, Symbol icon)
     {
         var text = new StackPanel
         {
@@ -203,7 +201,7 @@ public sealed class HelpPage : Page
                 {
                     Text = description,
                     TextWrapping = TextWrapping.Wrap,
-                    Foreground = FluentTheme.Brush("TextFillColorSecondaryBrush")
+                    Foreground = FluentTheme.Brush(this, "TextFillColorSecondaryBrush")
                 }
             }
         };
@@ -211,8 +209,8 @@ public sealed class HelpPage : Page
         Grid.SetColumn(button, 2);
         return new Border
         {
-            Background = FluentTheme.Brush("CardBackgroundFillColorDefaultBrush"),
-            BorderBrush = FluentTheme.Brush("CardStrokeColorDefaultBrush"),
+            Background = FluentTheme.Brush(this, "CardBackgroundFillColorDefaultBrush"),
+            BorderBrush = FluentTheme.Brush(this, "CardStrokeColorDefaultBrush"),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(8),
             Padding = new Thickness(16, 12, 16, 12),
@@ -231,8 +229,8 @@ public sealed class HelpPage : Page
                     {
                         Width = 36, Height = 36, CornerRadius = new CornerRadius(18),
                         VerticalAlignment = VerticalAlignment.Center,
-                        Background = FluentTheme.Brush("AccentFillColorSecondaryBrush"),
-                        Child = new SymbolIcon { Symbol = icon, Foreground = FluentTheme.Brush("TextOnAccentFillColorPrimaryBrush") }
+                        Background = FluentTheme.Brush(this, "AccentFillColorSecondaryBrush"),
+                        Child = new SymbolIcon { Symbol = icon, Foreground = FluentTheme.Brush(this, "TextOnAccentFillColorPrimaryBrush") }
                     },
                     text,
                     button

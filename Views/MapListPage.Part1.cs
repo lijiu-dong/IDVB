@@ -26,6 +26,9 @@ public sealed partial class MapListPage : UserControl
     /// <summary>Renders an in-memory class filter; never performs I/O.</summary>
     private void ShowListFromLoadedSnapshot()
     {
+        using var memory = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("MapList.FilterClass", _selectedClass);
+        if (_mapCardsRepeater is { } previous) previous.ItemsSource = null;
+        ReleaseMapCardPreviews();
         var maps = GetVisibleMaps();
         _selectedMapIds = _selectedMapIds
             .Where(id => maps.Any(map => map.Id == id))
@@ -40,10 +43,10 @@ public sealed partial class MapListPage : UserControl
         {
             Margin = new Thickness(0, 8, 0, 15)
         };
-        var importButton = CreateActionButton("导入", AccentBlue);
+        var importButton = CreateActionButton("导入", IDVBuff.Appearance.ThemeButtonRole.Accent);
         _importButton = importButton;
         importButton.IsEnabled = !_isPackageOperation;
-        _editButton = CreateActionButton("编辑", RecognitionRegionOrange);
+        _editButton = CreateActionButton("编辑", IDVBuff.Appearance.ThemeButtonRole.Warning);
         _editButton.IsEnabled = HasSelection;
         _editButton.Click += async (_, _) =>
         {
@@ -56,7 +59,7 @@ public sealed partial class MapListPage : UserControl
                     await EditMapAsync(_loadedMaps.First(map => map.Id == _selectedMapIds.First()));
             }
         };
-        _deleteButton = CreateActionButton("删除", DeleteRed);
+        _deleteButton = CreateActionButton("删除", IDVBuff.Appearance.ThemeButtonRole.Danger);
         _deleteButton.IsEnabled = HasSelection;
         _deleteButton.Click += async (_, _) =>
         {
@@ -69,7 +72,7 @@ public sealed partial class MapListPage : UserControl
                     await DeleteSelectedMapAsync(_loadedMaps.First(map => map.Id == _selectedMapIds.First()));
             }
         };
-        _variantButton = CreateActionButton("🔗", AccentBlue);
+        _variantButton = CreateActionButton("🔗", IDVBuff.Appearance.ThemeButtonRole.Accent);
         // This action is icon-only; do not let the text-button defaults make
         // it consume the same width as the labelled actions beside it.
         _variantButton.Width = 45;
@@ -83,7 +86,7 @@ public sealed partial class MapListPage : UserControl
         _variantButton.Click += async (_, _) => await ToggleSelectedVariantGroupAsync();
         var classPicker = CreateClassPicker();
 
-        var publishButton = CreateActionButton(GetWebsiteActionText(), AccentBlue);
+        var publishButton = CreateActionButton(GetWebsiteActionText(), IDVBuff.Appearance.ThemeButtonRole.Accent);
         _publishButton = publishButton;
         publishButton.IsEnabled = !_isPackageOperation && _loadedMaps.Count > 0;
 
@@ -147,42 +150,11 @@ public sealed partial class MapListPage : UserControl
         scrollContent.Children.Add(new Border { Height = 80 });
         scrollContent.Children.Add(CreateSurveyProjectsSection());
 
-        UIElement mapContent;
-        if (maps.Count == 0)
-        {
-            var emptyState = new Grid();
-            emptyState.Children.Add(new TextBlock
-            {
-                Text = "尚未导入地图",
-                FontSize = 16,
-                Foreground = new SolidColorBrush(Color.FromArgb(255, 110, 110, 110)),
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center,
-                TextAlignment = TextAlignment.Center
-            });
-            mapContent = emptyState;
-        }
-        else
-        {
-            var cardsGrid = new Grid { Margin = new Thickness(7, 12, 7, 12) };
-            for (var column = 0; column < 3; column++)
-                cardsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            for (var index = 0; index < maps.Count; index++)
-            {
-                if (index % 3 == 0)
-                    cardsGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-
-                var card = CreateMapCard(maps[index]);
-                Grid.SetRow(card, index / 3);
-                Grid.SetColumn(card, index % 3);
-                cardsGrid.Children.Add(card);
-            }
-            mapContent = cardsGrid;
-        }
+        var mapContent = CreateMapCardsContent(maps);
 
         var mapSurface = new Border
         {
-            Background = FluentTheme.Brush("LayerFillColorDefaultBrush"),
+            Background = FluentTheme.Brush(this, "LayerFillColorDefaultBrush"),
             CornerRadius = new CornerRadius(14),
             MinHeight = 459,
             Child = mapContent
@@ -245,7 +217,7 @@ public sealed partial class MapListPage : UserControl
         {
             Width = 280,
             MinHeight = 45,
-            Foreground = FluentTheme.Brush("TextFillColorPrimaryBrush"),
+            Foreground = FluentTheme.Brush(this, "TextFillColorPrimaryBrush"),
             HorizontalAlignment = HorizontalAlignment.Left
         };
         _classComboBox = picker;
@@ -263,16 +235,23 @@ public sealed partial class MapListPage : UserControl
                 _selectedTagFilters.Clear();
                 _selectedMapIds.Clear();
                 _lastClickedMapId = null;
-                ShowListFromLoadedSnapshot();
-                MapClassDiagnosticCoordinator.Instance.Trigger(_repository);
+                using var memory = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("MapList.FilterClass", className);
+                // Keep the toolbar, picker, survey section and teaching tips.
+                // Replacing them from inside SelectionChanged creates another
+                // complete native control tree for an in-memory filter.
+                // Tag controls are built only when their stable flyout opens.
+                if (_classEditButton is not null) AttachClassEditMenu(_classEditButton);
+                RefreshMapCardsOnly();
+                // Filtering changes no persisted assets. Startup and mutation
+                // paths own integrity diagnosis; do not rescan the entire catalog.
             }
         };
 
-        var add = CreateClassUtilityButton(Symbol.Add, AccentBlue);
+        var add = CreateClassUtilityButton(Symbol.Add, IDVBuff.Appearance.ThemeButtonRole.Accent);
         add.Width = 48;
         add.Height = 45;
         add.Click += async (_, _) => await ShowCreateClassDialogAsync();
-        var remove = CreateClassUtilityButton(Symbol.Delete, DeleteRed);
+        var remove = CreateClassUtilityButton(Symbol.Delete, IDVBuff.Appearance.ThemeButtonRole.Danger);
         remove.Width = 48;
         remove.Height = 45;
         remove.IsEnabled = _classes.Count > 1;
@@ -319,15 +298,12 @@ public sealed partial class MapListPage : UserControl
     {
         var button = new Button
         {
-            Background = FluentTheme.Brush("ControlFillColorDefaultBrush"),
-            Foreground = FluentTheme.Brush("TextFillColorPrimaryBrush"),
             MinWidth = 0,
             MinHeight = 0,
             Padding = new Thickness(8),
             CornerRadius = new CornerRadius(4)
         };
         var icon = new SymbolIcon(Symbol.Edit);
-        icon.Foreground = FluentTheme.Brush("TextFillColorPrimaryBrush");
         button.Content = icon;
         AttachHoverFeedback(button);
         return button;
@@ -339,7 +315,7 @@ public sealed partial class MapListPage : UserControl
         row.Children.Add(new TextBlock
         {
             Text = className,
-            Foreground = FluentTheme.Brush("TextFillColorPrimaryBrush"),
+            Foreground = FluentTheme.Brush(this, "TextFillColorPrimaryBrush"),
             VerticalAlignment = VerticalAlignment.Center,
             TextTrimming = TextTrimming.CharacterEllipsis
         });
@@ -348,22 +324,9 @@ public sealed partial class MapListPage : UserControl
             Content = row,
             Tag = className,
             MinHeight = 38,
-            Foreground = FluentTheme.Brush("TextFillColorPrimaryBrush")
+            Foreground = FluentTheme.Brush(this, "TextFillColorPrimaryBrush")
         };
     }
-
-    private static Button CreateClassUtilityButton(Symbol symbol, Color color) => new()
-    {
-        Content = new SymbolIcon(symbol),
-        Background = new SolidColorBrush(color),
-        Foreground = new SolidColorBrush(Color.FromArgb(255, 255, 255, 255)),
-        HorizontalAlignment = HorizontalAlignment.Stretch,
-        VerticalAlignment = VerticalAlignment.Stretch,
-        MinWidth = 0,
-        MinHeight = 0,
-        Padding = new Thickness(0),
-        CornerRadius = new CornerRadius(4)
-    };
 
     private async Task ShowCreateClassDialogAsync()
     {
@@ -379,11 +342,11 @@ public sealed partial class MapListPage : UserControl
             IsPrimaryButtonEnabled = false
         };
         nameBox.TextChanged += (_, _) => dialog.IsPrimaryButtonEnabled = !string.IsNullOrWhiteSpace(nameBox.Text);
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+        if (await dialog.ShowThemedAsync(this) != ContentDialogResult.Primary)
             return;
         try
         {
-            var created = await _repository.CreateClassAsync(nameBox.Text);
+            var created = await RunMapOperationAsync("正在创建地图类……", () => _repository.CreateClassAsync(nameBox.Text));
             _selectedClass = created;
             _selectedMapIds.Clear();
             await ShowListAsync();
@@ -394,9 +357,12 @@ public sealed partial class MapListPage : UserControl
         }
     }
 
-    private async Task ConfirmDeleteClassAsync(string className)
+    private async Task ConfirmDeleteClassAsync(string className, IReadOnlySet<Guid>? expectedMapIds = null)
     {
-        var count = _loadedMaps.Count(map => string.Equals(map.Class, className, StringComparison.OrdinalIgnoreCase));
+        expectedMapIds ??= (await _repository.GetCatalogSnapshotAsync()).Maps
+            .Where(map => string.Equals(map.Class, className, StringComparison.OrdinalIgnoreCase))
+            .Select(map => map.Id).ToHashSet();
+        var count = expectedMapIds.Count;
         var dialog = new ContentDialog
         {
             XamlRoot = XamlRoot,
@@ -406,18 +372,22 @@ public sealed partial class MapListPage : UserControl
             CloseButtonText = "取消",
             DefaultButton = ContentDialogButton.Close
         };
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+        if (await dialog.ShowThemedAsync(this) != ContentDialogResult.Primary)
             return;
         try
         {
-            await _repository.DeleteClassAsync(className);
-            if (!App.IsSafeMode)
-                await App.Session.RefreshMapCacheAsync();
-            if (string.Equals(_selectedClass, className, StringComparison.OrdinalIgnoreCase))
-                _selectedClass = _classes.First(name => !string.Equals(name, className, StringComparison.OrdinalIgnoreCase));
-            _selectedMapIds.Clear();
-            _lastClickedMapId = null;
-            await ShowListAsync();
+            await RunMapOperationAsync("正在删除地图类……", async () =>
+            {
+                await Task.Run(() => _repository.DeleteClassAsync(className, expectedMapIds));
+                MapOperationProgress.Report(.9, "正在刷新地图……");
+                if (!App.IsSafeMode)
+                    await MapOperationProgress.RunAsync(.9, 1, () => App.Session.RefreshMapCacheAsync());
+                if (string.Equals(_selectedClass, className, StringComparison.OrdinalIgnoreCase))
+                    _selectedClass = _classes.First(name => !string.Equals(name, className, StringComparison.OrdinalIgnoreCase));
+                _selectedMapIds.Clear();
+                _lastClickedMapId = null;
+                await ShowListAsync();
+            });
         }
         catch (Exception exception)
         {

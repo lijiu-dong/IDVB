@@ -1,0 +1,157 @@
+[
+  {
+    "title": "开源组件",
+    "components": [
+      {
+        "name": "OpenCvSharp",
+        "version": "4.13.0.20260627",
+        "license": "Apache-2.0",
+        "purpose": "为地图识别、轮廓提取、图像预处理和结构对齐提供 OpenCV 的 .NET 接口与 Windows 本机运行库。",
+        "packages": "OpenCvSharp4、OpenCvSharp4.Windows、OpenCvSharp4.Extensions、OpenCvSharp4.runtime.win；间接引入 OpenCvSharp4.WpfExtensions。",
+        "projectUrl": "https://github.com/shimat/opencvsharp",
+        "licenseUrl": "https://github.com/shimat/opencvsharp/blob/4.13.0.20260627/LICENSE",
+        "notices": ["OpenCvSharp-LICENSE.txt"]
+      },
+      {
+        "name": "OpenCV",
+        "version": "4.13.0",
+        "license": "Apache-2.0",
+        "purpose": "由 OpenCvSharp 本机运行库提供的计算机视觉基础库，用于矩阵运算、图像变换、特征提取与几何计算；其内含组件另受各自条款约束。",
+        "packages": "通过 OpenCvSharp4.runtime.win 4.13.0.20260627 引入。",
+        "projectUrl": "https://opencv.org/",
+        "licenseUrl": "https://github.com/opencv/opencv/blob/4.13.0/LICENSE",
+        "notices": ["OpenCV-LICENSE.txt"]
+      },
+      {
+        "name": "Win2D",
+        "version": "1.3.2",
+        "license": "源码 MIT；NuGet 分发另有 Microsoft 条款",
+        "purpose": "为首页扫描光效、扫描模式光晕和深度扫描动画提供硬件加速的二维绘制能力。",
+        "packages": "Microsoft.Graphics.Win2D 1.3.2。下方和许可来源链接提供开源源码的 MIT 许可；NuGet 包元数据另列 Microsoft 分发条款。",
+        "projectUrl": "https://github.com/microsoft/Win2D",
+        "licenseUrl": "https://github.com/microsoft/Win2D/blob/winappsdk/main/LICENSE.txt",
+        "notices": ["Win2D-LICENSE.txt"]
+      },
+      {
+        "name": "Microsoft.Extensions 与 System.Numerics.Tensors",
+        "version": "10.0.0 / Tensors 9.0.0",
+        "license": "MIT 及随附第三方声明",
+        "purpose": "提供依赖注入、配置选项和基础数值支持，帮助组织 IDVB 的服务与模块。",
+        "packages": "Microsoft.Extensions.DependencyInjection、Microsoft.Extensions.DependencyInjection.Abstractions、Microsoft.Extensions.Options、Microsoft.Extensions.Primitives 10.0.0；间接依赖 System.Numerics.Tensors 9.0.0。",
+        "projectUrl": "https://github.com/dotnet/runtime",
+        "licenseUrl": "https://github.com/dotnet/runtime/blob/v10.0.0/LICENSE.TXT",
+        "notices": ["DotNet-LICENSE.txt", "DotNet-NOTICES.txt"]
+      },
+      {
+        "name": "Microsoft.Data.Sqlite",
+        "version": "10.0.10",
+        "license": "MIT",
+        "purpose": "通过 .NET 数据访问接口保存和读取测绘项目、地图元数据及处理记录。",
+        "packages": "Microsoft.Data.Sqlite、Microsoft.Data.Sqlite.Core 10.0.10。",
+        "projectUrl": "https://github.com/dotnet/efcore",
+        "licenseUrl": "https://github.com/dotnet/efcore/blob/v10.0.10/LICENSE.txt",
+        "notices": ["EFCore-LICENSE.txt"]
+      },
+      {
+        "name": "SQLitePCLRaw",
+        "version": "2.1.11",
+        "license": "Apache-2.0",
+        "purpose": "连接 Microsoft.Data.Sqlite 与 SQLite 本机数据库引擎。",
+        "packages": "SQLitePCLRaw.bundle_e_sqlite3、SQLitePCLRaw.core、SQLitePCLRaw.provider.e_sqlite3 2.1.11。",
+        "projectUrl": "https://github.com/ericsink/SQLitePCL.raw",
+        "licenseUrl": "https://github.com/ericsink/SQLitePCL.raw/blob/v2.1.11/LICENSE.TXT",
+        "notices": ["SQLitePCLRaw-LICENSE.txt"]
+      },
+      {
+        "name": "SQLite",
+        "version": "3.53.3",
+        "license": "Public Domain（公有领域）",
+        "purpose": "为测绘工程提供本地嵌入式关系数据库。",
+        "packages": "SQLitePCLRaw.lib.e_sqlite3 3.53.3。",
+        "projectUrl": "https://sqlite.org/",
+        "licenseUrl": "https://sqlite.org/copyright.html",
+        "notices": ["SQLite-LICENSE.txt"]
+      },
+      {
+        "name": "Tommy",
+        "version": "3.1.2",
+        "license": "MIT",
+        "purpose": "读取与写入 TOML 配置，包括默认设置、分辨率预设和用户覆盖项。",
+        "packages": "Tommy 3.1.2。",
+        "projectUrl": "https://github.com/dezhidki/Tommy",
+        "licenseUrl": "https://github.com/dezhidki/Tommy/blob/master/LICENSE",
+        "notices": ["Tommy-LICENSE.txt"]
+      },
+      {
+        "name": "Velopack",
+        "version": "1.2.0",
+        "license": "MIT",
+        "purpose": "提供 Windows 安装布局、更新包处理和应用更新生命周期支持。",
+        "packages": "Velopack 1.2.0（主程序与独立更新器）。",
+        "projectUrl": "https://github.com/velopack/velopack",
+        "licenseUrl": "https://github.com/velopack/velopack/blob/1.2.0/LICENSE",
+        "notices": ["Velopack-LICENSE.txt"]
+      },
+      {
+        "name": "Marked",
+        "version": "15.0.7",
+        "license": "MIT；随附 Markdown 声明",
+        "purpose": "把公告中的 Markdown 转换为可显示的 HTML。",
+        "packages": "随程序分发 Assets/Markdown/marked.min.js。",
+        "projectUrl": "https://github.com/markedjs/marked",
+        "licenseUrl": "https://github.com/markedjs/marked/blob/v15.0.7/LICENSE.md",
+        "notices": ["Marked-LICENSE.txt"]
+      },
+      {
+        "name": "github-markdown-css",
+        "version": "5.8.1",
+        "license": "MIT",
+        "purpose": "为公告提供 Markdown 排版、表格、代码块和明暗主题样式。",
+        "packages": "随程序分发 Assets/Markdown/github-markdown.min.css。",
+        "projectUrl": "https://github.com/sindresorhus/github-markdown-css",
+        "licenseUrl": "https://github.com/sindresorhus/github-markdown-css/blob/v5.8.1/license",
+        "notices": ["GitHubMarkdownCss-LICENSE.txt"]
+      }
+    ]
+  },
+  {
+    "title": "网络数据来源",
+    "components": [
+      {
+        "name": "IP Geolocation by DB-IP",
+        "version": "IP to ASN Lite · 每月更新",
+        "license": "CC BY 4.0",
+        "purpose": "服务端将 DB-IP ASN Lite 与云厂商官方网段转换为机房网络索引，用于账户信用分的影子观察。数据库经过筛选与格式转换，数据不随桌面程序分发。",
+        "packages": "IP Geolocation by DB-IP（https://db-ip.com）。数据来源：DB-IP.com；已修改为仅含机房与云网段的索引。",
+        "projectUrl": "https://db-ip.com",
+        "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+        "notices": ["DB-IP-NOTICE.txt"]
+      }
+    ]
+  },
+  {
+    "title": "平台组件与分发条款",
+    "components": [
+      {
+        "name": "Windows App SDK / WinUI 3",
+        "version": "1.8.260804001",
+        "license": "Microsoft 软件许可及随附第三方声明",
+        "purpose": "提供 IDVB 主窗口、设置界面、窗口管理、文字渲染和 Windows 桌面集成。项目包含开源部分，实际 NuGet 分发包适用其随附条款。",
+        "packages": "Microsoft.WindowsAppSDK 及其 Base、Foundation、WinUI、Runtime、DWrite、InteractiveExperiences、Widgets、AI、ML 间接依赖；列入声明不代表 IDVB 使用其所有功能。",
+        "projectUrl": "https://github.com/microsoft/WindowsAppSDK",
+        "licenseUrl": "https://www.nuget.org/packages/Microsoft.WindowsAppSDK/1.8.260804001/License",
+        "notices": ["WindowsAppSdk-NOTICES.txt"]
+      },
+      {
+        "name": "Microsoft Edge WebView2",
+        "version": "SDK 1.0.3179.45",
+        "license": "SDK BSD-3-Clause；浏览器运行时另有 Microsoft 条款",
+        "purpose": "在桌面窗口中展示公告网页。此处版本及随附许可针对 SDK 包；设备上的浏览器运行时独立更新，并适用其自身条款。",
+        "packages": "Microsoft.Web.WebView2 1.0.3179.45，由 Windows App SDK 间接引入。",
+        "projectUrl": "https://developer.microsoft.com/microsoft-edge/webview2/",
+        "licenseUrl": "https://www.nuget.org/packages/Microsoft.Web.WebView2/1.0.3179.45/License",
+        "notices": ["WebView2-NOTICES.txt"]
+      }
+    ]
+  }
+]

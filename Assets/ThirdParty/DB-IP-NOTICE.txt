@@ -1,0 +1,11 @@
+IP Geolocation by DB-IP
+https://db-ip.com
+
+The IP to ASN Lite database is provided by DB-IP.com under the
+Creative Commons Attribution 4.0 International License (CC BY 4.0).
+https://creativecommons.org/licenses/by/4.0/
+Database source: https://db-ip.com/db/download/ip-to-asn-lite
+
+IDVB filters and transforms the source data into an offline hosting/cloud
+network index on its server. The original database is not distributed
+with the desktop application. No endorsement by DB-IP is implied.

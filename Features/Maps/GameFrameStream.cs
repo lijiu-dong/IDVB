@@ -13,6 +13,9 @@ internal sealed partial class GameFrameStream : IDisposable
 {
     private readonly object _gate = new();
     private readonly IDirect3DDevice _device;
+    private readonly CaptureDeviceOwner<IDirect3DDevice> _deviceOwner;
+    private readonly CaptureDeviceOwner<IDirect3DDevice>.Lease _deviceLease;
+    private bool _deviceFailed;
     private readonly Direct3D11CaptureFramePool _pool;
     private readonly GraphicsCaptureSession _session;
     private Direct3D11CaptureFrame? _latest;
@@ -25,15 +28,21 @@ internal sealed partial class GameFrameStream : IDisposable
     private long _readbackCount;
     private double _readbackTotalMs;
 
-    public GameFrameStream(IntPtr window)
+    public GameFrameStream(IntPtr window, CaptureDeviceOwner<IDirect3DDevice> deviceOwner)
     {
+        if (!CaptureStreamWorker.HasThreadAccess)
+            throw new InvalidOperationException("WGC resources must be created on their capture worker.");
+        using var memory = IDVBuff.Diagnostics.RealtimePerformanceTracker.TrackScope(
+            "WGC.Create", forceLog: true);
         Window = window;
         var iid = new Guid("79C3F95B-31F7-4EC2-A464-632EF5D30760");
         var pointer = GraphicsCaptureItem.As<ICaptureItemInterop>().CreateForWindow(window, ref iid);
         GraphicsCaptureItem item;
         try { item = MarshalInterface<GraphicsCaptureItem>.FromAbi(pointer); }
         finally { Marshal.Release(pointer); }
-        _device = CreateDevice();
+        _deviceOwner = deviceOwner;
+        _deviceLease = deviceOwner.Rent();
+        _device = _deviceLease.Value;
         try
         {
             _pool = Direct3D11CaptureFramePool.CreateFreeThreaded(
@@ -53,14 +62,15 @@ internal sealed partial class GameFrameStream : IDisposable
                         "WGC session started", details: new()
                         {
                             ["window"] = window.ToInt64(), ["width"] = item.Size.Width,
-                            ["height"] = item.Size.Height, ["streamId"] = _createdAt
+                            ["height"] = item.Size.Height, ["streamId"] = _createdAt,
+                            ["ownerThreadId"] = Environment.CurrentManagedThreadId
                         });
                 }
                 catch { _session.Dispose(); throw; }
             }
             catch { _pool.Dispose(); throw; }
         }
-        catch { _device.Dispose(); throw; }
+        catch { _deviceOwner.Invalidate(_deviceLease); _deviceLease.Dispose(); throw; }
     }
 
     public IntPtr Window { get; }
@@ -99,6 +109,7 @@ internal sealed partial class GameFrameStream : IDisposable
             catch (Exception)
             {
                 // Device loss wakes the consumer; the capture service falls back to GDI.
+                _deviceFailed = true;
                 _disposed = true;
                 _changed.TrySetResult();
             }
@@ -167,36 +178,67 @@ internal sealed partial class GameFrameStream : IDisposable
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _resourcesDisposed, 1) != 0) return;
-        Interlocked.Decrement(ref CaptureStreamDiagnostics.ActiveSessions);
         lock (_gate)
         {
             _disposed = true;
-            _pool.FrameArrived -= OnFrameArrived;
-            _latest?.Dispose();
-            _latest = null;
             _changed.TrySetResult();
         }
-        // Do not hold the callback lock while closing the native frame pool.
-        _session.Dispose();
-        _pool.Dispose();
+        // Close on the same MTA thread that created the WinRT interfaces. Reset,
+        // idle expiry and failed readback can all request shutdown from other threads.
+        if (CaptureStreamWorker.HasThreadAccess) DisposeResources();
+        else _ = CaptureStreamWorker.RunAsync(DisposeResources);
+    }
+
+    private void DisposeResources()
+    {
+        using var memory = IDVBuff.Diagnostics.RealtimePerformanceTracker.TrackScope(
+            "WGC.Release", $"streamId={_createdAt}", forceLog: true);
+        var failures = new List<string>();
+        bool Release(string resource, Action close)
+        {
+            try { close(); return true; }
+            catch (Exception exception)
+            {
+                failures.Add($"{resource}: {exception.GetType().Name} (0x{exception.HResult:X8}) {exception.Message}");
+                return false;
+            }
+        }
+
+        // Native Close can wait for callbacks. Never hold the callback/service
+        // gate, and continue releasing the other resources if one close fails.
+        Release("frame-event", () => _pool.FrameArrived -= OnFrameArrived);
+        Direct3D11CaptureFrame? latest;
+        lock (_gate) { latest = _latest; _latest = null; }
+        Release("latest-frame", () => latest?.Dispose());
+        var sessionClosed = Release("session", _session.Dispose);
+        Release("frame-pool", _pool.Dispose);
         lock (_readbackGate)
         {
-            _readback?.Dispose();
+            Release("readback", () => _readback?.Dispose());
             _readback = null;
-            _device.Dispose();
+            if (_deviceFailed || failures.Count > 0)
+                Release("device-invalidate", () => _deviceOwner.Invalidate(_deviceLease));
+            Release("device-lease", _deviceLease.Dispose);
         }
-        MapLogCollector.Instance.Append(MapLogCategory.ViewportCapture, MapLogLevel.Info,
-            "WGC session disposed", details: new()
+        if (sessionClosed) Interlocked.Decrement(ref CaptureStreamDiagnostics.ActiveSessions);
+        MapLogCollector.Instance.Append(MapLogCategory.ViewportCapture,
+            failures.Count == 0 ? MapLogLevel.Info : MapLogLevel.Warning,
+            failures.Count == 0 ? "WGC session disposed" : "WGC session shutdown incomplete", details: new()
             {
                 ["streamId"] = _createdAt, ["window"] = Window.ToInt64(),
                 ["lifetimeMs"] = Stopwatch.GetElapsedTime(_createdAt).TotalMilliseconds,
                 ["frameCallbacks"] = _arrivedCount, ["readbacks"] = _readbackCount,
-                ["readbackTotalMs"] = _readbackTotalMs
+                ["readbackTotalMs"] = _readbackTotalMs,
+                ["ownerThreadId"] = Environment.CurrentManagedThreadId,
+                ["sessionClosed"] = sessionClosed,
+                ["shutdownFailures"] = failures
             });
     }
 
-    private static IDirect3DDevice CreateDevice()
+    internal static IDirect3DDevice CreateDevice()
     {
+        using var memory = IDVBuff.Diagnostics.RealtimePerformanceTracker.TrackScope(
+            "WGC.DeviceCreate", forceLog: true);
         IntPtr device = IntPtr.Zero, context = IntPtr.Zero, dxgi = IntPtr.Zero,
             inspectable = IntPtr.Zero, multithread = IntPtr.Zero;
         try

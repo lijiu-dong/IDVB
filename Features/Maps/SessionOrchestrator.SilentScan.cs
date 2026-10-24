@@ -50,6 +50,7 @@ public sealed partial class SessionOrchestrator
         _mapOpenSession.LockMapIdentity(
             identity.Map.Id, floor, identity.Result.IdentityConfidence);
         _lastRecognition = identity;
+        QueueSelectedMapResourcePreparation(identity.Map.Id); QueueVariantIdentityNotification(identity.Map.Id, userConfirmed: false);
         ClearPendingBackgroundScan();
         RefreshMiniMapForCurrentFloor();
         _statusMessage = $"已确定地图：{identity.Map.DisplayName}";
@@ -75,3 +76,4 @@ public sealed partial class SessionOrchestrator
         StateChanged?.Invoke(this, EventArgs.Empty);
     }
 }
+

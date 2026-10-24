@@ -131,6 +131,7 @@ public sealed partial class SessionOrchestrator
             _gameMapToggleState.MarkOpen();
         _pendingAlignmentIdentity = null;
         _mapLease.Clear();
+        HideGameMapCloseWarning();
         _pendingAlignmentSeed = null;
         _lastRecognition = null;
         _lastAlignmentSession = null;

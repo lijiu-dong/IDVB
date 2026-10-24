@@ -11,6 +11,8 @@ public sealed class OverlayNotificationItem : IOverlayNotification
     private string _message;
     private double? _progress;
     private bool _isDismissed;
+    private TimeSpan? _displayLifetime;
+    internal TimeSpan CompletionDelay { get; set; } = TimeSpan.FromSeconds(1.5);
 
     public static readonly TimeSpan DefaultDuration = TimeSpan.FromSeconds(5);
 
@@ -25,6 +27,7 @@ public sealed class OverlayNotificationItem : IOverlayNotification
         _message = message ?? string.Empty;
         _progress = progress.HasValue ? Math.Clamp(progress.Value, 0.0, 1.0) : null;
         Duration = duration ?? DefaultDuration;
+        _displayLifetime = Duration == Timeout.InfiniteTimeSpan ? null : Duration;
         CreatedAt = DateTimeOffset.UtcNow;
         ExpireTime = Duration == Timeout.InfiniteTimeSpan ? null : CreatedAt + Duration;
     }
@@ -53,6 +56,15 @@ public sealed class OverlayNotificationItem : IOverlayNotification
     public event Action<IOverlayNotification>? Updated;
     public event Action<IOverlayNotification>? Dismissed;
 
+    internal void StartDisplayLifetime(DateTimeOffset now)
+    {
+        lock (_gate)
+        {
+            if (!_isDismissed)
+                ExpireTime = _displayLifetime.HasValue ? now + _displayLifetime.Value : null;
+        }
+    }
+
     public void UpdateProgress(double progress, string? newMessage = null)
     {
         bool changed = false;
@@ -70,10 +82,11 @@ public sealed class OverlayNotificationItem : IOverlayNotification
                 _message = newMessage;
                 changed = true;
             }
-            // 达到 100% 进度时，默认 1.5 秒后优雅退出
+            // 普通进度默认 1.5 秒；对局加载使用独立的 0.5 秒完成停留。
             if (clamped >= 1.0)
             {
-                ExpireTime = DateTimeOffset.UtcNow.AddSeconds(1.5);
+                _displayLifetime = CompletionDelay;
+                ExpireTime = DateTimeOffset.UtcNow + CompletionDelay;
             }
         }
 

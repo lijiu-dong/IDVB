@@ -6,10 +6,15 @@ namespace IDVBuff.Features.Maps;
 
 public sealed partial class MapCvRecognitionService : IDisposable
 {
-    private const int Vpsg3RebuildWorkerCount = 3;
+    // Each build owns full-resolution native distance-transform scratch space.
+    // Share the bounded floor-preparation worker count: a single builder made
+    // match start wait for every floor in sequence.
+    private static int Vpsg3RebuildWorkerCount => MapCvRecognitionHelpers.FloorPreparationWorkerCount;
 
     private readonly Vpsg3PreparedIndexRegistry _vpsg3Registry = new();
     private readonly CancellationTokenSource _vpsg3RebuildCts = new();
+    private Task _vpsg3Preparation = Task.CompletedTask;
+    internal Task WaitForVpsg3PreparationAsync(CancellationToken token) => _vpsg3Preparation.WaitAsync(token);
     private int _vpsg3ShadowRunning;
 
     /// <summary>
@@ -93,7 +98,7 @@ public sealed partial class MapCvRecognitionService : IDisposable
                                     observation,
                                     refPath,
                                     result,
-                                    tag: "vpsg3");
+                                    tag: "vpsg3", preparedFloor: ownedLease.Floor);
                             }
                             catch (Exception diagEx)
                             {
@@ -167,22 +172,40 @@ public sealed partial class MapCvRecognitionService : IDisposable
     /// </summary>
     internal void InvalidateAndTriggerVpsg3Rebuild(
         IReadOnlyList<MapRecord> maps,
-        IReadOnlySet<Guid> changedMapIds)
+        IReadOnlySet<Guid> changedMapIds,
+        Action<double, string>? reportProgress = null)
     {
         if (changedMapIds is null || changedMapIds.Count == 0)
             return;
 
         // 1. Synchronous invalidation in the registry
-        _vpsg3Registry.InvalidateMaps(changedMapIds);
+        lock (_vpsg3PreparationGate)
+        {
+            _vpsg3Registry.InvalidateMaps(changedMapIds);
+            if (_selectedFloorMapId is { } selected && changedMapIds.Contains(selected))
+            {
+                _selectedFloorPreparationKey = null;
+                _selectedFloorGeneration++;
+            }
+        }
+        TriggerVpsg3Rebuild(maps, changedMapIds, reportProgress, _matchScopedResources);
+    }
 
+    private Task TriggerVpsg3Rebuild(
+        IReadOnlyList<MapRecord> maps, IReadOnlySet<Guid> changedMapIds,
+        Action<double, string>? reportProgress, bool scanFloorsOnly)
+    {
         // 2. Asynchronous background rebuild without blocking caller or alignment
         if (_disposed || _vpsg3RebuildCts.IsCancellationRequested)
-            return;
+            return Task.CompletedTask;
 
         var token = _vpsg3RebuildCts.Token;
+        long? selectionGeneration;
+        lock (_vpsg3PreparationGate)
+            selectionGeneration = _matchScopedResources && !scanFloorsOnly ? _selectedFloorGeneration : null;
         var targets = maps.Where(m => changedMapIds.Contains(m.Id)).ToArray();
         if (targets.Length == 0)
-            return;
+            return Task.CompletedTask;
 
         // Collect all eligible prebuilt tasks
         var buildTasks = new List<(MapRecord Map, FloorDefinition Floor, string LinePath, Vpsg3IndexCacheKey CacheKey)>();
@@ -192,6 +215,8 @@ public sealed partial class MapCvRecognitionService : IDisposable
 
             foreach (var floor in map.Floors)
             {
+                if (scanFloorsOnly && !string.Equals(floor.Key, MapScanFloorRules.ResolveScanFloorKey(map),
+                    StringComparison.OrdinalIgnoreCase)) continue;
                 // Strict PrebuiltStructureLine contract: ineligible floors never get a VPSG3 index
                 if (!TryGetEligiblePrebuiltPath(map, floor, out var linePath) || linePath is null)
                 {
@@ -237,13 +262,14 @@ public sealed partial class MapCvRecognitionService : IDisposable
             });
 
         if (buildTasks.Count == 0)
-            return;
+            return Task.CompletedTask;
 
         // Dispatch background bounded parallel execution (3 workers)
-        _ = Task.Run(async () =>
+        var completedFloors = 0;
+        var rebuild = Task.Run(async () =>
         {
             // Yield startup CPU priority to initial UI presentation
-            try { await Task.Delay(1500, token); }
+            try { if (!_matchScopedResources) await Task.Delay(1500, token); }
             catch (OperationCanceledException) { return; }
 
             var options = new ParallelOptions
@@ -260,7 +286,7 @@ public sealed partial class MapCvRecognitionService : IDisposable
                         return ValueTask.CompletedTask;
 
                     // Prevent duplicate parallel builds for the same key
-                    if (!_vpsg3Registry.TryBeginBuild(taskItem.CacheKey))
+                    if (!TryBeginSelectedFloorBuild(taskItem.CacheKey, selectionGeneration))
                     {
                         MapLogCollector.Instance.Append(
                             MapLogCategory.StructureRegistration,
@@ -272,6 +298,8 @@ public sealed partial class MapCvRecognitionService : IDisposable
                                 ["floorKey"] = taskItem.Floor.Key,
                                 ["cacheKey"] = taskItem.CacheKey.ToString()
                             });
+                        reportProgress?.Invoke((double)Interlocked.Increment(ref completedFloors) / buildTasks.Count,
+                            "正在准备楼层对齐索引");
                         return ValueTask.CompletedTask;
                     }
 
@@ -291,27 +319,17 @@ public sealed partial class MapCvRecognitionService : IDisposable
                     try
                     {
                         ct.ThrowIfCancellationRequested();
-                        using var image = Cv2.ImRead(taskItem.LinePath, ImreadModes.Grayscale);
-                        if (image.Empty())
+                        using var resources = FloorResourcePreparation.Prepare(_repository, taskItem.Map, taskItem.Floor.Key,
+                            false, _deterministicScanStorage, _deterministicSemanticStorage, ct, taskItem.CacheKey);
+                        var preparedFloor = resources.TakeAlignment();
+                        // Cancellation can arrive while the synchronous encoder runs.
+                        // Retire its unpublished owner before leaving this worker.
+                        if (ct.IsCancellationRequested)
                         {
-                            const string reason = "Decoded prebuilt line image is empty.";
-                            _vpsg3Registry.RecordBuildFailure(taskItem.CacheKey, reason);
-                            MapLogCollector.Instance.Append(
-                                MapLogCategory.StructureRegistration,
-                                MapLogLevel.Warning,
-                                "VPSG3 index build failed: image empty",
-                                details: new()
-                                {
-                                    ["mapId"] = taskItem.Map.Id,
-                                    ["floorKey"] = taskItem.Floor.Key,
-                                    ["cacheKey"] = taskItem.CacheKey.ToString(),
-                                    ["linePath"] = taskItem.LinePath
-                                });
-                            return ValueTask.CompletedTask;
+                            preparedFloor.Dispose();
+                            ct.ThrowIfCancellationRequested();
                         }
-
-                        var preparedFloor = Vpsg3PreparedIndexBuilder.BuildFromMat(image, taskItem.CacheKey, preparePrecision: false);
-                        var published = _vpsg3Registry.TryPublishFloor(taskItem.CacheKey, preparedFloor);
+                        var published = TryPublishSelectedFloor(taskItem.CacheKey, preparedFloor, selectionGeneration);
                         swBuild.Stop();
                         if (published)
                         {
@@ -353,7 +371,7 @@ public sealed partial class MapCvRecognitionService : IDisposable
                     catch (Exception ex)
                     {
                         swBuild.Stop();
-                        _vpsg3Registry.RecordBuildFailure(taskItem.CacheKey, ex.Message);
+                        RecordSelectedFloorBuildFailure(taskItem.CacheKey, ex.Message, selectionGeneration);
                         MapLogCollector.Instance.Append(
                             MapLogCategory.StructureRegistration,
                             MapLogLevel.Warning,
@@ -367,6 +385,11 @@ public sealed partial class MapCvRecognitionService : IDisposable
                                 ["error"] = ex.Message
                             });
                     }
+                    finally
+                    {
+                        reportProgress?.Invoke((double)Interlocked.Increment(ref completedFloors) / buildTasks.Count,
+                            $"正在准备楼层对齐索引：{taskItem.Map.DisplayName} · {taskItem.Floor.Key}");
+                    }
 
                     return ValueTask.CompletedTask;
                 });
@@ -376,6 +399,8 @@ public sealed partial class MapCvRecognitionService : IDisposable
                 // Service being disposed or rebuild cancelled
             }
         }, token);
+        lock (_vpsg3PreparationGate)
+            return _vpsg3Preparation = Task.WhenAll(_vpsg3Preparation, rebuild);
     }
 
     private bool TryGetEligiblePrebuiltPath(
@@ -444,3 +469,4 @@ public sealed partial class MapCvRecognitionService : IDisposable
         _vpsg3Registry.Dispose();
     }
 }
+

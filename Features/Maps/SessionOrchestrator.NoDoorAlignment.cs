@@ -286,6 +286,8 @@ public sealed partial class SessionOrchestrator
             effectiveScaleReliable = state.IsScaleReliable;
         }
 
+        RememberMapOpenFrameForReuse(match, recognition, reliableSession, frame, isScaleReliable);
+
         _logCollector.Append(
             MapLogCategory.StructureRegistration,
             MapLogLevel.Info,

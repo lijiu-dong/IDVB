@@ -127,7 +127,7 @@ public sealed partial class FloorIndicatorRecognizer
         int digit,
         OpenCvSharp.Rect crop)
     {
-        using var image = Cv2.ImRead(path, ImreadModes.Grayscale);
+        using var image = RecognitionAssetReader.Decode(path, ImreadModes.Grayscale);
         if (image.Empty()
             || crop.X < 0
             || crop.Y < 0
@@ -181,7 +181,9 @@ public sealed partial class FloorIndicatorRecognizer
     {
         if (!File.Exists(path))
             throw new FileNotFoundException("找不到楼层参考素材。", path);
-        using var bitmap = new Bitmap(path);
+        using var resource = new RecognitionAssetReader.Bytes(path);
+        using var stream = new MemoryStream(resource.Data, writable: false);
+        using var bitmap = new Bitmap(stream);
         var pixels = new byte[bitmap.Width * bitmap.Height * 4];
         for (var y = 0; y < bitmap.Height; y++)
         {

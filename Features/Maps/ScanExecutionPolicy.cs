@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using OpenCvSharp;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -6,7 +5,7 @@ using System.Text.Json.Serialization;
 namespace IDVBuff.Features.Maps;
 
 [JsonConverter(typeof(ScanPerformanceModeJsonConverter))]
-public enum ScanPerformanceMode { Fast, Balanced, Quality }
+public enum ScanPerformanceMode { Fast = 0, Balanced = 1, Quality = 2, DeepScan = 3 }
 public enum ScanUncertainAction { ShowCandidates, ReportUnrecognized }
 
 public sealed class ScanPerformanceModeJsonConverter : JsonConverter<ScanPerformanceMode>
@@ -34,6 +33,21 @@ internal static class ScanUncertainPolicies
         };
     public static Policy Resolve(ScanUncertainAction action) => Registered.TryGetValue(action, out var policy)
         ? policy : Registered[ScanUncertainAction.ShowCandidates];
+
+    internal static bool DeferAmbiguousDeepScanAlignment(ScanExecutionContext execution,
+        IReadOnlyList<SideEntranceScanCandidate> candidates)
+    {
+        if (execution.Policy.Mode != ScanPerformanceMode.DeepScan) return false;
+        var supported = candidates.Where(c => c.IdentityEvidence.State == ScanIdentityState.Supported)
+            .OrderBy(c => ScanIdentityVerifier.FitCost(c.IdentityEvidence))
+            .ThenBy(c => c.Map.SequenceNumber).ThenBy(c => c.Map.Id).ToArray();
+        var competitor = ScanIdentityVerifier.FirstCompetingMap(supported, c => c.Map.Id,
+            execution.VariantGroups);
+        // A declared variant family is one selectable identity. Align its best
+        // member unless an outside family is too close for automatic selection.
+        return competitor is not null && ScanIdentityVerifier.FitCost(competitor.IdentityEvidence)
+            - ScanIdentityVerifier.FitCost(supported[0].IdentityEvidence) < ScanIdentityVerifier.DominantFitMargin;
+    }
 }
 
 public sealed record ScanExecutionPolicy(
@@ -42,53 +56,84 @@ public sealed record ScanExecutionPolicy(
 {
     public double MinimumScale { get; init; } = SideEntranceScanRules.MinimumScale;
     public double MaximumScale { get; init; } = SideEntranceScanRules.MaximumScale;
+    /// <summary>Deadline of the post-scan formal alignment, counted from the moment
+    /// identity comparison ends. It is separate from <see cref="BudgetMilliseconds"/>,
+    /// which bounds only capture, gate detection, retrieval and identity evidence.</summary>
+    public int AlignmentBudgetMilliseconds { get; init; }
+    public int TotalBudgetMilliseconds => BudgetMilliseconds + AlignmentBudgetMilliseconds;
     public static ScanExecutionPolicy For(ScanPerformanceMode mode) => mode switch
     {
-        ScanPerformanceMode.Fast => new(mode, 500, 256, .08, .02, 1, 3),
-        ScanPerformanceMode.Quality => new(mode, 1000, 256, .02, .005, 3, 1),
-        _ => new(ScanPerformanceMode.Balanced, 1000, 256, .04, .01, 2, 3)
+        ScanPerformanceMode.Fast => new(mode, 500, 256, .08, .02, 1, 3) { AlignmentBudgetMilliseconds = 500 },
+        ScanPerformanceMode.Quality => new(mode, 1000, 256, .02, .005, 3, 1) { AlignmentBudgetMilliseconds = 1000 },
+        ScanPerformanceMode.DeepScan => new(mode, 2000, 384, .02, .0025, 8, 1) { AlignmentBudgetMilliseconds = 2000 },
+        _ => new(ScanPerformanceMode.Balanced, 1000, 256, .04, .01, 2, 3) { AlignmentBudgetMilliseconds = 1000 }
     };
 }
 
-/// <summary>One immutable policy and monotonic deadline from dispatch through publication.
-/// The lease flows into worker tasks; user selection explicitly ends automatic scanning.</summary>
-internal sealed class ScanExecutionContext : IDisposable
+public enum ScanExecutionPhase { Scan, Alignment }
+
+/// <summary>One immutable policy and two monotonic deadlines from dispatch through publication:
+/// the scan deadline starts at dispatch, and a separate alignment deadline starts once
+/// identity comparison has finished inside the scan deadline. The lease flows into worker
+/// tasks; user selection explicitly ends automatic scanning.</summary>
+internal sealed partial class ScanExecutionContext : IDisposable
 {
     private static readonly AsyncLocal<ScanExecutionContext?> Ambient = new();
     private readonly ScanExecutionContext? _previous;
     private readonly long _started;
+    private readonly TimeProvider _timeProvider;
     private readonly CancellationToken _cancellation;
     private readonly Func<bool>? _isCurrent;
     private double? _completedMilliseconds;
+    private double? _scanPhaseMilliseconds;
     private bool _disposed;
     private (ScanStructureIndex Index, MapScreenRect Viewport)? _alignmentIdentity;
     public static ScanExecutionContext? Current => Ambient.Value;
-    public string ScanId { get; } = Guid.NewGuid().ToString("N");
+    public string ScanId { get; } = ScanRequestDiagnostics.Current?.ScanId ?? Guid.NewGuid().ToString("N");
     public string ComputeStopReason => _cancellation.IsCancellationRequested ? "cancelled"
-        : IsSuperseded ? "superseded" : RemainingMilliseconds <= 60 && IsAutomatic
+        : IsSuperseded ? "superseded" : RemainingMilliseconds == 0 && IsAutomatic ? "deadline-exceeded"
+        : RemainingMilliseconds <= 60 && IsAutomatic
             ? "commit-budget-reserved" : "none";
     public ScanExecutionPolicy Policy { get; }
     public CancellationToken CancellationToken => _cancellation;
     public ScanFrameEvidence? Frame { get; private set; }
     public bool RetrievalCompleted { get; set; } = true;
+    internal void RecordRetrievalCoverage(int eligibleIdentities, int readyIdentities)
+    {
+        EligibleIdentities = eligibleIdentities;
+        // Complete assets cannot undo a previous cancellation or incomplete search.
+        if (readyIdentities != eligibleIdentities) RetrievalCompleted = false;
+    }
     public int EligibleIdentities { get; set; }
+    public int? ComparedIdentityCount { get; set; }
+    public int? VerifiedCandidateCount { get; set; }
     public object? CatalogRevision { get; set; }
     public int TestedHypotheses;
     public IReadOnlyList<Guid[]> VariantGroups { get; set; } = [];
     public int VariantRefinementCount { get; set; }
     public bool Reported { get; set; }
     public double ElapsedMilliseconds => _completedMilliseconds
-        ?? Stopwatch.GetElapsedTime(_started).TotalMilliseconds;
-    public int RemainingMilliseconds => Math.Max(0,
-        Policy.BudgetMilliseconds - (int)Math.Ceiling(ElapsedMilliseconds));
+        ?? _timeProvider.GetElapsedTime(_started).TotalMilliseconds;
+    public ScanExecutionPhase Phase => _scanPhaseMilliseconds.HasValue
+        ? ScanExecutionPhase.Alignment : ScanExecutionPhase.Scan;
+    /// <summary>Time spent in the scan phase; frozen when alignment begins.</summary>
+    public double ScanPhaseMilliseconds => _scanPhaseMilliseconds ?? ElapsedMilliseconds;
+    public double? AlignmentPhaseMilliseconds => _scanPhaseMilliseconds is { } scan
+        ? ElapsedMilliseconds - scan : null;
+    public int PhaseBudgetMilliseconds => Phase == ScanExecutionPhase.Alignment
+        ? Policy.AlignmentBudgetMilliseconds : Policy.BudgetMilliseconds;
+    public int RemainingMilliseconds => Math.Max(0, PhaseBudgetMilliseconds - (int)Math.Ceiling(
+        Phase == ScanExecutionPhase.Alignment ? AlignmentPhaseMilliseconds!.Value : ElapsedMilliseconds));
     public bool IsAutomatic => !_completedMilliseconds.HasValue;
     public bool IsSuperseded => _isCurrent?.Invoke() == false;
     public bool Expired => IsAutomatic && (_cancellation.IsCancellationRequested || IsSuperseded || RemainingMilliseconds == 0);
     // Reserve time for the UI-thread commit; never give each candidate a new budget.
     public bool CanCompute => !Expired && (!IsAutomatic || RemainingMilliseconds > 60);
-    private ScanExecutionContext(ScanPerformanceMode mode, CancellationToken cancellation, Func<bool>? isCurrent, long? startedTimestamp)
+    private ScanExecutionContext(ScanPerformanceMode mode, CancellationToken cancellation, Func<bool>? isCurrent,
+        long? startedTimestamp, TimeProvider? timeProvider)
     {
-        _started = startedTimestamp ?? Stopwatch.GetTimestamp();
+        _timeProvider = timeProvider ?? TimeProvider.System;
+        _started = startedTimestamp ?? _timeProvider.GetTimestamp();
         Policy = ScanExecutionPolicy.For(mode);
         _cancellation = cancellation;
         _isCurrent = isCurrent;
@@ -96,7 +141,7 @@ internal sealed class ScanExecutionContext : IDisposable
         Ambient.Value = this;
     }
     public static ScanExecutionContext Enter(ScanPerformanceMode mode, CancellationToken cancellation = default, Func<bool>? isCurrent = null,
-        long? startedTimestamp = null) => new(mode, cancellation, isCurrent, startedTimestamp);
+        long? startedTimestamp = null, TimeProvider? timeProvider = null) => new(mode, cancellation, isCurrent, startedTimestamp, timeProvider);
     public static IDisposable Suppress()
     {
         var previous = Ambient.Value;
@@ -114,7 +159,17 @@ internal sealed class ScanExecutionContext : IDisposable
     }
     public void CompleteAutomaticPhase()
     {
-        _completedMilliseconds ??= Stopwatch.GetElapsedTime(_started).TotalMilliseconds;
+        _completedMilliseconds ??= _timeProvider.GetElapsedTime(_started).TotalMilliseconds;
+    }
+    /// <summary>Ends the scan phase and starts the independent alignment deadline.
+    /// A scan that already lost its own deadline, was cancelled or superseded stays
+    /// expired: alignment time never extends identity retrieval.</summary>
+    public bool BeginAlignmentPhase()
+    {
+        if (Phase == ScanExecutionPhase.Alignment) return CanCompute;
+        if (!CanCompute) return false;
+        _scanPhaseMilliseconds = _timeProvider.GetElapsedTime(_started).TotalMilliseconds;
+        return CanCompute;
     }
     public IDisposable ConstrainAlignment(ScanStructureIndex index, MapScreenRect viewport)
     {
@@ -143,10 +198,17 @@ internal sealed class ScanExecutionContext : IDisposable
     }
     public void Dispose()
     {
-        if (_disposed) return;
-        _disposed = true;
-        Frame?.Dispose();
-        Ambient.Value = _previous;
+        lock (_indexReaderGate)
+        {
+            if (_disposed) return;
+            _disposed = true;
+        }
+        try { Frame?.Dispose(); }
+        finally
+        {
+            try { ReleaseIndexReaders(); }
+            finally { Ambient.Value = _previous; }
+        }
     }
 }
 
@@ -157,41 +219,62 @@ internal sealed class ScanFrameEvidence : IDisposable
     public Point[] DensePoints { get; }
     public Point[] SearchPoints { get; }
     public IReadOnlyList<Point[]> Contours { get; }
+    internal IReadOnlyList<Point[]>? PreparedConflictContours { get; }
     public ScanFrameEvidence(Mat frame, MapScreenRect? viewport, IReadOnlyList<GateDetection> gates,
-        ScanExecutionPolicy policy, double doorMaskWidth = 0, double doorMaskHeight = 0)
+        ScanExecutionPolicy policy)
     {
         Source = frame;
-        Observation = Vpsg3FastLiveExtractor.Extract(frame, viewport, policy.SparsePoints);
-        MaskColoredAnnotations(frame, Observation);
-        // Remove icons in evidence space, not by painting artificial edges into the source frame.
-        var bounds = new Rect(0, 0, frame.Width, frame.Height);
-        foreach (var gate in gates)
+        using var workspace = Vpsg3FastLiveExtractor.RentScratch();
+        var scratch = workspace.Scratch;
+        Observation = Vpsg3FastLiveExtractor.Extract(frame, viewport, policy.SparsePoints, scratch);
+        try
         {
-            var width = Math.Max(gate.ScreenBounds.Width, doorMaskWidth) + 18;
-            var height = Math.Max(gate.ScreenBounds.Height, doorMaskHeight) + 18;
-            var rect = new Rect((int)Math.Floor(gate.ScreenBounds.CenterX - (viewport?.X ?? 0) - width / 2),
-                (int)Math.Floor(gate.ScreenBounds.CenterY - (viewport?.Y ?? 0) - height / 2),
-                (int)Math.Ceiling(width), (int)Math.Ceiling(height)).Intersect(bounds);
-            if (rect.Width > 0 && rect.Height > 0)
+            // Extraction outputs have independent storage. Its completed temporary
+            // color buffers can now serve annotation masking on this same frame.
+            if (frame.Channels() is 3 or 4)
             {
-                Cv2.Rectangle(Observation.ObservedEdges, rect, Scalar.Black, -1);
-                Cv2.Rectangle(Observation.ValidMask, rect, Scalar.Black, -1);
-                Cv2.Rectangle(Observation.ProposalEdges, rect, Scalar.Black, -1);
+                if (frame.Channels() == 4) Cv2.CvtColor(frame, scratch.Bgr, ColorConversionCodes.BGRA2BGR);
+                else frame.CopyTo(scratch.Bgr);
+                Cv2.CvtColor(scratch.Bgr, scratch.Hsv, ColorConversionCodes.BGR2HSV);
             }
+            if (policy.Mode == ScanPerformanceMode.DeepScan)
+            {
+                if (frame.Channels() is 3 or 4) DeepScanLiveEvidence.MaskHsvAnnotations(scratch.Hsv, Observation);
+            }
+            else if (frame.Channels() is 3 or 4) MaskColoredAnnotations(scratch.Hsv, Observation);
+            // Remove icons in evidence space, not by painting artificial edges into the source frame.
+            var bounds = new Rect(0, 0, frame.Width, frame.Height);
+            foreach (var gate in gates)
+            {
+                var width = gate.ScreenBounds.Width + 18;
+                var height = gate.ScreenBounds.Height + 18;
+                var rect = new Rect((int)Math.Floor(gate.ScreenBounds.CenterX - (viewport?.X ?? 0) - width / 2),
+                    (int)Math.Floor(gate.ScreenBounds.CenterY - (viewport?.Y ?? 0) - height / 2),
+                    (int)Math.Ceiling(width), (int)Math.Ceiling(height)).Intersect(bounds);
+                if (rect.Width > 0 && rect.Height > 0)
+                {
+                    Cv2.Rectangle(Observation.ObservedEdges, rect, Scalar.Black, -1);
+                    Cv2.Rectangle(Observation.ValidMask, rect, Scalar.Black, -1);
+                    Cv2.Rectangle(Observation.ProposalEdges, rect, Scalar.Black, -1);
+                }
+            }
+            using var points = Observation.ObservedEdges.FindNonZero();
+            DensePoints = new Point[(int)points.Total()];
+            for (var i = 0; i < DensePoints.Length; i++) DensePoints[i] = points.At<Point>(i);
+            SearchPoints = SampleUniform(DensePoints, frame.Width, frame.Height, policy.SparsePoints);
+            if (Observation.SemanticLabels is { } labels)
+            {
+                Cv2.BitwiseNot(Observation.ObservedEdges, scratch.Exclusion);
+                labels.SetTo(0, scratch.Exclusion);
+            }
+            Observation.RefreshPixelMetrics(DensePoints.Length, Cv2.CountNonZero(Observation.ValidMask));
+            Cv2.FindContours(Observation.ObservedEdges, out Point[][] contours, out _,
+                RetrievalModes.List, ContourApproximationModes.ApproxNone);
+            Contours = contours.Where(c => Cv2.ArcLength(c, false) >= 30).ToArray();
+            if (policy.Mode == ScanPerformanceMode.DeepScan)
+                PreparedConflictContours = Contours.Select(c => Cv2.ApproxPolyDP(c, 1.5, true)).ToArray();
         }
-        using var points = Observation.ObservedEdges.FindNonZero();
-        DensePoints = new Point[(int)points.Total()];
-        for (var i = 0; i < DensePoints.Length; i++) DensePoints[i] = points.At<Point>(i);
-        SearchPoints = SampleUniform(DensePoints, frame.Width, frame.Height, policy.SparsePoints);
-        var extracted = Observation;
-        Observation = new Vpsg3LiveObservation(extracted.ObservedEdges.Clone(), extracted.ValidMask.Clone(),
-            frame.Width, frame.Height, DensePoints.Length, Cv2.CountNonZero(extracted.ValidMask),
-            extracted.ViewportBounds, policy.SparsePoints, extractionMilliseconds: extracted.ExtractionMilliseconds,
-            proposalEdges: extracted.ProposalEdges.Clone());
-        extracted.Dispose();
-        Cv2.FindContours(Observation.ObservedEdges, out Point[][] contours, out _,
-            RetrievalModes.List, ContourApproximationModes.ApproxNone);
-        Contours = contours.Where(c => Cv2.ArcLength(c, false) >= 30).ToArray();
+        catch { Observation.Dispose(); throw; }
     }
     internal static Point[] SampleUniform(IReadOnlyList<Point> points, int width, int height, int maximum)
     {
@@ -215,15 +298,10 @@ internal sealed class ScanFrameEvidence : IDisposable
         return result.ToArray();
     }
 
-    private static void MaskColoredAnnotations(Mat source, Vpsg3LiveObservation observation)
+    private static void MaskColoredAnnotations(Mat hsv, Vpsg3LiveObservation observation)
     {
-        if (source.Channels() is not (3 or 4)) return;
-        using var bgr = new Mat();
-        if (source.Channels() == 4) Cv2.CvtColor(source, bgr, ColorConversionCodes.BGRA2BGR);
-        else source.CopyTo(bgr);
-        using var hsv = new Mat();
         using var markers = new Mat();
-        Cv2.CvtColor(bgr, hsv, ColorConversionCodes.BGR2HSV);
+        DeepScanLiveEvidence.MaskChests(hsv, observation);
         // Saturated yellow/green player markers lie outside both floor color classes.
         // Remove only compact annotations, in evidence space, on the same frame for
         // every candidate. Their white rims must not become negative wall evidence.
@@ -232,7 +310,7 @@ internal sealed class ScanFrameEvidence : IDisposable
         using var stats = new Mat();
         using var centroids = new Mat();
         var count = Cv2.ConnectedComponentsWithStats(markers, labels, stats, centroids);
-        var bounds = new Rect(0, 0, source.Width, source.Height);
+        var bounds = new Rect(0, 0, hsv.Width, hsv.Height);
         for (var i = 1; i < count; i++)
         {
             var area = stats.At<int>(i, (int)ConnectedComponentsTypes.Area);

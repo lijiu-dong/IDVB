@@ -41,6 +41,7 @@ public sealed partial class MapStatusPage : UserControl
             AttachMapLearningPanel();
             ApplySimplifiedOptions();
             _viewBuilt = true;
+            TryRefresh("initial-state");
         }
         catch (Exception exception)
         {
@@ -176,6 +177,7 @@ public sealed partial class MapStatusPage : UserControl
 
     private void MapStatusPage_Unloaded(object sender, RoutedEventArgs e)
     {
+        StopForegroundRecording();
         _displayPreviewExpanded = false;
         DisplayPreviewVisibilityChanged?.Invoke(false);
         if (!_subscribedToRuntime)

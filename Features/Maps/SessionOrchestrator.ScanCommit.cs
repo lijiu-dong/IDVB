@@ -4,12 +4,21 @@ namespace IDVBuff.Features.Maps;
 
 public sealed partial class SessionOrchestrator
 {
+    private bool HasActiveQuickScan
+    {
+        get
+        {
+            lock (_quickScanCancellationGate)
+                return _quickScanCancellation is { IsCancellationRequested: false };
+        }
+    }
+
     private CancellationTokenSource BeginQuickScanCancellationScope()
     {
         lock (_quickScanCancellationGate)
         {
             _quickScanCancellation?.Cancel();
-            var scope = CancellationTokenSource.CreateLinkedTokenSource(CurrentMatchCancellationToken);
+            var scope = CancellationTokenSource.CreateLinkedTokenSource(CurrentMatchCancellationToken, ExternalOperationCancellation.Value);
             _quickScanCancellation = scope;
             return scope;
         }
@@ -27,33 +36,61 @@ public sealed partial class SessionOrchestrator
         lock (_quickScanCancellationGate) _quickScanCancellation?.Cancel();
     }
 
+    private bool CompleteScanWhileMapClosed(double progress)
+    {
+        if (_gameMapToggleState.IsOpen) return false;
+        EndAdaptiveMapOpen("scan completed while map closed");
+        RefreshMiniMapForCurrentFloor();
+        _scanProgressOverlay.Report(progress, "对齐完成，等待开图...");
+        StateChanged?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
     private void FinishScanExecution(ScanExecutionContext execution)
     {
         if (execution.Reported) return;
+        var stopReason = execution.ComputeStopReason;
         execution.CompleteAutomaticPhase();
         execution.Reported = true;
-        var met = execution.ElapsedMilliseconds <= execution.Policy.BudgetMilliseconds;
+        var scanMet = execution.ScanPhaseMilliseconds <= execution.Policy.BudgetMilliseconds;
+        var alignmentMet = execution.AlignmentPhaseMilliseconds is not { } alignment
+            || alignment <= execution.Policy.AlignmentBudgetMilliseconds;
+        var met = scanMet && alignmentMet;
         _logCollector.Append(MapLogCategory.ScanLifecycle, met ? MapLogLevel.Info : MapLogLevel.Warning,
-            $"扫描端到端 · mode={execution.Policy.Mode} · elapsed={execution.ElapsedMilliseconds:F1}ms · budgetMet={met}",
+            $"扫描自动阶段结束 · mode={execution.Policy.Mode} · elapsed={execution.ElapsedMilliseconds:F1}ms · scan={execution.ScanPhaseMilliseconds:F1}ms · alignment={execution.AlignmentPhaseMilliseconds?.ToString("F1") ?? "-"}ms · budgetMet={met}",
             elapsedMs: execution.ElapsedMilliseconds,
             details: new()
             {
                 ["scanId"] = execution.ScanId,
+                ["phase"] = "automatic-phase-only",
+                ["computeStopReason"] = stopReason,
+                ["requestOutcome"] = ScanRequestDiagnostics.Current?.Outcome,
+                ["requestReason"] = ScanRequestDiagnostics.Current?.Reason,
+                ["evidenceFrameCreated"] = execution.Frame is not null,
                 ["cancelled"] = execution.CancellationToken.IsCancellationRequested,
                 ["superseded"] = execution.IsSuperseded,
                 ["budgetMs"] = execution.Policy.BudgetMilliseconds,
+                ["alignmentBudgetMs"] = execution.Policy.AlignmentBudgetMilliseconds,
+                ["scanPhaseMs"] = execution.ScanPhaseMilliseconds,
+                ["alignmentPhaseMs"] = execution.AlignmentPhaseMilliseconds,
+                ["scanBudgetMet"] = scanMet,
+                ["alignmentBudgetMet"] = alignmentMet,
+                ["lastPhase"] = execution.Phase.ToString(),
                 ["samplePoints"] = execution.Frame?.SearchPoints.Length ?? 0,
                 ["densePoints"] = execution.Frame?.DensePoints.Length ?? 0,
                 ["searchHypotheses"] = execution.TestedHypotheses,
                 ["variantRefinements"] = execution.VariantRefinementCount,
                 ["retrievalComplete"] = execution.RetrievalCompleted,
-                ["verifiedCandidates"] = _lastDiagnostics?.ScanVerifiedCandidateCount
+                ["comparedIdentities"] = execution.ComparedIdentityCount,
+                ["verifiedCandidates"] = execution.VerifiedCandidateCount
             });
     }
 
     private bool TryCommitAutomaticScan(InitialRecognitionPipelineState result,
         CapturedGameFrame frame, MapMatchSnapshot match, CancellationToken cancellation)
     {
+        using var validation = MapOperationTraceAmbient.StartTopLevel(
+            "automatic_commit_validation", MapOperationWaitKind.Compute);
         var execution = ScanExecutionContext.Current;
         var recognition = result.Recognition;
         bool Reject(string reason)
@@ -101,6 +138,37 @@ public sealed partial class SessionOrchestrator
 
         // No await between this generation/deadline check and first publication. The UI thread
         // owns the transaction; manual selection and future opens use their independent paths.
+        validation.Complete();
+        // This automatic transaction includes the deferred final present.
+        // Dispose order closes present before its containing trace phase.
+        PublishAutomaticRecognition(recognition, result.PendingSideEntranceSeed, frame, match,
+            $"已确认 {recognition.Map.DisplayName} · 结构支持 {final.SupportedFraction:P0}");
+        _logCollector.Append(MapLogCategory.ScanLifecycle, MapLogLevel.Info,
+            $"扫描自动提交成功 · map={recognition.Map.SequenceNumber}#{recognition.Result.Floor}",
+            details: new()
+            {
+                ["mapId"] = recognition.Map.Id,
+                ["scanId"] = execution.ScanId,
+                ["floor"] = recognition.Result.Floor,
+                ["matchVersion"] = match.Version,
+                ["identityLocked"] = true,
+                ["alignmentCommitted"] = true,
+                ["overlayVisible"] = _overlay.IsVisible,
+                ["selectionPolicy"] = result.IdentitySelectionPolicy.ToString(),
+                ["variantGroup"] = execution.VariantGroups.FirstOrDefault(g => g.Contains(recognition.Map.Id)),
+                ["support"] = final.SupportedFraction,
+                ["decisionElapsedMs"] = execution.ElapsedMilliseconds
+            });
+        return true;
+    }
+
+    private void PublishAutomaticRecognition(RuntimeMapRecognition recognition,
+        MapAlignmentSession? seed, CapturedGameFrame frame, MapMatchSnapshot match, string status)
+    {
+        var transform = recognition.Result.OverlayTransform!;
+        using var publication = MapOperationTraceAmbient.StartTopLevel(
+            "automatic_commit_and_publish", MapOperationWaitKind.Compute,
+            mapId: recognition.Map.Id.ToString("D"), floorKey: recognition.Result.Floor);
         using var present = _overlay.DeferPresent();
         _provisionalRecognition = null;
         _provisionalCatalogRevision = null;
@@ -116,30 +184,22 @@ public sealed partial class SessionOrchestrator
         _mapLease.Bind(match, recognition.Map.Id);
         _pendingAlignmentIdentity = null;
         _pendingAlignmentSeed = null;
-        _lastAlignmentSession = UpdateAlignmentSession(result.PendingSideEntranceSeed, recognition);
+        _lastAlignmentSession = UpdateAlignmentSession(seed, recognition);
         RememberPrimaryFloorSession(recognition, _lastAlignmentSession);
         RememberReliableFloorAlignment(match, recognition, _lastAlignmentSession, frame, true);
         RememberMapViewportPresenceReference(recognition, frame);
         _lastGameBounds = frame.ClientBounds;
         _lastGameWindowHandle = frame.WindowHandle;
         _hasCompletedQuickScanAlignment = true;
-        if (!_gameMapToggleState.IsOpen) _gameMapToggleState.MarkOpen();
-        _overlay.UpdateMap(recognition, frame.ClientBounds, frame.WindowHandle, _settings!.ShowOverlayStatus);
-        _overlay.Show();
+        if (_gameMapToggleState.IsOpen)
+        {
+            _overlay.UpdateMap(recognition, frame.ClientBounds, frame.WindowHandle, _settings!.ShowOverlayStatus);
+            _overlay.Show();
+        }
         RefreshMiniMapForCurrentFloor();
-        _statusMessage = $"已确认 {recognition.Map.DisplayName} · 结构支持 {final.SupportedFraction:P0}";
-        _logCollector.Append(MapLogCategory.ScanLifecycle, MapLogLevel.Info,
-            $"扫描自动提交成功 · map={recognition.Map.SequenceNumber}#{recognition.Result.Floor}",
-            details: new()
-            {
-                ["mapId"] = recognition.Map.Id,
-                ["selectionPolicy"] = result.IdentitySelectionPolicy.ToString(),
-                ["variantGroup"] = execution.VariantGroups.FirstOrDefault(g => g.Contains(recognition.Map.Id)),
-                ["support"] = final.SupportedFraction,
-                ["decisionElapsedMs"] = execution.ElapsedMilliseconds
-            });
+        _statusMessage = status;
         StateChanged?.Invoke(this, EventArgs.Empty);
-        return true;
+        QueueSelectedMapResourcePreparation(recognition.Map.Id); QueueVariantIdentityNotification(recognition.Map.Id, userConfirmed: false);
     }
 
     public async Task SetScanPerformanceModeAsync(ScanPerformanceMode mode)
@@ -148,8 +208,12 @@ public sealed partial class SessionOrchestrator
         var settings = _settings ?? throw new InvalidOperationException("设置尚未加载。");
         var saved = settings.Clone();
         saved.ScanPerformanceMode = mode;
-        await _settingsRepo.SaveAsync(saved);
+        // Normalize/serialize and atomic file replacement can perform synchronous
+        // work before their first await. Keep it off the input/rendering thread;
+        // the live session and its notification still update on the caller.
+        await Task.Run(() => _settingsRepo.SaveAsync(saved));
         settings.ScanPerformanceMode = mode;
         StateChanged?.Invoke(this, EventArgs.Empty);
     }
 }
+

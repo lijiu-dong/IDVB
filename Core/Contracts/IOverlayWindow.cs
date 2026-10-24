@@ -22,6 +22,12 @@ public interface IOverlayWindow : IDisposable
     bool HasMap { get; }
 
     /// <summary>
+    /// 当前地图和楼层的大地图贴合图层是否正在实际显示（不含小地图、状态或预览）。
+    /// 必须是无阻塞的状态读取；未实现的呈现器不能作为显示证据。
+    /// </summary>
+    bool IsMapContentVisible(Guid mapId, string floorKey) => false;
+
+    /// <summary>
     /// 更新地图叠加内容（纹理、变换、锚点、标注）。
     /// </summary>
     void UpdateMap(
@@ -176,6 +182,7 @@ public interface IOverlayWindow : IDisposable
     void SetAllowExtend(bool allow);
     void SetMapOpacity(double opacity);
     void SetRouteLineThickness(int level) { }
+    void SetRouteOpacity(double opacity) { }
     void SetHideMiniMap(bool hide) { }
     void SetShowGateMarkers(bool show);
     void SetShowAuxiliaryAnchors(bool show);

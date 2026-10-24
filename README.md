@@ -13,7 +13,7 @@
   [![GitHub Release](https://img.shields.io/github/v/release/xigefuli-dev/IDVB?display_name=tag&include_prereleases)](https://github.com/xigefuli-dev/IDVB/releases)
   [![License](https://img.shields.io/badge/license-非商业源码许可-EA4AAA)](LICENSE)
 
-  [下载安装](https://idvb.xgflee.com/download) · [地图社区](https://community.idvb.xgflee.com/) · [提交问题](https://github.com/xigefuli-dev/IDVB/issues)
+  [下载安装](https://idvb.xgflee.com/download) · [地图社区](https://community.idvb.xgflee.com/) · [提交问题](https://github.com/xigefuli-dev/IDVB/issues) · [使用条款](TERMS.md)
 </div>
 
 ---
@@ -25,7 +25,7 @@
 - **多楼层显示**：为不同楼层保留独立的地图与对齐状态，随时切换。
 - **IDVM 地图包**：导入、编辑和分享统一的 `.idvm` 攻略地图。
 - **地图社区**：发现并订阅社区地图，让地图更新更省心。
-- **可扩展插件**：通过隔离的插件系统添加个性化能力。
+- **可扩展插件**：通过插件系统添加个性化能力；第三方 IDVP 在主进程内运行，不是安全沙箱。
 
 <p align="center">
   <img src="Assets/Guide/quick-scan-map-open.png" width="860" alt="IDVB 将攻略地图与游戏原生地图实时对齐">
@@ -71,7 +71,7 @@
 - 阅读应用内引导，并按自己的键位完成快捷键设置。
 
 > [!IMPORTANT]
-> IDVB 是独立的非官方项目，与网易、《第五人格》及其开发、发行或运营方不存在隶属、合作、赞助或认可关系。请遵守适用法律、游戏用户协议与平台规则。
+> IDVB 是独立的辅助工具，不属于游戏“外挂”；这不代表获得其他游戏及其开发、发行、运营方的授权、认可或支持，也不承诺使用后一定不会受到封禁或其他处罚。请遵守适用法律、游戏协议与平台规则，并阅读[使用条款](TERMS.md)。
 
 ## 从源码构建
 
@@ -94,11 +94,13 @@ IDVB 的开发、地图工具、社区服务和下载服务都需要持续维护
 
 <!-- 爱发电创作者主页开通后，将上一行替换为：通过 [爱发电](https://afdian.com/a/你的主页) 支持后续开发。 -->
 
-所有支持都应当是自愿的；不赞助也不会影响项目的基本下载、反馈与使用。
+基础功能可免费使用，但不代表全部现有及未来功能均免费开放。我们计划为不同赞助档位提供相应功能或服务，具体内容、期限和条件以正式公布并适用于用户的权益规则为准，尚未开放的计划不视为已经提供。
+
+是否参与由用户自行决定；不参与不影响当时明确开放的免费基础功能。不附带特定权益的自愿支持与附带明确功能权益的档位分别处理；赞助和档位权益均不自动授予商业使用许可。详见[使用条款第九条](TERMS.md#第九条-基础免费功能与赞助档位权益)。
 
 ## 许可与贡献
 
-源代码以 [Identity Vision Bridge 非商业源码许可 1.0](LICENSE) 提供。它允许个人学习、学术研究及其他非商业用途，但不属于 OSI 定义的开源许可证，也不允许未经授权的商业使用或作弊用途。
+源代码以 [Identity Vision Bridge 非商业源码许可 1.1](LICENSE) 提供。它允许个人学习、学术研究、自行构建及其他非商业用途，但不属于 OSI 定义的开源许可证，也不允许未经授权的商业使用、作弊或越权获取受保护资源。合法的源码研究和修改权利，与官方账号、联网服务及档位权益分别适用相应规则。
 
 欢迎通过 Issue 参与讨论。提交代码前，请确保改动范围清晰、不包含日志、缓存、构建产物或其他无关文件。请勿在公开 Issue 中披露可利用的安全问题、真实用户数据或个人信息。
 

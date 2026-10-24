@@ -222,7 +222,7 @@ public sealed partial class IdvaStructureLineEngine
         return result;
     }
 
-    private static Mat FillAllHoles(Mat source)
+    private static Mat FillAllHoles(Mat source, Mat sourceVoid)
     {
         var result = source.Clone();
         using var inverse = new Mat();
@@ -239,12 +239,24 @@ public sealed partial class IdvaStructureLineEngine
                 continue;
             using var component = new Mat();
             Cv2.Compare(labels, label, component, CmpTypes.EQ);
+            if (IsSourceVoidHole(component, stats.At<int>(label, (int)ConnectedComponentsTypes.Area), sourceVoid))
+                continue;
             result.SetTo(Scalar.White, component);
         }
         return result;
     }
 
-    private static Mat FillSmallHoles(Mat source, int maximumArea)
+    // A hole that is mostly explicit black/transparent source void is a map
+    // cut-out (e.g. a pillar between corridors), not unpainted noise. Filling
+    // it erases the wall the game still renders around it.
+    private static bool IsSourceVoidHole(Mat component, int area, Mat sourceVoid)
+    {
+        using var voidPart = new Mat();
+        Cv2.BitwiseAnd(component, sourceVoid, voidPart);
+        return Cv2.CountNonZero(voidPart) * 2 >= area;
+    }
+
+    private static Mat FillSmallHoles(Mat source, int maximumArea, Mat sourceVoid)
     {
         var result = source.Clone();
         using var inverse = new Mat();
@@ -257,12 +269,13 @@ public sealed partial class IdvaStructureLineEngine
         var borderLabels = GetBorderLabels(labels);
         for (var label = 1; label < count; label++)
         {
-            if (!borderLabels.Contains(label)
-                && stats.At<int>(label, (int)ConnectedComponentsTypes.Area) <= maximumArea)
+            var area = stats.At<int>(label, (int)ConnectedComponentsTypes.Area);
+            if (!borderLabels.Contains(label) && area <= maximumArea)
             {
                 using var component = new Mat();
                 Cv2.Compare(labels, label, component, CmpTypes.EQ);
-                result.SetTo(Scalar.White, component);
+                if (!IsSourceVoidHole(component, area, sourceVoid))
+                    result.SetTo(Scalar.White, component);
             }
         }
         return result;

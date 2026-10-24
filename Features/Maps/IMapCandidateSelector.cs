@@ -28,6 +28,9 @@ public readonly record struct MapCandidateDecision(
 /// </summary>
 public interface IMapCandidateSelector
 {
+    /// <summary>Accept only the production automatic decision; never enter manual fallback.</summary>
+    bool AutomaticOnly => false;
+
     Task<MapCandidateDecision> SelectAsync(
         CapturedGameFrame frame,
         IReadOnlyList<MapRecognitionChoice> candidates,

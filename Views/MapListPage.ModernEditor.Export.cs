@@ -1,4 +1,6 @@
+using IDVBuff.Features.Maps;
 using Microsoft.UI.Xaml;
+using IDVBuff.Appearance;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.Windows.Storage.Pickers;
@@ -51,7 +53,7 @@ public sealed partial class MapListPage : UserControl
             Text = "导出区域为当前裁剪范围；PNG 只包含图层管理器中当前可见的元素；编辑网格、选中框、控制点和未完成的绘制不会导出。",
             TextWrapping = TextWrapping.Wrap,
             FontSize = 12,
-            Foreground = new SolidColorBrush(EditorMuted)
+            Foreground = EditorMuted
         });
 
         var preset = new ComboBox
@@ -95,7 +97,7 @@ public sealed partial class MapListPage : UserControl
             Text = "PNG 始终是无损格式。较高的压缩级别会减小文件体积，但导出耗时更长；推荐使用 6。",
             TextWrapping = TextWrapping.Wrap,
             FontSize = 12,
-            Foreground = new SolidColorBrush(EditorMuted)
+            Foreground = EditorMuted
         });
 
         var background = new ComboBox
@@ -111,7 +113,7 @@ public sealed partial class MapListPage : UserControl
         {
             TextWrapping = TextWrapping.Wrap,
             FontSize = 12,
-            Foreground = new SolidColorBrush(RecognitionRegionRed)
+            Foreground = EditorBrush(ThemeToken.ErrorText)
         };
         panel.Children.Add(validationText);
 
@@ -167,7 +169,7 @@ public sealed partial class MapListPage : UserControl
             validationText.Text = error is null
                 ? $"预计像素数：{(long)Math.Round(width) * (long)Math.Round(height):N0}"
                 : error;
-            validationText.Foreground = new SolidColorBrush(error is null ? EditorMuted : RecognitionRegionRed);
+            validationText.Foreground = error is null ? EditorMuted : EditorBrush(ThemeToken.ErrorText);
             dialog.IsPrimaryButtonEnabled = error is null;
         }
 
@@ -212,7 +214,7 @@ public sealed partial class MapListPage : UserControl
         compressionBox.ValueChanged += (_, _) => UpdateValidation();
         UpdateValidation();
 
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+        if (await dialog.ShowThemedAsync(this) != ContentDialogResult.Primary)
             return;
 
         var options = new ModernPngExportOptions(
@@ -222,7 +224,8 @@ public sealed partial class MapListPage : UserControl
             background.SelectedIndex switch
             {
                 1 => Color.FromArgb(255, 255, 255, 255),
-                2 => EditorBackground,
+                // Export backgrounds are document data, independent of the UI theme.
+                2 => Color.FromArgb(255, 8, 14, 22),
                 _ => Color.FromArgb(0, 0, 0, 0)
             });
         var destination = await PickModernPngDestinationAsync();
@@ -235,7 +238,7 @@ public sealed partial class MapListPage : UserControl
         SetModernStatus($"正在导出 {options.Width} × {options.Height} PNG…", false);
         try
         {
-            await ExportModernPngAsync(destination, options);
+            await RunMapOperationAsync("正在导出地图图片……", () => ExportModernPngAsync(destination, options));
             SetModernStatus("PNG 导出完成。", false);
             await ShowMessageAsync("PNG 导出完成", $"已保存到：\n{destination}");
         }
@@ -299,13 +302,17 @@ public sealed partial class MapListPage : UserControl
             throw new InvalidOperationException("当前没有可编辑的地图。");
         var profile = GetActiveFloorProfile();
         var imagePath = GetActiveFloorImagePath();
+        var appearancePath = _draft.AppearancePalette is null ? null
+            : _repository.GetDraftAppearanceImagePath(_draft, _activeFloorKey);
         if (string.IsNullOrWhiteSpace(imagePath) || !File.Exists(imagePath))
             throw new InvalidOperationException("当前楼层没有可导出的地图图片。");
         var isVisible = IsModernItemVisible;
 
         // 导出与交互场景完全解耦：直接程序化绘制，不受 ScrollViewer 缩放/裁剪或纹理上限影响。
+        MapOperationProgress.Report(.1, "正在绘制地图图片……");
         var encoded = await Task.Run(() =>
-            RenderModernPngExport(profile, imagePath, options, isVisible, _draft.ClassProperties.RemoveBackground));
+            RenderModernPngExportWithAppearance(profile, imagePath, options, isVisible, _draft.ClassProperties.RemoveBackground, appearancePath));
+        MapOperationProgress.Report(.9, "正在保存地图图片……");
         await File.WriteAllBytesAsync(destination, encoded);
     }
 

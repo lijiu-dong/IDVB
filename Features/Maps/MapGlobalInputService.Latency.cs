@@ -14,6 +14,8 @@ public sealed partial class MapGlobalInputService
     private long _lastCaptureReadbacks;
     private long _uiProbeQueuedAt;
     private long _lastUiProbeDelayTicks;
+    private long _gameMapMouseDown, _gameMapMouseUp, _gameMapHostMouse;
+    private long _gameMapPollDown, _gameMapDispatch;
 
     private void ReportInputHookLatency()
     {
@@ -29,7 +31,11 @@ public sealed partial class MapGlobalInputService
             var gcPause = (pause - _lastGcPause).TotalMilliseconds;
             _lastLatencyReport = now;
             _lastGcPause = pause;
+            using var operation = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("Input.HookLatency.ProcessMetrics");
             using var process = Process.GetCurrentProcess();
+            var gcMemory = GC.GetGCMemoryInfo();
+            var memory = IDVBuff.Diagnostics.RealtimePerformanceTracker.GetMemoryMetrics();
+            var overlayMemory = MapOverlayBitmapRenderer.GetCacheMemoryForDiagnostics();
             var cpuMs = process.TotalProcessorTime.TotalMilliseconds;
             var cpuDelta = _lastProcessCpuMs is { } previousCpu ? cpuMs - previousCpu : (double?)null;
             _lastProcessCpuMs = cpuMs;
@@ -68,12 +74,33 @@ public sealed partial class MapGlobalInputService
                     ["keyboardArrival50msCount"] = keyboard.Delayed50Milliseconds,
                     ["keyboardCallbackMaxMs"] = keyboard.MaximumCallbackMilliseconds,
                     ["mouseCount"] = mouse.Count,
+                    // Only the configured map action is counted; no other keys or
+                    // mouse coordinates are recorded. Hooks never format/log it.
+                    ["gameMapBindingKind"] = _gameMapToggle.Kind.ToString(),
+                    ["gameMapMouseButton"] = _gameMapToggle.MouseButton.ToString(),
+                    ["gameMapVirtualKey"] = _gameMapToggle.VirtualKey,
+                    ["inputBindingsActive"] = _keyboardBindingsActive,
+                    ["inputPollGeneration"] = _keyboardPollGeneration,
+                    ["gameMapMouseDown"] = Interlocked.Exchange(ref _gameMapMouseDown, 0),
+                    ["gameMapMouseUp"] = Interlocked.Exchange(ref _gameMapMouseUp, 0),
+                    ["gameMapHostMouse"] = Interlocked.Exchange(ref _gameMapHostMouse, 0),
+                    ["gameMapPollDown"] = Interlocked.Exchange(ref _gameMapPollDown, 0),
+                    ["gameMapDispatch"] = Interlocked.Exchange(ref _gameMapDispatch, 0),
                     ["mouseArrivalMaxMs"] = mouse.MaximumArrivalMilliseconds,
                     ["mouseArrival50msCount"] = mouse.Delayed50Milliseconds,
                     ["mouseCallbackMaxMs"] = mouse.MaximumCallbackMilliseconds,
                     ["gcPauseMs"] = gcPause,
                     ["workingSetMb"] = Environment.WorkingSet / 1048576d,
                     ["managedHeapMb"] = GC.GetTotalMemory(false) / 1048576d,
+                    ["privateWorkingSetMb"] = memory.PrivateWorkingSetMb,
+                    ["privateCommitMb"] = process.PrivateMemorySize64 / 1048576d,
+                    ["gcCommittedMb"] = gcMemory.TotalCommittedBytes / 1048576d,
+                    ["gcHeapSizeAfterLastCollectionMb"] = gcMemory.HeapSizeBytes / 1048576d,
+                    ["gcFragmentedAfterLastCollectionMb"] = gcMemory.FragmentedBytes / 1048576d,
+                    ["gen2Collections"] = GC.CollectionCount(2),
+                    ["processHandleCount"] = process.HandleCount,
+                    ["overlayBitmapCount"] = overlayMemory.Count,
+                    ["overlayBitmapEstimatedMb"] = overlayMemory.Bytes / 1048576d,
                     ["poolPending"] = ThreadPool.PendingWorkItemCount
                 });
         }

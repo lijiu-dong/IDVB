@@ -8,6 +8,7 @@ using Windows.UI;
 using IDVBuff.Survey.Domain;
 using XamlWindow = Microsoft.UI.Xaml.Window;
 using IDVBuff.Core.Contracts;
+using IDVBuff.Presentation.Theming;
 using WinRT.Interop;
 
 namespace IDVBuff.Features.Maps;
@@ -60,7 +61,8 @@ public sealed partial class MapControlPanelWindow : IDisposable
 
     private async Task<bool> ConfirmAutomaticMapCacheSaveAsync()
     {
-        var xamlRoot = (_window?.Content as FrameworkElement)?.XamlRoot;
+        var owner = _window?.Content as FrameworkElement;
+        var xamlRoot = owner?.XamlRoot;
         if (xamlRoot is null)
             return false;
 
@@ -74,7 +76,7 @@ public sealed partial class MapControlPanelWindow : IDisposable
             CloseButtonText = "不保存并退出",
             DefaultButton = ContentDialogButton.Primary
         };
-        return await dialog.ShowAsync() == ContentDialogResult.Primary;
+        return await dialog.ShowThemedAsync(owner) == ContentDialogResult.Primary;
     }
 
     private void SetActionsEnabled(bool enabled)
@@ -120,17 +122,26 @@ public sealed partial class MapControlPanelWindow : IDisposable
         if (_disposed)
             return;
         _disposed = true;
+        DisposeTransition();
+        ClearVariantButtons();
         MapClassDiagnosticCoordinator.Instance.SnapshotChanged -= OnDiagnosticSnapshotChanged;
+        _beginButton.Click -= BeginButton_Click;
+        _endButton.Click -= EndButton_Click;
+        _correctMapButton.Click -= CorrectMapButton_Click;
+        _surveyModeToggle.Toggled -= SurveyModeToggle_Toggled;
+        _classComboBox.SelectionChanged -= ClassComboBox_SelectionChanged;
+        ThemeService.For(_classComboBox).Changed -= OnClassThemeChanged;
+        _classComboBox.Items.Clear();
+        _renderedMapClassDiagnostics = [];
         _captureProtectionRegistration?.Dispose();
         _captureProtectionRegistration = null;
         _isVisible = false;
         _window?.Close();
         _window = null;
+        _themeScope?.Dispose();
+        _themeScope = null;
+        _content = null;
     }
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool SetForegroundWindow(IntPtr window);
 
     [DllImport("user32.dll")]
     private static extern uint GetDpiForWindow(IntPtr window);
@@ -144,7 +155,7 @@ public sealed partial class MapControlPanelWindow : IDisposable
                 && _isAutomaticMapCacheEnabled()
                 && await ConfirmAutomaticMapCacheSaveAsync();
             _variantContext = null;
-            // 确认退出后立即隐藏面板并将焦点还给游戏，耗时的排空与落盘在后台异步执行
+            // 确认退出后立即隐藏面板并保持游戏焦点，耗时的排空与落盘在后台异步执行
             Hide();
             await _endMatch(saveAutomaticMapCache);
         }

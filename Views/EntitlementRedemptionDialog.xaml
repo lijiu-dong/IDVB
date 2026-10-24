@@ -1,0 +1,31 @@
+<ContentDialog
+    x:Class="IDVBuff.Views.EntitlementRedemptionDialog"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:IDVBuff.Views"
+    Title="兑换权益"
+    PrimaryButtonText="兑换"
+    CloseButtonText="关闭"
+    DefaultButton="Primary"
+    IsPrimaryButtonEnabled="{Binding CanRedeem}"
+    PrimaryButtonClick="Redeem_Click">
+    <ContentDialog.Resources>
+        <local:UsageVisibilityConverter x:Key="VisibleWhen"/>
+    </ContentDialog.Resources>
+    <StackPanel Spacing="12" MinWidth="280" MaxWidth="440">
+        <TextBox x:Name="CodeInput" PlaceholderText="输入或粘贴 IDVB 兑换码"
+            Text="{Binding Code, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" MaxLength="80"
+            IsEnabled="{Binding CanEdit}" IsSpellCheckEnabled="False" IsTextPredictionEnabled="False"
+            AutomationProperties.Name="兑换码"/>
+        <TextBlock FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+            TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{Binding AccountName}">
+            <Run Text="权益将会被发放至此账户："/><Run Text="{Binding AccountName}"/>
+        </TextBlock>
+        <StackPanel Orientation="Horizontal" Spacing="8" Visibility="{Binding IsBusy, Converter={StaticResource VisibleWhen}}">
+            <ProgressRing Width="18" Height="18" MinWidth="18" MinHeight="18" IsActive="{Binding IsBusy}"/>
+            <TextBlock Text="正在处理…" VerticalAlignment="Center"/>
+        </StackPanel>
+        <InfoBar IsOpen="{Binding HasMessage}" Visibility="{Binding HasMessage, Converter={StaticResource VisibleWhen}}"
+            IsClosable="False" Message="{Binding Message}" Severity="Informational" x:Name="ResultInfo"/>
+    </StackPanel>
+</ContentDialog>

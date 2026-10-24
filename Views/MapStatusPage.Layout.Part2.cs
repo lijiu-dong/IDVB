@@ -42,9 +42,6 @@ public sealed partial class MapStatusPage : UserControl
             Content = "设置按键",
             MinWidth = 98,
             MinHeight = 38,
-            Background = new SolidColorBrush(Color.FromArgb(255, 46, 132, 225)),
-            Foreground = new SolidColorBrush(Color.FromArgb(255, 255, 255, 255)),
-            BorderBrush = new SolidColorBrush(Color.FromArgb(255, 30, 105, 180)),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(7)
         };
@@ -67,7 +64,7 @@ public sealed partial class MapStatusPage : UserControl
         return panel;
     }
 
-    private static UIElement CreateDiagnostic(string title, TextBlock value)
+    private UIElement CreateDiagnostic(string title, TextBlock value)
     {
         var panel = new StackPanel { Spacing = 2 };
         panel.Children.Add(new TextBlock
@@ -81,14 +78,14 @@ public sealed partial class MapStatusPage : UserControl
         return panel;
     }
 
-    private static TextBlock CreateMutedText() => new()
+    private static TextBlock CreateMutedText()
     {
-        FontSize = 13,
-        Foreground = SecondaryTextBrush,
-        TextWrapping = TextWrapping.Wrap
-    };
+        var text = new TextBlock { FontSize = 13, TextWrapping = TextWrapping.Wrap };
+        text.Foreground = FluentTheme.Brush(text, "TextFillColorSecondaryBrush");
+        return text;
+    }
 
-    private static TextBlock CreateCategoryHeader(string text) => new()
+    private TextBlock CreateCategoryHeader(string text) => new()
     {
         Text = text,
         FontSize = 14,
@@ -97,16 +94,14 @@ public sealed partial class MapStatusPage : UserControl
         Margin = new Thickness(0, 4, 0, 0)
     };
 
-    private static Button CreateActionButton(string text) => new()
+    private static Button CreateActionButton(string text) => ThemeButton.Apply(new Button
     {
         Content = text,
-        Background = new SolidColorBrush(Color.FromArgb(255, 46, 132, 225)),
-        Foreground = new SolidColorBrush(Color.FromArgb(255, 255, 255, 255)),
         MinWidth = 150,
         MinHeight = 45,
         HorizontalAlignment = HorizontalAlignment.Left,
         CornerRadius = new CornerRadius(8)
-    };
+    }, IDVBuff.Appearance.ThemeButtonRole.Accent);
 
     private static NumberBox CreatePercentageBox(
         string header,
@@ -158,7 +153,7 @@ public sealed partial class MapStatusPage : UserControl
         if (previousTarget is { } previous && previous != target)
             RefreshBindingButtonAppearance(previous);
         RefreshBindingButtonAppearance(target);
-        _status.Text = target switch
+        _status.Text = (target switch
         {
             MapRuntimeBindingTarget.GameMapToggle => "请按下游戏中用于打开/关闭地图的键盘或鼠标按键。",
             MapRuntimeBindingTarget.HideAlignmentResult =>
@@ -171,7 +166,8 @@ public sealed partial class MapStatusPage : UserControl
             MapRuntimeBindingTarget.RestMapDisplay => "请按下用于保留地图身份并重置当前楼层对齐证据的键盘或鼠标按键。",
             MapRuntimeBindingTarget.MatchStateToggle => "请按下用于直接进入或结束对局的键盘或鼠标按键。",
             _ => "请按下用于手动识别的键盘或鼠标按键。"
-        };
+        }) + "若用 G HUB 等鼠标驱动在游戏里映射了按键，请切到游戏里再按。";
+        StartForegroundRecording();
         _root?.Focus(FocusState.Programmatic);
     }
 

@@ -210,6 +210,8 @@ public sealed partial class SessionOrchestrator
                 if (IsAdaptiveInitialScaleUsable(firstAttempt, cachedTuning)
                     && firstAttempt.Recognition is { } cachedRecognition)
                 {
+                    if (!isHypothesis)
+                        NoteCacheValidationOutcome(cacheKey, succeeded: true);
                     return CopyAttempt(
                         firstAttempt,
                         MarkUsedCachedScale(cachedRecognition));

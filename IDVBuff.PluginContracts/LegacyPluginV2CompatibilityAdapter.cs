@@ -55,9 +55,12 @@ internal sealed class LegacyPluginV2CompatibilityAdapter : IIdvbPlugin
         {
             _plugin.OnEnable();
             enabledCallbackCompleted = true;
+            cancellationToken.ThrowIfCancellationRequested();
             _subscribe();
             subscribed = true;
+            cancellationToken.ThrowIfCancellationRequested();
             _plugin.OnStart();
+            cancellationToken.ThrowIfCancellationRequested();
             _started = true;
             return ValueTask.CompletedTask;
         }
@@ -126,7 +129,7 @@ internal sealed class LegacyPluginV2Context : IIdvbPluginContext, IAsyncDisposab
     public LegacyPluginV2Context(IPlugin plugin, IPluginContext legacyContext)
     {
         LegacyContext = legacyContext;
-        var metadata = plugin.GetType().GetCustomAttribute<PluginAttribute>();
+        var metadata = PluginMetadata.For(plugin.GetType());
         Identity = new PluginIdentity
         {
             Id = plugin.Id,

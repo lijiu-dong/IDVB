@@ -2,7 +2,7 @@ using OpenCvSharp;
 
 namespace IDVBuff.Features.Maps;
 
-internal static class MapCvRecognitionHelpers
+internal static partial class MapCvRecognitionHelpers
 {
     internal static MapRecognitionTuning NormalizedCopy(MapRecognitionTuning tuning)
     {
@@ -11,10 +11,13 @@ internal static class MapCvRecognitionHelpers
         return copy;
     }
 
-    internal static double GeometryMargin(IReadOnlyList<MapGeometryCandidate> ranked) =>
-        ranked.Count > 1
-            ? ranked[1].VectorError - ranked[0].VectorError
-            : double.PositiveInfinity;
+    internal static double GeometryMargin(IReadOnlyList<MapGeometryCandidate> ranked,
+        IReadOnlyList<Guid[]>? variantGroups = null)
+    {
+        var competitor = ScanIdentityVerifier.FirstCompetingMap(ranked,
+            candidate => candidate.Fingerprint.Map.Id, variantGroups);
+        return competitor is null ? double.PositiveInfinity : competitor.VectorError - ranked[0].VectorError;
+    }
 
     internal static double ConfirmCandidate(
         MapGeometryCandidate candidate,
@@ -322,69 +325,7 @@ internal static class MapCvRecognitionHelpers
             .ToList();
     }
 
-    /// <summary>
-    /// Builds the side-entrance feature cache: loads the valid entry/scan-floor
-    /// feature image for every registered map as a grayscale <see cref="Mat"/>.
-    /// Other floors can participate in post-lock alignment, but never in the
-    /// initial identity scan and therefore must not retain a full distance index.
-    /// </summary>
-    internal static Dictionary<(Guid, string), Mat> BuildSideEntranceFeatureCache(
-        MapRepository repository,
-        IReadOnlyList<MapRecord> maps)
-    {
-        var cache = new Dictionary<(Guid, string), Mat>();
-        foreach (var map in maps)
-        {
-            var scanFloorKey = MapScanFloorRules.ResolveScanFloorKey(map);
-            foreach (var floorDef in MapFloorRules.GetOrderedFloors(map))
-            {
-                if (!string.Equals(
-                        MapScanFloorRules.NormalizeFloorIdentity(floorDef.Key),
-                        MapScanFloorRules.NormalizeFloorIdentity(scanFloorKey),
-                        StringComparison.Ordinal))
-                    continue;
 
-                var profile = MapFloorRules.GetFloorProfile(map, floorDef.Key);
-                if (profile is null
-                    || !repository.TryGetValidSideEntranceFeaturePath(
-                        map,
-                        floorDef.Key,
-                        out var path,
-                        out _))
-                    continue;
-
-                try
-                {
-                    // Retain the derived-feature integrity gate, but search the entire authored floor.
-                    path = repository.GetPrebuiltStructureLinePath(map, floorDef.Key);
-                    var mat = Cv2.ImRead(path, ImreadModes.Grayscale);
-                    if (mat.Empty())
-                    {
-                        mat.Dispose();
-                        continue;
-                    }
-                    Cv2.Threshold(mat, mat, 128, 255, ThresholdTypes.Binary);
-                    var anchor = MapScanFloorRules.GetScanFeatureAnchor(map, floorDef.Key);
-                    if (anchor?.Bounds?.IsValid is true)
-                    {
-                        var rect = new Rect((int)Math.Floor(anchor.Bounds.X * mat.Width),
-                            (int)Math.Floor(anchor.Bounds.Y * mat.Height),
-                            (int)Math.Ceiling(anchor.Bounds.Width * mat.Width),
-                            (int)Math.Ceiling(anchor.Bounds.Height * mat.Height))
-                            .Intersect(new Rect(0, 0, mat.Width, mat.Height));
-                        if (rect.Width > 0 && rect.Height > 0) Cv2.Rectangle(mat, rect, Scalar.Black, -1);
-                    }
-                    _ = ScanStructureIndex.Get(mat); // Prewarm off the scan critical path.
-                    cache[(map.Id, floorDef.Key)] = mat;
-                }
-                catch
-                {
-                    // 单张地图加载失败不影响其他地图
-                }
-            }
-        }
-        return cache;
-    }
 }
 /*
  * 文件职责：MapCvRecognitionHelpers。

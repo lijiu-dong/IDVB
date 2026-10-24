@@ -39,13 +39,14 @@ public sealed class MapPlayerMarkerDetector : IDisposable
         MapPlayerTrackingTuning? tuning = null)
     {
         var trackingTuning = tuning?.Clone() ?? new MapPlayerTrackingTuning();
+        IDVBuff.Core.Contracts.Online.RecognitionResources.Demand();
         trackingTuning.Normalize();
         ArgumentNullException.ThrowIfNull(liveViewport);
         if (liveViewport.Empty()
             || !viewportBounds.IsValid
             || !clientBounds.IsValid
             || !Enum.IsDefined(playerSlot)
-            || !File.Exists(templatePath))
+            || !RecognitionAssetReader.Exists(templatePath))
         {
             return Failure("玩家序号资源或模板不可用。");
         }
@@ -218,7 +219,7 @@ public sealed class MapPlayerMarkerDetector : IDisposable
             return;
         }
         _template?.Dispose();
-        _template = Cv2.ImRead(fullPath, ImreadModes.Unchanged);
+        _template = RecognitionAssetReader.Decode(fullPath, ImreadModes.Unchanged);
         _templateProfile = _template.Empty()
             ? null
             : AnalyzeTemplate(

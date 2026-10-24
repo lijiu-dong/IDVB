@@ -9,7 +9,6 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media;
 using DispatcherQueue = Microsoft.UI.Dispatching.DispatcherQueue;
-using Windows.System;
 using Windows.UI;
 using WinRT.Interop;
 using XamlWindow = Microsoft.UI.Xaml.Window;
@@ -31,6 +30,7 @@ public sealed partial class MapManualCandidateWindow
     private readonly TaskCompletionSource<MapCandidateDecision> _completion =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private XamlWindow? _window;
+    private CandidateWindowInputScope? _inputScope;
     private bool _completed;
 
     private MapManualCandidateWindow(
@@ -86,7 +86,7 @@ public sealed partial class MapManualCandidateWindow
         var root = new Grid
         {
             Background = new SolidColorBrush(Color.FromArgb(242, 6, 10, 16)),
-            IsTabStop = true,
+            IsTabStop = false,
             RowSpacing = 8,
             ColumnSpacing = 8,
             Padding = new Thickness(24, 18, 24, 24)
@@ -312,42 +312,41 @@ public sealed partial class MapManualCandidateWindow
         root.Children.Add(topActionsPanel);
 
         await RenderChoicesAsync();
+        cancellationToken.ThrowIfCancellationRequested();
 
-        root.Loaded += (_, _) => root.Focus(FocusState.Programmatic);
-        root.KeyDown += (_, e) =>
+        // Ignore keys already held when the chooser opens. Shortcuts belong only
+        // to the foreground chooser, never to gameplay or another application.
+        var shortcutKeys = new[] { 0x1B, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39,
+            0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69 };
+        var heldKeys = shortcutKeys.Select(key => (GetAsyncKeyState(key) & 0x8000) != 0).ToArray();
+        var shortcutTimer = dispatcher.CreateTimer();
+        shortcutTimer.Interval = TimeSpan.FromMilliseconds(20);
+        shortcutTimer.Tick += (_, _) =>
         {
-            if (e.Key == VirtualKey.Escape)
+            for (var i = 0; i < shortcutKeys.Length; i++)
             {
-                e.Handled = true;
-                Complete(MapCandidateDecision.Cancel());
-                return;
-            }
-            var index = e.Key switch
-            {
-                VirtualKey.Number1 or VirtualKey.NumberPad1 => 0,
-                VirtualKey.Number2 or VirtualKey.NumberPad2 => 1,
-                VirtualKey.Number3 or VirtualKey.NumberPad3 => 2,
-                VirtualKey.Number4 or VirtualKey.NumberPad4 => 3,
-                VirtualKey.Number5 or VirtualKey.NumberPad5 => 4,
-                VirtualKey.Number6 or VirtualKey.NumberPad6 => 5,
-                VirtualKey.Number7 or VirtualKey.NumberPad7 => 6,
-                VirtualKey.Number8 or VirtualKey.NumberPad8 => 7,
-                VirtualKey.Number9 or VirtualKey.NumberPad9 => 8,
-                _ => -1
-            };
-            if (index >= 0 && index < currentKeyMappings.Length)
-            {
-                e.Handled = true;
-                Complete(MapCandidateDecision.SelectKnownMap(currentKeyMappings[index]));
+                var down = (GetAsyncKeyState(shortcutKeys[i]) & 0x8000) != 0;
+                var pressed = down && !heldKeys[i];
+                heldKeys[i] = down;
+                if (!pressed || _completed || _inputScope?.OwnsForeground != true)
+                    continue;
+                if (i == 0)
+                    Complete(MapCandidateDecision.Cancel());
+                else
+                {
+                    var index = (i - 1) % 9;
+                    if (index < currentKeyMappings.Length)
+                        Complete(MapCandidateDecision.SelectKnownMap(currentKeyMappings[index]));
+                }
             }
         };
-
         _window = new XamlWindow
         {
             Content = root,
             ExtendsContentIntoTitleBar = false
         };
         _window.Closed += (_, _) => Complete(MapCandidateDecision.Cancel(), closeWindow: false);
+        _window.AppWindow.Closing += (_, _) => _inputScope?.Dispose();
         if (_window.AppWindow.Presenter is OverlappedPresenter presenter)
         {
             presenter.SetBorderAndTitleBar(false, false);
@@ -357,7 +356,6 @@ public sealed partial class MapManualCandidateWindow
             presenter.IsMinimizable = false;
         }
         _window.AppWindow.MoveAndResize(displayArea.OuterBounds);
-        _window.Activate();
         RegisterCaptureProtection();
         var hwnd = WindowNative.GetWindowHandle(_window);
         BorderlessWindowHelper.Apply(hwnd);
@@ -368,15 +366,23 @@ public sealed partial class MapManualCandidateWindow
         var exStyle = GetWindowLong(hwnd, GWL_EXSTYLE);
         _ = SetWindowLong(hwnd, GWL_EXSTYLE, exStyle | WS_EX_LAYERED);
         _ = SetLayeredWindowAttributes(hwnd, 0, 230, LWA_ALPHA);
-        using var cancellationRegistration = cancellationToken.Register(
-            () => CompleteOnDispatcher(dispatcher));
-        onPresented?.Invoke();
         try
         {
+            _inputScope = new CandidateWindowInputScope(hwnd, _frame.WindowHandle);
+            _inputScope.Show();
+            shortcutTimer.Start();
+            using var cancellationRegistration = cancellationToken.Register(
+                () => CompleteOnDispatcher(dispatcher));
+            onPresented?.Invoke();
             return await _completion.Task;
         }
         finally
         {
+            shortcutTimer.Stop();
+            if (!_completed)
+                Complete(MapCandidateDecision.Cancel());
+            _inputScope?.Dispose();
+            _inputScope = null;
             _captureProtectionRegistration?.Dispose();
             _captureProtectionRegistration = null;
             _window = null;
@@ -425,12 +431,12 @@ public sealed partial class MapManualCandidateWindow
 
     private void Complete(
         MapCandidateDecision result,
-        bool closeWindow = true,
-        bool restoreGameFocus = true)
+        bool closeWindow = true)
     {
         if (_completed)
             return;
         _completed = true;
+        _inputScope?.Dispose();
         var window = _window;
         _window = null;
         if (closeWindow && window is not null)
@@ -439,23 +445,21 @@ public sealed partial class MapManualCandidateWindow
             window.Close();
         }
         _completion.TrySetResult(result);
-        if (restoreGameFocus)
-            SetForegroundWindow(_frame.WindowHandle);
     }
 
     private void CompleteOnDispatcher(Microsoft.UI.Dispatching.DispatcherQueue dispatcher)
     {
         if (dispatcher.HasThreadAccess)
         {
-            Complete(MapCandidateDecision.Cancel(), restoreGameFocus: false);
+            Complete(MapCandidateDecision.Cancel());
             return;
         }
         dispatcher.TryEnqueue(
-            () => Complete(MapCandidateDecision.Cancel(), restoreGameFocus: false));
+            () => Complete(MapCandidateDecision.Cancel()));
     }
 
     [DllImport("user32.dll")]
-    private static extern bool SetForegroundWindow(IntPtr window);
+    private static extern short GetAsyncKeyState(int virtualKey);
 
     [DllImport("user32.dll")]
     private static extern int GetWindowLong(IntPtr hWnd, int nIndex);

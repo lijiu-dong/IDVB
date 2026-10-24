@@ -46,7 +46,7 @@ public sealed class CustomPhrasePlugin : PluginBase, IPluginSettingsProvider
             DisplayName = "聊天菜单按键",
             Description = "自动发送时用于打开聊天菜单的按键，默认为回车。",
             DefaultValue = "keyboard:D:0",
-            AllowedKinds = PluginInputBindingKinds.Keyboard
+            AllowedKinds = PluginInputBindingKinds.All
         },
         new PluginKeyBindingSetting
         {
@@ -54,7 +54,7 @@ public sealed class CustomPhrasePlugin : PluginBase, IPluginSettingsProvider
             DisplayName = "启用鼠标按键",
             Description = "打开短语菜单前自动按下此键以启用游戏鼠标，默认为 ` 键。",
             DefaultValue = "keyboard:C0:0",
-            AllowedKinds = PluginInputBindingKinds.Keyboard
+            AllowedKinds = PluginInputBindingKinds.All
         },
         new PluginKeyBindingSetting
         {
@@ -62,7 +62,7 @@ public sealed class CustomPhrasePlugin : PluginBase, IPluginSettingsProvider
             DisplayName = "启动自定义短语菜单按键",
             Description = "按住此键显示短语序列，松开后发送当前高亮短语；默认为键盘菜单键。",
             DefaultValue = "keyboard:5D:0",
-            AllowedKinds = PluginInputBindingKinds.Keyboard
+            AllowedKinds = PluginInputBindingKinds.All
         },
         new PluginSliderSetting
         {
@@ -189,7 +189,7 @@ public sealed class CustomPhrasePlugin : PluginBase, IPluginSettingsProvider
         if (value is not string text
             || !PluginInputBinding.TryParse(
                 text,
-                PluginInputBindingKinds.Keyboard,
+                PluginInputBindingKinds.All,
                 out var binding))
         {
             return;
@@ -281,7 +281,8 @@ public sealed class CustomPhrasePlugin : PluginBase, IPluginSettingsProvider
                 _enableMouseBinding.Clone(),
                 windowHandle,
                 cancellation.Token);
-            if (!_menuHeld || cancellation.IsCancellationRequested)
+            if (!_menuHeld || cancellation.IsCancellationRequested
+                || !ReferenceEquals(_menuCancellation, cancellation))
                 return;
             if (_gameWindow is null
                 || !_gameWindow.TryGetForegroundClientBounds(
@@ -300,9 +301,12 @@ public sealed class CustomPhrasePlugin : PluginBase, IPluginSettingsProvider
         }
         catch (Exception exception)
         {
-            _menuHeld = false;
-            _activePhrases = null;
-            _overlay.Hide();
+            if (ReferenceEquals(_menuCancellation, cancellation))
+            {
+                _menuHeld = false;
+                _activePhrases = null;
+                _overlay.Hide();
+            }
             Context.Logger.Error($"自定义短语菜单显示失败：{exception.Message}");
         }
         finally
@@ -320,10 +324,11 @@ public sealed class CustomPhrasePlugin : PluginBase, IPluginSettingsProvider
 
         _menuHeld = false;
         CancelMenuOpening();
+        var wasVisible = _overlay.IsVisible;
         var selectedIndex = _overlay.Hide();
         var phrases = _activePhrases;
         _activePhrases = null;
-        if (phrases is null)
+        if (!wasVisible || phrases is null)
             return;
         if (selectedIndex < 0 || selectedIndex >= phrases.Length)
         {

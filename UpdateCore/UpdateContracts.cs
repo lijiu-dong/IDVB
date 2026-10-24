@@ -11,7 +11,7 @@ public static class UpdateProtocol
     public const string TestChannel = "win-x64-test";
     public const string StableChannel = "win-x64-stable";
     public const string DefaultChannel = StableChannel;
-    public const string DefaultUpdateRoot = "https://download.xgflee.com/updates/";
+    public static string DefaultUpdateRoot => OnlineServiceConfiguration.Current.UpdateRoot.AbsoluteUri;
     public const string ShutdownPipeName = "IdentityVisionBridge.UpdateControl.v1";
 
     public static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)

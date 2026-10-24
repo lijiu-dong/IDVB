@@ -15,6 +15,8 @@ public sealed class GlobalInputAdapter : IGlobalInput
         _input.OverlayToggleInvoked += (_, args) => OverlayToggleInvoked?.Invoke(this, args);
         _input.ManualRecognitionInvoked += (_, args) => ManualRecognitionInvoked?.Invoke(this, args);
         _input.GameMapToggleInvoked += (_, args) => GameMapToggleInvoked?.Invoke(this, args);
+        _input.GameMapCloseInvoked += (_, args) => GameMapCloseInvoked?.Invoke(this, args);
+        _input.GameMapClickObserved += (_, args) => GameMapClickObserved?.Invoke(this, args);
         _input.ControlPanelToggleInvoked += (_, args) => ControlPanelToggleInvoked?.Invoke(this, args);
         _input.SwitchFloorInvoked += (_, args) => SwitchFloorInvoked?.Invoke(this, args);
         _input.SaveMapCacheInvoked += (_, args) => SaveMapCacheInvoked?.Invoke(this, args);
@@ -31,6 +33,8 @@ public sealed class GlobalInputAdapter : IGlobalInput
     public event EventHandler<object>? OverlayToggleInvoked;
     public event EventHandler<object>? ManualRecognitionInvoked;
     public event EventHandler<object>? GameMapToggleInvoked;
+    public event EventHandler<object>? GameMapCloseInvoked;
+    public event EventHandler<object>? GameMapClickObserved;
     public event EventHandler<object>? ControlPanelToggleInvoked;
     public event EventHandler<object>? SwitchFloorInvoked;
     public event EventHandler<object>? SaveMapCacheInvoked;
@@ -59,6 +63,8 @@ public sealed class GlobalInputAdapter : IGlobalInput
             hideAlignmentResult as MapInputBinding);
 
     public void ClearBindings() => _input.ClearBindings();
+
+    public void SetGameMapClickWatch(Func<bool>? isArmed) => _input.SetGameMapClickWatch(isArmed);
 
     public void ApplyPluginBinding(string pluginId, string bindingKey, object binding) =>
         _input.ApplyPluginBinding(

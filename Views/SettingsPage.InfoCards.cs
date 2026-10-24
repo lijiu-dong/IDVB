@@ -1,13 +1,14 @@
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Media;
 
 namespace IDVBuff.Views;
 
 public sealed partial class SettingsPage
 {
-    private static Border CreateInfoCard(
+    public event EventHandler? SponsorshipRequested;
+
+    private Border CreateInfoCard(
         string label,
         string value,
         string detail,
@@ -15,7 +16,7 @@ public sealed partial class SettingsPage
         string? githubLabel = null)
     {
         var content = new StackPanel { Spacing = 8 };
-        content.Children.Add(new SymbolIcon(icon) { Foreground = AccentBrush });
+        content.Children.Add(new SymbolIcon(icon) { Foreground = FluentTheme.Brush(this, "AccentTextFillColorPrimaryBrush") });
         content.Children.Add(new TextBlock { Text = label, FontSize = 13, Foreground = SecondaryTextBrush });
         content.Children.Add(new TextBlock
         {
@@ -45,23 +46,25 @@ public sealed partial class SettingsPage
                 NavigateUri = new Uri("https://github.com/xigefuli-dev/IDVB"),
                 Padding = new Thickness(0, 2, 0, 2)
             });
-            actions.Children.Add(new HyperlinkButton
+            var sponsorLink = new HyperlinkButton
             {
                 Content = new TextBlock
                 {
                     Text = "[赞助此项目]",
-                    Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 148, 108, 230)),
+                    Foreground = FluentTheme.Brush(this, "AccentTextFillColorPrimaryBrush"),
                     TextDecorations = Windows.UI.Text.TextDecorations.Underline
                 },
                 Padding = new Thickness(0, 2, 0, 2)
-            });
+            };
+            sponsorLink.Click += (_, _) => SponsorshipRequested?.Invoke(this, EventArgs.Empty);
+            actions.Children.Add(sponsorLink);
             content.Children.Add(actions);
         }
         return new Border
         {
             Padding = new Thickness(18),
             MinHeight = 150,
-            Background = FluentTheme.CardBrush(),
+            Background = FluentTheme.CardBrush(this),
             BorderBrush = CardBorderBrush,
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(8),

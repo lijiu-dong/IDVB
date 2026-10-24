@@ -6,6 +6,26 @@ namespace IDVBuff.Features.Maps;
 
 public sealed partial class SessionOrchestrator
 {
+    private static void DisposeViewportFrame(IDisposable? frame, int attemptIndex)
+    {
+        if (frame is null)
+            return;
+
+        var dispose = MapOperationTraceAmbient.StartChild(
+            "frame_dispose",
+            MapOperationWaitKind.Io,
+            attemptIndex: attemptIndex);
+        try
+        {
+            frame.Dispose();
+        }
+        finally
+        {
+            dispose.Complete();
+        }
+    }
+
+
     private async Task<CapturedGameFrame?> CaptureSurveyViewportOnceAsync(
         string operation,
         CancellationToken cancellationToken = default)
@@ -51,7 +71,8 @@ public sealed partial class SessionOrchestrator
         bool prepareVpsg3Structure = false,
         AutoFloorCapture? autoFloor = null,
         bool allowPartialMap = false,
-        Func<NormalizedRectangle, IDisposable>? suspendOverlayForCapture = null)
+        Func<NormalizedRectangle, IDisposable>? suspendOverlayForCapture = null,
+        Func<CapturedGameFrame, bool>? skipStructurePreparation = null)
     {
         var sessionTuning = _settings!.SessionTuning;
         if (_captureSvc.TryGetForegroundClientBounds(
@@ -92,7 +113,7 @@ public sealed partial class SessionOrchestrator
                 requireStructureReadiness: lowStructureReadiness,
                 structureFallbackFrameCount,
                 prepareNativeStructure,
-                prepareVpsg3Structure, autoFloor);
+                prepareVpsg3Structure, autoFloor, skipStructurePreparation);
             if (readyFrame is not null
                 && string.Equals(operation, "仅对齐", StringComparison.Ordinal))
             {
@@ -131,6 +152,11 @@ public sealed partial class SessionOrchestrator
                 && ScanExecutionContext.Current is not { CanCompute: false }
                 && stopwatch.ElapsedMilliseconds <= timeout)
             {
+                // The tracker owns its 160x100 previous observation. A rejected
+                // full-size frame has no consumer on the next attempt; release
+                // it before capture so its exclusive GDI storage can be reused.
+                DisposeViewportFrame(lastFrame, attempts);
+                lastFrame = null;
                 attempts++;
                 object? frameObj;
                 string failureReason;
@@ -176,13 +202,12 @@ public sealed partial class SessionOrchestrator
                         return null;
                     }
                     successfulCaptures++;
+                    lastFrame = current; // Also owns it if stability analysis throws.
                     var stable = tracker.Observe(
                         current.Image,
                         maximumDifference,
                         requiredFrames,
                         sessionTuning.ViewportIgnoreRegions);
-                    DisposeViewportFrame(lastFrame, attempts);
-                    lastFrame = current;
                     if (stable)
                     {
                         var signatureSpan = ActiveOperationTrace?.StartChild(
@@ -296,8 +321,7 @@ public sealed partial class SessionOrchestrator
 
             if (cancellationToken.IsCancellationRequested)
             {
-                _lastStableCaptureFailureReason =
-                    "地图对齐已超过时间预算，请保持完整地图打开后重试。";
+                cancellationToken.ThrowIfCancellationRequested();
             }
 
             _logCollector.Append(

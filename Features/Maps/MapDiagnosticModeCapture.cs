@@ -8,7 +8,16 @@ internal static class MapDiagnosticModeCapture
     private static int _currentMapOpenId;
     private static readonly AsyncLocal<int> SuppressionDepth = new();
     private static string? _matchDirectory;
+    private static IDisposable? _cacheProtection;
     private static int _attemptId;
+
+    // PNG encoding of a full viewport takes tens of milliseconds. Map-open and
+    // alignment diagnostics are queued so they never extend the latency they
+    // are recording. A full queue falls back to a synchronous write.
+    private const int MaxPendingWrites = 8;
+    private static readonly Queue<PendingWrite> PendingWrites = new();
+    private static int _pendingImageCount;
+    private static bool _writerActive;
 
     internal static string RootDirectory => Path.Combine(
 #if IDVB_UNIT_TEST
@@ -22,6 +31,8 @@ internal static class MapDiagnosticModeCapture
     {
         get { lock (Gate) return _matchDirectory is not null; }
     }
+
+    internal static bool IsAlignmentCaptureActive => SuppressionDepth.Value == 0 && IsActive;
 
     internal static string? ActiveMatchDirectory
     {
@@ -39,6 +50,8 @@ internal static class MapDiagnosticModeCapture
                 .DefaultIfEmpty()
                 .Max() + 1;
             _matchDirectory = Path.Combine(RootDirectory, $"对局 {matchId}");
+            _cacheProtection?.Dispose();
+            _cacheProtection = AppDataPaths.ProtectCachePath(_matchDirectory);
             foreach (var category in new[] { "结构配准", "显示区域", "贴合度" })
                 Directory.CreateDirectory(Path.Combine(_matchDirectory, category));
             _attemptId = 0;
@@ -51,6 +64,8 @@ internal static class MapDiagnosticModeCapture
         lock (Gate)
         {
             _matchDirectory = null;
+            _cacheProtection?.Dispose();
+            _cacheProtection = null;
             _currentMapOpenId = 0;
         }
     }
@@ -58,6 +73,8 @@ internal static class MapDiagnosticModeCapture
     internal static void Clear()
     {
         EndMatch();
+        // A queued write would recreate files under the deleted root.
+        FlushPendingWrites();
         if (Directory.Exists(RootDirectory))
             Directory.Delete(RootDirectory, recursive: true);
     }
@@ -78,7 +95,7 @@ internal static class MapDiagnosticModeCapture
             _currentMapOpenId = id;
         }
         if (matchDirectory is not null)
-            TryWrite(Path.Combine(matchDirectory, "显示区域", $"显示区域 {id}.png"), viewport);
+            QueueWrite(Path.Combine(matchDirectory, "显示区域", $"显示区域 {id}.png"), viewport);
         return id;
     }
 
@@ -102,7 +119,7 @@ internal static class MapDiagnosticModeCapture
         if (matchDirectory is null || id <= 0)
             return;
         var suffix = string.IsNullOrWhiteSpace(tag) ? string.Empty : $"_{tag}";
-        TryWrite(Path.Combine(matchDirectory, "结构配准", $"结构配准 {id}{suffix}.png"), structure);
+        QueueWrite(Path.Combine(matchDirectory, "结构配准", $"结构配准 {id}{suffix}.png"), structure);
     }
 
     internal static void WriteFitness(Mat image, int? attemptId = null, string? tag = null)
@@ -119,7 +136,109 @@ internal static class MapDiagnosticModeCapture
         if (matchDirectory is not null && id > 0)
         {
             var suffix = string.IsNullOrWhiteSpace(tag) ? string.Empty : $"_{tag}";
-            TryWrite(Path.Combine(matchDirectory, "贴合度", $"贴合度 {id}{suffix}.png"), image);
+            QueueWrite(Path.Combine(matchDirectory, "贴合度", $"贴合度 {id}{suffix}.png"), image);
+        }
+    }
+
+    // The caller keeps ownership of `image`; the queue writes a private copy.
+    private static void QueueWrite(string path, Mat image)
+    {
+        Mat copy;
+        try { copy = image.Clone(); }
+        catch { return; /* Diagnostics must never change alignment behavior. */ }
+        QueueWork(new ImageWrite(path, copy));
+    }
+
+    internal abstract class PendingWrite : IDisposable
+    {
+        internal virtual int ImageCount => 1;
+        internal abstract void Write();
+        public abstract void Dispose();
+    }
+
+    private sealed class ImageWrite(string path, Mat image) : PendingWrite
+    {
+        internal override void Write() => TryWrite(path, image);
+        public override void Dispose() => image.Dispose();
+    }
+
+    // Freeze ownership and enqueue under the session gate. EndMatch/Clear cannot
+    // pass their flush boundary between capturing this session and queuing work.
+    internal static bool? QueueAlignmentCapture(int? attemptId, Func<string, int, PendingWrite> create)
+    {
+        lock (Gate)
+        {
+            var id = attemptId ?? _currentMapOpenId;
+            if (SuppressionDepth.Value > 0 || _matchDirectory is null || id <= 0)
+                return null;
+            return QueueWork(create(_matchDirectory, id));
+        }
+    }
+
+    // Takes ownership on every path. Preserve the existing bounded queue and
+    // synchronous overflow policy: diagnostic evidence must not be dropped.
+    internal static bool QueueWork(PendingWrite work)
+    {
+        bool queued, startWriter = false;
+        lock (PendingWrites)
+        {
+            // A composite capture emits two or three images. Count those
+            // images so grouping work cannot silently expand the old budget.
+            queued = work.ImageCount <= MaxPendingWrites - _pendingImageCount;
+            if (queued)
+            {
+                PendingWrites.Enqueue(work);
+                _pendingImageCount += work.ImageCount;
+                startWriter = !_writerActive;
+                _writerActive = true;
+            }
+        }
+        if (!queued)
+        {
+            ExecuteWrite(work);
+            return false;
+        }
+        if (startWriter)
+        {
+            try { _ = Task.Run(DrainPendingWrites); }
+            catch { DrainPendingWrites(); return false; }
+        }
+        return true;
+    }
+
+    private static void ExecuteWrite(PendingWrite work)
+    {
+        try { using (work) work.Write(); }
+        catch { /* A failed write or disposal must not strand the queue/flush. */ }
+    }
+
+    private static void DrainPendingWrites()
+    {
+        while (true)
+        {
+            PendingWrite job;
+            lock (PendingWrites)
+            {
+                if (PendingWrites.Count == 0)
+                {
+                    _writerActive = false;
+                    Monitor.PulseAll(PendingWrites);
+                    return;
+                }
+                job = PendingWrites.Dequeue();
+                _pendingImageCount -= job.ImageCount;
+            }
+            ExecuteWrite(job);
+        }
+    }
+
+    /// <summary>Waits until every queued diagnostic image has been written.</summary>
+    internal static void FlushPendingWrites()
+    {
+        lock (PendingWrites)
+        {
+            while (_writerActive)
+                Monitor.Wait(PendingWrites);
         }
     }
 
@@ -144,25 +263,60 @@ internal static class MapDiagnosticModeCapture
         ScanFrameEvidence? evidence, IReadOnlyList<SideEntranceScanCandidate> candidates,
         ScanPerformanceMode mode)
     {
+        var snapshot = CaptureUnresolvedScan(frame, evidence, candidates, mode);
+        return snapshot is null ? null : WriteUnresolvedScanSnapshot(snapshot);
+    }
+
+    internal static Task<string?> WriteUnresolvedScanAsync(CapturedGameFrame frame,
+        ScanFrameEvidence? evidence, IReadOnlyList<SideEntranceScanCandidate> candidates,
+        ScanPerformanceMode mode)
+    {
+        // Freeze pixels and metadata before returning to the scan. Neither a
+        // disposed frame nor a later match/candidate may change this evidence.
+        var snapshot = CaptureUnresolvedScan(frame, evidence, candidates, mode);
+        if (snapshot is null) return Task.FromResult<string?>(null);
+        try { return Task.Run(() => WriteUnresolvedScanSnapshot(snapshot)); }
+        catch
+        {
+            snapshot.Dispose();
+            return Task.FromResult<string?>(null);
+        }
+    }
+
+    private sealed record UnresolvedScanSnapshot(string Directory, string Json,
+        Mat Image, Mat? Edges, Mat? Mask, Mat? Semantic, IDisposable Protection) : IDisposable
+    {
+        public void Dispose()
+        {
+            Image.Dispose();
+            Edges?.Dispose();
+            Mask?.Dispose();
+            Semantic?.Dispose();
+            Protection.Dispose();
+        }
+    }
+
+    private static UnresolvedScanSnapshot? CaptureUnresolvedScan(CapturedGameFrame frame,
+        ScanFrameEvidence? evidence, IReadOnlyList<SideEntranceScanCandidate> candidates,
+        ScanPerformanceMode mode)
+    {
         // Explicit scan evidence is separate from suppressed per-candidate alignment
         // captures. The caller has already made the automatic identity decision.
         lock (Gate)
         {
             if (_matchDirectory is null) return null;
+            Mat? image = null, edges = null, mask = null, semantic = null;
             try
             {
                 var directory = Path.Combine(_matchDirectory, "扫描",
                     DateTime.Now.ToString("yyyyMMdd_HHmmss_fffffff"));
-                Directory.CreateDirectory(directory);
-                WritePng(Path.Combine(directory, "viewport.png"), frame.Image);
-                if (evidence is not null)
-                {
-                    WritePng(Path.Combine(directory, "observed-edges.png"), evidence.Observation.ObservedEdges);
-                    WritePng(Path.Combine(directory, "valid-mask.png"), evidence.Observation.ValidMask);
-                }
+                var execution = ScanExecutionContext.Current;
                 var data = new
                 {
                     mode = mode.ToString(), frame.ClientBounds, frame.ViewportBounds,
+                    scanId = execution?.ScanId, scanElapsedMs = execution?.ElapsedMilliseconds,
+                    retrievalComplete = execution?.RetrievalCompleted,
+                    computeStopReason = execution?.ComputeStopReason,
                     candidates = candidates.Select((candidate, rank) => new
                     {
                         retrievalRank = rank + 1, candidate.Map.Id, candidate.Map.Class,
@@ -177,27 +331,52 @@ internal static class MapDiagnosticModeCapture
                             })
                     })
                 };
-                File.WriteAllText(Path.Combine(directory, "scan.json"),
-                    System.Text.Json.JsonSerializer.Serialize(data, new System.Text.Json.JsonSerializerOptions
+                var json = System.Text.Json.JsonSerializer.Serialize(data, new System.Text.Json.JsonSerializerOptions
                     {
                         WriteIndented = true,
                         NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowNamedFloatingPointLiterals
-                    }));
-                return directory;
+                    });
+                image = frame.Image.Clone();
+                edges = evidence?.Observation.ObservedEdges.Clone();
+                mask = evidence?.Observation.ValidMask.Clone();
+                semantic = evidence?.Observation.SemanticLabels is { } labels ? SemanticStructureContours.Encode(labels) : null;
+                return new(directory, json, image, edges, mask, semantic, AppDataPaths.ProtectCachePath(directory));
             }
-            catch { return null; /* Diagnostics must not change the scan result. */ }
+            catch
+            {
+                image?.Dispose(); edges?.Dispose(); mask?.Dispose(); semantic?.Dispose();
+                return null; /* Diagnostics must not change the scan result. */
+            }
+        }
+    }
+
+    private static string? WriteUnresolvedScanSnapshot(UnresolvedScanSnapshot snapshot)
+    {
+        using (snapshot)
+        {
+            try
+            {
+                Directory.CreateDirectory(snapshot.Directory);
+                WritePng(Path.Combine(snapshot.Directory, "viewport.png"), snapshot.Image);
+                if (snapshot.Edges is not null) WritePng(Path.Combine(snapshot.Directory, "observed-edges.png"), snapshot.Edges);
+                if (snapshot.Semantic is not null) WritePng(Path.Combine(snapshot.Directory, "observed-semantic.png"), snapshot.Semantic);
+                if (snapshot.Mask is not null) WritePng(Path.Combine(snapshot.Directory, "valid-mask.png"), snapshot.Mask);
+                File.WriteAllText(Path.Combine(snapshot.Directory, "scan.json"), snapshot.Json);
+                return snapshot.Directory;
+            }
+            catch { return null; /* Preserve the automatic decision on write failure. */ }
         }
     }
 
     private static void WritePng(string path, Mat image)
     {
-        if (!Cv2.ImEncode(".png", image, out var bytes))
+        if (!Cv2.ImWrite(path, image))
             throw new IOException("扫描诊断 PNG 编码失败。");
-        File.WriteAllBytes(path, bytes);
     }
 
     internal static void TryWrite(string path, Mat image)
     {
+        using var protection = AppDataPaths.ProtectCachePath(path);
         try { Cv2.ImWrite(path, image); }
         catch { /* Diagnostics must never change alignment behavior. */ }
     }

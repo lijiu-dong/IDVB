@@ -6,6 +6,7 @@
 
 using IDVBuff;
 using IDVBuff.Core.Contracts;
+using IDVBuff.Core.Contracts.Online;
 using IDVBuff.Features.Maps;
 using IDVBuff.Infrastructure.Configuration;
 using IDVBuff.Pipeline;
@@ -96,7 +97,8 @@ internal static class OrchestratorFactory
                 sp.GetRequiredService<IDVBuff.Survey.Contracts.ISurveyCoordinator>(),
                 sp.GetRequiredService<IDVBuff.Survey.Contracts.SurveyCaptureTuning>(),
                 headless: true,
-                learningEngine: new MapCandidateLearningEngine(modelRepository)));
+                learningEngine: new MapCandidateLearningEngine(modelRepository),
+                usageMeter: sp.GetRequiredService<IUsageMeter>()));
         services.AddSingleton<ISessionOrchestrator>(sp =>
             sp.GetRequiredService<SessionOrchestrator>());
 

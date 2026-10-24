@@ -28,7 +28,7 @@ public sealed partial class SqliteSurveyProjectRepository
         EnsureRevision(request.ProjectId, request.ExpectedRevision, revision);
         var nextRevision = revision + 1;
 
-        var observation = connection.CreateCommand();
+        using var observation = connection.CreateCommand();
         observation.Transaction = sqliteTransaction;
         observation.CommandText = """
             UPDATE observations
@@ -45,7 +45,7 @@ public sealed partial class SqliteSurveyProjectRepository
         if (await observation.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
             throw new InvalidOperationException("Survey observation was not found.");
 
-        var layer = connection.CreateCommand();
+        using var layer = connection.CreateCommand();
         layer.Transaction = sqliteTransaction;
         layer.CommandText = """
             UPDATE layers
@@ -101,7 +101,7 @@ public sealed partial class SqliteSurveyProjectRepository
             cancellationToken).ConfigureAwait(false);
         if (request.UsesCleanedDisplay is { } usesCleanedDisplay)
         {
-            var displayState = connection.CreateCommand();
+            using var displayState = connection.CreateCommand();
             displayState.Transaction = sqliteTransaction;
             displayState.CommandText = """
                 UPDATE layer_edit_state SET uses_cleaned_display = $cleaned
@@ -139,7 +139,7 @@ public sealed partial class SqliteSurveyProjectRepository
         CancellationToken cancellationToken)
     {
         var transform = constraint.RelativeTransform;
-        var command = connection.CreateCommand();
+        using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
             INSERT INTO constraints(
@@ -182,7 +182,7 @@ public sealed partial class SqliteSurveyProjectRepository
     {
         if (asset is null)
             return;
-        var command = connection.CreateCommand();
+        using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
             INSERT INTO observation_assets(

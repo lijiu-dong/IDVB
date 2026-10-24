@@ -170,94 +170,38 @@ public sealed partial class MapGlobalInputService : IDisposable
         var started = Stopwatch.GetTimestamp();
         var arrival = unchecked((uint)Environment.TickCount);
         var mouse = Marshal.PtrToStructure<MsLlHookStruct>(lParam);
-        if (!IsMarkedInjectedMouse(mouse))
+        var message = (uint)wParam.ToInt64();
+        if (!IsMarkedInjectedMouse(mouse) && message == WmMouseWheel)
         {
-            var message = (uint)wParam.ToInt64();
-            if (message == WmMouseWheel)
-            {
-                var delta = (short)((mouse.MouseData >> 16) & 0xFFFF);
-                if (delta != 0)
-                    DispatchMouseWheel(new MouseWheelInputEventArgs(
-                        Stopwatch.GetTimestamp(),
-                        delta,
-                        capsHeld: IsKeyDown(CapsLockVirtualKey),
-                        pluginBindingStates: SnapshotPressedPluginBindings()));
-            }
+            var delta = (short)((mouse.MouseData >> 16) & 0xFFFF);
+            if (delta != 0)
+                DispatchMouseWheel(new MouseWheelInputEventArgs(
+                    Stopwatch.GetTimestamp(),
+                    delta,
+                    capsHeld: IsKeyDown(CapsLockVirtualKey),
+                    pluginBindingStates: SnapshotPressedPluginBindings()));
+        }
 
-            if (TryGetMouseButton(message, lParam, out var button, out var isDown))
+        // Same edge tracker as keyboard polling. A raw-input side button that
+        // never arrives as WM_XBUTTON is still observed by the poller.
+        // Host-injected clicks are recorded without dispatch so that poller
+        // does not publish them on the next GetAsyncKeyState sample.
+        if (TryGetMouseButton(message, lParam, out var button, out var isDown)
+            && TryMouseVirtualKey(button, out var mouseKey))
+        {
+            ObserveGameMapClick(mouse, button, isDown);
+            if (_gameMapToggle.Kind == MapInputBindingKind.Mouse && _gameMapToggle.MouseButton == button)
             {
-                var timestamp = Stopwatch.GetTimestamp();
-                var invoked = new MapInputInvokedEventArgs(timestamp);
-                if (isDown
-                    && _quickScan.Kind == MapInputBindingKind.Mouse
-                    && _quickScan.MouseButton == button)
-                    DispatchInput(invoked, "mouse", _quickScan.DisplayName,
-                        "quick-scan", () => QuickScanInvoked?.Invoke(this, invoked));
-                if (isDown
-                    && _overlayToggle.Kind == MapInputBindingKind.Mouse
-                    && _overlayToggle.MouseButton == button)
-                    DispatchInput(invoked, "mouse", _overlayToggle.DisplayName,
-                        "overlay-toggle", () => OverlayToggleInvoked?.Invoke(this, invoked));
-                if (isDown
-                    && _manualRecognition.Kind == MapInputBindingKind.Mouse
-                    && _manualRecognition.MouseButton == button)
-                    DispatchInput(invoked, "mouse", _manualRecognition.DisplayName,
-                        "manual-recognition", () => ManualRecognitionInvoked?.Invoke(this, invoked));
-                if (isDown
-                    && _gameMapToggle.Kind == MapInputBindingKind.Mouse
-                    && _gameMapToggle.MouseButton == button)
-                    DispatchInput(invoked, "mouse", _gameMapToggle.DisplayName,
-                        "game-map-toggle", () => GameMapToggleInvoked?.Invoke(this, invoked));
-                if (isDown
-                    && _controlPanelToggle.Kind == MapInputBindingKind.Mouse
-                    && _controlPanelToggle.MouseButton == button)
-                {
-                    DispatchInput(invoked, "mouse", _controlPanelToggle.DisplayName,
-                        "control-panel-toggle",
-                        () => ControlPanelToggleInvoked?.Invoke(this, invoked));
-                }
-                if (isDown
-                    && _switchFloor.Kind == MapInputBindingKind.Mouse
-                    && _switchFloor.MouseButton == button)
-                {
-                    DispatchInput(invoked, "mouse", _switchFloor.DisplayName,
-                        "switch-floor", () => SwitchFloorInvoked?.Invoke(this, invoked));
-                }
-                if (isDown
-                    && _saveMapCache.Kind == MapInputBindingKind.Mouse
-                    && _saveMapCache.MouseButton == button)
-                {
-                    DispatchInput(invoked, "mouse", _saveMapCache.DisplayName,
-                        "save-map-cache",
-                        () => SaveMapCacheInvoked?.Invoke(this, invoked));
-                }
-                if (isDown
-                    && _restMapDisplay.Kind == MapInputBindingKind.Mouse
-                    && _restMapDisplay.MouseButton == button)
-                {
-                    DispatchInput(invoked, "mouse", _restMapDisplay.DisplayName,
-                        "rest-map-display",
-                        () => RestMapDisplayInvoked?.Invoke(this, invoked));
-                }
-                if (isDown
-                    && _matchStateToggle.Kind == MapInputBindingKind.Mouse
-                    && _matchStateToggle.MouseButton == button)
-                {
-                    DispatchInput(invoked, "mouse", _matchStateToggle.DisplayName,
-                        "match-state-toggle",
-                        () => MatchStateToggleInvoked?.Invoke(this, invoked));
-                }
-                if (isDown
-                    && _hideAlignmentResult.Kind == MapInputBindingKind.Mouse
-                    && _hideAlignmentResult.MouseButton == button)
-                {
-                    DispatchInput(invoked, "mouse", _hideAlignmentResult.DisplayName,
-                        "hide-alignment-result",
-                        () => HideAlignmentResultInvoked?.Invoke(this, invoked));
-                }
-
-                DispatchPluginMouseInput(button, timestamp, isDown);
+                if (IsMarkedInjectedMouse(mouse)) Interlocked.Increment(ref _gameMapHostMouse);
+                else if (isDown) Interlocked.Increment(ref _gameMapMouseDown);
+                else Interlocked.Increment(ref _gameMapMouseUp);
             }
+            if (IsMarkedInjectedMouse(mouse))
+            {
+                lock (_keyboardStateLock)
+                    _keyboardEdges.ObserveHostMouse(mouseKey, isDown, Environment.TickCount64);
+            }
+            else HandleKeyboardState(mouseKey, isDown);
         }
         if ((mouse.Flags & 1) == 0)
             _mouseLatency.Record(mouse.Time, arrival, Stopwatch.GetTimestamp() - started);
@@ -273,6 +217,8 @@ public sealed partial class MapGlobalInputService : IDisposable
             _keyboardPollGeneration++;
             keyboardPoller = _keyboardPoller;
             _keyboardPoller = null;
+            _keyboardPollKeys = [];
+            _keyboardPollKeysDirty = true;
             _keyboardEdges.Clear();
         }
         keyboardPoller?.Dispose();

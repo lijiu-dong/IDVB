@@ -80,11 +80,15 @@ public sealed partial class SessionOrchestrator
                 if (restoreMainContent)
                     _overlay.SetMainContentVisible(false);
             }
-            await RunMapOpenAlignmentCoreAsync(
-                toggle,
-                operationMatch,
-                cancellationToken,
-                independentAlignment);
+            if (_lastRecognition is null && _pendingAlignmentIdentity is null
+                && !_settings!.SelectMapByTagsEnabled)
+                await RunFrontEntranceMapOpenIdentityAsync(toggle, operationMatch, cancellationToken);
+            else
+                await RunMapOpenAlignmentCoreAsync(
+                    toggle,
+                    operationMatch,
+                    cancellationToken,
+                    independentAlignment);
             if (independentAlignment)
                 _overlayStatus.KeepCurrent();
         }
@@ -97,6 +101,12 @@ public sealed partial class SessionOrchestrator
                 $"仅对齐已取消 · matchVersion={operationMatch.Version}");
             outcome = "cancelled";
             terminalReason = "match-cancellation";
+        }
+        catch (IDVBuff.Core.Contracts.Online.RecognitionAuthorizationException)
+        {
+            outcome = "rejected";
+            terminalReason = "usage-authorization-unavailable";
+            NotifyUsageUnavailable();
         }
         catch (Exception ex)
         {
@@ -148,16 +158,22 @@ public sealed partial class SessionOrchestrator
             var operationMatch = _matchSession.Snapshot;
             var cancellationToken = scanExecution.CancellationToken;
             bool acquired;
+            var waitStage = "tracking-drain";
             try
             {
+                LogScanCheckpoint("tracking-drain");
                 await DrainOrbTrackingAsync().WaitAsync(TimeSpan.FromMilliseconds(
                     Math.Max(1, scanExecution.RemainingMilliseconds - 60)), cancellationToken);
+                waitStage = "scan-gate-wait";
+                LogScanCheckpoint("scan-gate-wait");
                 acquired = scanExecution.CanCompute && await _scanGate.WaitAsync(
                     Math.Max(0, scanExecution.RemainingMilliseconds - 60), cancellationToken);
             }
             catch (TimeoutException) { acquired = false; }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
+                LogScanCheckpoint(waitStage, scanExecution.IsSuperseded ? "superseded" : "cancelled",
+                    scanExecution.IsSuperseded ? "new-scan-request" : "scan-cancelled");
                 _logCollector.Append(MapLogCategory.ScanLifecycle, MapLogLevel.Info,
                     "扫描等待已取消", details: new() { ["superseded"] = scanExecution.IsSuperseded,
                         ["matchCurrent"] = IsCurrentMatchOperation(operationMatch) });
@@ -165,6 +181,10 @@ public sealed partial class SessionOrchestrator
             }
             if (!acquired)
             {
+                LogScanCheckpoint(waitStage, scanExecution.IsSuperseded ? "superseded"
+                    : cancellationToken.IsCancellationRequested ? "cancelled" : "timed-out",
+                    scanExecution.IsSuperseded ? "new-scan-request"
+                    : cancellationToken.IsCancellationRequested ? "scan-cancelled" : waitStage + "-deadline");
                 _logCollector.Append(MapLogCategory.ScanLifecycle, MapLogLevel.Warning,
                     "扫描未取得执行锁", details: new() { ["computeStopReason"] = scanExecution.ComputeStopReason,
                         ["gateAvailable"] = _scanGate.CurrentCount, ["activeScans"] = _activeScanOperations });
@@ -175,6 +195,7 @@ public sealed partial class SessionOrchestrator
                 return;
             }
             scanExecution.CatalogRevision = _recognition.CatalogRevision;
+            LogScanCheckpoint("scan-gate-acquired");
             scanExecution.VariantGroups = _recognition.ScanVariantGroups;
 
             var trace = BeginMapOperationTrace(

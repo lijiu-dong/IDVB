@@ -24,6 +24,24 @@ using System.Text;
 Console.OutputEncoding = Encoding.UTF8;
 Console.InputEncoding = Encoding.UTF8;
 
+var startupAccess = await IDVBuff.Features.Accounts.DesktopLoginGateHost.Gate.CheckAccessAsync();
+if (startupAccess.Outcome is not (IDVBuff.Core.Contracts.Online.DesktopAccessOutcome.Granted
+    or IDVBuff.Core.Contracts.Online.DesktopAccessOutcome.GrantedOffline
+    or IDVBuff.Core.Contracts.Online.DesktopAccessOutcome.NotConfigured))
+{
+    Console.Error.WriteLine(startupAccess.Message ?? "请先正常启动 Identity Vision Bridge 并登录。");
+    return 1;
+}
+var access = await IDVBuff.Features.Accounts.VersionAccessClient.CheckAsync(BuildVersionInfo.ProductVersion);
+if (!access.Allowed) { Console.Error.WriteLine(access.Message); return 1; }
+_ = IDVBuff.Features.Accounts.VersionAccessClient.MonitorHeadlessAsync(BuildVersionInfo.ProductVersion);
+
+if (!IDVBuff.Lifecycle.UsageNotice.IsAccepted())
+{
+    Console.Error.WriteLine("请先正常启动 Identity Vision Bridge，阅读并确认软件性质及使用责任声明。");
+    return 1;
+}
+
 // ── DispatcherQueue 初始化 ──
 // 控制台应用没有 WinUI 消息泵，使用 DispatcherQueueController 创建同步调度器。
 // SessionOrchestrator 仅通过 _dispatcher.TryEnqueue() 派发 IGlobalInput 事件回调；
@@ -39,6 +57,8 @@ if (args.Length == 0 || args[0] is "-h" or "--help" or "help")
 }
 
 var command = args[0].ToLowerInvariant();
+using var securityRuntime = IDVBuff.Features.Accounts.DesktopSecurityRuntimeHost.Runtime;
+securityRuntime.Start();
 return command switch
 {
     "run" => await RunSingleAsync(args[1..], dispatcher),

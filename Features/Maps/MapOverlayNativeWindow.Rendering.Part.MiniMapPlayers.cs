@@ -39,27 +39,25 @@ internal static partial class MapOverlayBitmapRenderer
                 var iconPath = MapPlayerAssetCatalog.ResolvePath(player.Slot);
                 if (!File.Exists(iconPath)) continue;
 
-                Bitmap icon;
                 lock (ImageCacheLock)
                 {
-                    icon = GetOrLoadMapImage(iconPath);
-                }
-
-                var playerState = graphics.Save();
-                try
-                {
-                    graphics.TranslateTransform(px, py);
-                    if (rotationDegrees is { } rot && float.IsFinite(rot))
+                    var icon = GetOrLoadPlayerImage(iconPath);
+                    var playerState = graphics.Save();
+                    try
                     {
-                        graphics.RotateTransform(-rot);
+                        graphics.TranslateTransform(px, py);
+                        if (rotationDegrees is { } rot && float.IsFinite(rot))
+                        {
+                            graphics.RotateTransform(-rot);
+                        }
+                        graphics.DrawImage(
+                            icon,
+                            new RectangleF(-half, -half, markerDiameter, markerDiameter));
                     }
-                    graphics.DrawImage(
-                        icon,
-                        new RectangleF(-half, -half, markerDiameter, markerDiameter));
-                }
-                finally
-                {
-                    graphics.Restore(playerState);
+                    finally
+                    {
+                        graphics.Restore(playerState);
+                    }
                 }
             }
         }

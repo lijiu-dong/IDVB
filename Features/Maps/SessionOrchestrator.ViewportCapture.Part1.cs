@@ -1,11 +1,9 @@
 using System.Diagnostics;
 using IDVBuff.Core.Models;
 using IDVBuff.Pipeline;
-
 namespace IDVBuff.Features.Maps;
 public sealed partial class SessionOrchestrator
 {
-
     /// <summary>
     /// 已锁定地图重新开图（仅对齐）专用：不做连续 N 帧稳定等待，改为逐帧用
     /// MapViewportPresenceDetector 相似度判断画面就绪——只要与已记录参考高度
@@ -22,7 +20,8 @@ public sealed partial class SessionOrchestrator
         int structureFallbackFrameCount,
         bool prepareNativeStructure,
         bool prepareVpsg3Structure,
-        AutoFloorCapture? autoFloor = null)
+        AutoFloorCapture? autoFloor = null,
+        Func<CapturedGameFrame, bool>? skipStructurePreparation = null)
     {
         var sessionTuning = _settings!.SessionTuning;
         var captureViewport = autoFloor?.Expand(viewport) ?? viewport;
@@ -58,6 +57,10 @@ public sealed partial class SessionOrchestrator
                 && (shouldContinue?.Invoke() ?? true)
                 && stopwatch.ElapsedMilliseconds <= timeout)
             {
+                // Only the owned signature crosses attempts, not the rejected
+                // full-resolution frame. Preserve the successful frame below.
+                DisposeViewportFrame(lastFrame, attempts);
+                lastFrame = null;
                 attempts++;
                 var captureTimer = Stopwatch.StartNew();
                 var captureSpan = ActiveOperationTrace?.StartChild(
@@ -100,7 +103,6 @@ public sealed partial class SessionOrchestrator
                     if (autoFloor is not null)
                     {
                         current = autoFloor.Extract(current, viewport);
-                        afterSystemTicks = Math.Max(afterSystemTicks, current.CaptureSystemRelativeTicks);
                         var floor = current.DetectedFloorKey ?? _currentFloorKey
                             ?? MapFloorRules.GetPrimaryFloorKey(autoFloor.Map);
                         if (previousFloor != floor)
@@ -118,84 +120,105 @@ public sealed partial class SessionOrchestrator
                             && _recognition.HasPrebuiltStructureLine(autoFloor.Map, floor);
                         prepareVpsg3Structure = _recognition.IsVpsg3Ready(autoFloor.Map, floor);
                     }
-                    DisposeViewportFrame(lastFrame, attempts);
                     lastFrame = current;
                     afterSystemTicks = Math.Max(afterSystemTicks, current.CaptureSystemRelativeTicks);
-                    // 本帧签名同时用于就绪判定和下一帧的明度基线，只能算一次。
-                    var signatureTimer = Stopwatch.StartNew();
-                    var signatureSpan = ActiveOperationTrace?.StartChild(
-                        "signature",
-                        MapOperationWaitKind.Compute,
-                        attemptIndex: attempts);
-                    MapViewportColorSignature signature;
-                    try
-                    {
-                        signature = MapViewportPresenceDetector.CreateSignature(
-                            current.Image);
-                    }
-                    finally
-                    {
-                        signatureSpan?.Complete();
-                    }
-                    signatureTimer.Stop();
-                    var presenceReference =
-                        GetCurrentMapViewportPresenceReference(current.DetectedFloorKey);
+                    var floorIndicatorPending = autoFloor is not null && current.DetectedFloorKey is null;
                     double? referenceStructureSimilarity = null;
                     double? consecutiveStructureSimilarity = null;
-                    lastPresence = MapViewportPresenceDetector.EvaluateReady(
-                        signature,
-                        presenceReference,
-                        previousSignature,
-                        requireStructure: requireStructureReadiness,
-                        requiredStableStructureFrames:
-                            Math.Clamp(structureFallbackFrameCount, 2, 5),
-                        observedStableStructureFrames: stableStructureFrames);
-                    if (requireStructureReadiness)
+                    var signatureDuration = 0d;
+                    if (floorIndicatorPending)
                     {
-                        // This counter measures whether the opening animation
-                        // has settled, so compare consecutive live frames. The
-                        // saved reference belongs to an earlier alignment and
-                        // may legitimately have a different translation; using
-                        // it here permanently pins the counter at one after the
-                        // map recenters.
-                        if (signature.Structure is { } currentStructure
-                            && presenceReference?.Structure is { } referenceStructure)
+                        // This same-frame prerequisite always vetoed the result
+                        // below. Reject before resizing or extracting a signature
+                        // from an animation/gameplay frame that cannot be used.
+                        lastPresence = new(false, "floor-indicator-pending", 0d, 0d);
+                        previousSignature = null;
+                        stableStructureFrames = 0;
+                    }
+                    else
+                    {
+                        var presenceReference =
+                            GetCurrentMapViewportPresenceReference(current.DetectedFloorKey);
+                        var floorIndicatorReadiness = autoFloor is not null
+                            && current.DetectedFloorKey is not null
+                            && presenceReference is null
+                            && (prepareNativeStructure || prepareVpsg3Structure);
+                        if (floorIndicatorReadiness) requireStructureReadiness = true;
+                        // 本帧签名同时用于就绪判定和下一帧的明度基线，只能算一次。
+                        var signatureTimer = Stopwatch.StartNew();
+                        var signatureSpan = ActiveOperationTrace?.StartChild(
+                            "signature",
+                            MapOperationWaitKind.Compute,
+                            attemptIndex: attempts);
+                        MapViewportColorSignature signature;
+                        try
                         {
-                            referenceStructureSimilarity =
-                                MapViewportPresenceDetector.StructureSimilarity(
-                                    currentStructure,
-                                    referenceStructure);
+                            signature = MapViewportPresenceDetector.CreateSignature(
+                                current.Image, includeStructure: requireStructureReadiness);
                         }
-                        if (signature.Structure is { } liveStructure
-                            && previousSignature?.Structure is { } previousStructure)
+                        finally
                         {
-                            consecutiveStructureSimilarity =
-                                MapViewportPresenceDetector.StructureSimilarity(
-                                    liveStructure,
-                                    previousStructure);
+                            signatureSpan?.Complete();
                         }
-                        var structureIsConsistent =
-                            consecutiveStructureSimilarity >= 0.90d;
-                        stableStructureFrames = structureIsConsistent
-                            ? stableStructureFrames + 1
-                            : 1;
+                        signatureTimer.Stop();
                         lastPresence = MapViewportPresenceDetector.EvaluateReady(
                             signature,
                             presenceReference,
                             previousSignature,
-                            requireStructure: true,
+                            requireStructure: requireStructureReadiness,
                             requiredStableStructureFrames:
                                 Math.Clamp(structureFallbackFrameCount, 2, 5),
-                            observedStableStructureFrames: stableStructureFrames);
+                            observedStableStructureFrames: stableStructureFrames,
+                            floorIndicatorVerified: floorIndicatorReadiness);
+                        if (requireStructureReadiness)
+                        {
+                            // This counter measures whether the opening animation
+                            // has settled, so compare consecutive live frames. The
+                            // saved reference belongs to an earlier alignment and
+                            // may legitimately have a different translation; using
+                            // it here permanently pins the counter at one after the
+                            // map recenters.
+                            if (signature.Structure is { } currentStructure
+                                && presenceReference?.Structure is { } referenceStructure)
+                            {
+                                referenceStructureSimilarity =
+                                    MapViewportPresenceDetector.StructureSimilarity(
+                                        currentStructure,
+                                        referenceStructure);
+                            }
+                            if (signature.Structure is { } liveStructure
+                                && previousSignature?.Structure is { } previousStructure)
+                            {
+                                consecutiveStructureSimilarity =
+                                    MapViewportPresenceDetector.StructureSimilarity(
+                                        liveStructure,
+                                        previousStructure);
+                            }
+                            var structureIsConsistent =
+                                consecutiveStructureSimilarity >= 0.90d;
+                            stableStructureFrames = structureIsConsistent
+                                ? stableStructureFrames + 1
+                                : 1;
+                            lastPresence = MapViewportPresenceDetector.EvaluateReady(
+                                signature,
+                                presenceReference,
+                                previousSignature,
+                                requireStructure: true,
+                                requiredStableStructureFrames:
+                                    Math.Clamp(structureFallbackFrameCount, 2, 5),
+                                observedStableStructureFrames: stableStructureFrames,
+                                floorIndicatorVerified: floorIndicatorReadiness);
+                        }
+                        previousSignature = signature;
+                        signatureDuration = signatureTimer.Elapsed.TotalMilliseconds;
                     }
-                    previousSignature = signature;
                     captureMilliseconds += captureTimer.Elapsed.TotalMilliseconds;
-                    signatureMilliseconds +=
-                        signatureTimer.Elapsed.TotalMilliseconds;
+                    signatureMilliseconds += signatureDuration;
                     if (lastPresence.IsPresent)
                     {
+                        var reuseFrame = skipStructurePreparation?.Invoke(current) == true;
                         var structureTimer = Stopwatch.StartNew();
-                        if (prepareNativeStructure || prepareVpsg3Structure)
+                        if (!reuseFrame && (prepareNativeStructure || prepareVpsg3Structure))
                         {
                             using var structureSpan = ActiveOperationTrace?.StartChild(
                                 "native_contour", MapOperationWaitKind.Compute, attemptIndex: attempts);
@@ -232,8 +255,9 @@ public sealed partial class SessionOrchestrator
                                 ["presenceRejections"] = presenceRejections,
                                 ["readyWaitMs"] = stopwatch.Elapsed.TotalMilliseconds,
                                 ["captureBackend"] = current.CaptureBackend,
+                                ["unchangedFrameReused"] = reuseFrame,
                                 ["nativeContourMs"] = structureTimer.Elapsed.TotalMilliseconds,
-                                ["nativeFrameToContourMs"] = current.CaptureSystemRelativeTicks > 0
+                                ["nativeFrameToContourMs"] = !reuseFrame && current.CaptureSystemRelativeTicks > 0
                                     ? Stopwatch.GetTimestamp() * 1000d / Stopwatch.Frequency
                                         - current.CaptureSystemRelativeTicks / (double)TimeSpan.TicksPerMillisecond
                                     : null,
@@ -269,8 +293,8 @@ public sealed partial class SessionOrchestrator
                         MapLogCategory.ViewportCapture,
                         MapLogLevel.Info,
                         $"画面未就绪 · op={operation} · mode={lastPresence.Mode} "
-                        + $"· score={lastPresence.Score:F4} "
-                        + $"· blueGray={lastPresence.BlueGrayFraction:F4}",
+                        + (floorIndicatorPending ? "· signature=skipped"
+                            : $"· score={lastPresence.Score:F4} · blueGray={lastPresence.BlueGrayFraction:F4}"),
                         elapsedMs: stopwatch.Elapsed.TotalMilliseconds,
                         details: new()
                         {
@@ -278,7 +302,8 @@ public sealed partial class SessionOrchestrator
                             ["attempts"] = attempts,
                             ["captureMs"] = captureTimer.Elapsed.TotalMilliseconds,
                             ["signatureMs"] = signatureMilliseconds,
-                            ["mapPresenceScore"] = lastPresence.Score,
+                            ["signatureSkipped"] = floorIndicatorPending,
+                            ["mapPresenceScore"] = floorIndicatorPending ? null : lastPresence.Score,
                             ["referenceStructureSimilarity"] =
                                 referenceStructureSimilarity,
                             ["consecutiveStructureSimilarity"] =
@@ -346,21 +371,33 @@ public sealed partial class SessionOrchestrator
                     captureTimedOut: !cancellationToken.IsCancellationRequested && (shouldContinue?.Invoke() ?? true));
             }
 
+            var readinessStopReason = _disposed ? "disposed"
+                : cancellationToken.IsCancellationRequested ? "cancelled"
+                : !(shouldContinue?.Invoke() ?? true) ? "superseded" : "deadline-exceeded";
             _logCollector.Append(
                 MapLogCategory.ViewportCapture,
                 MapLogLevel.Warning,
-                $"画面就绪确认超时 · op={operation} · attempts={attempts} "
+                $"画面就绪确认未通过 · reason={readinessStopReason} · op={operation} · attempts={attempts} "
                 + $"· captures={successfulCaptures} · lastMode={lastPresence?.Mode} "
                 + $"· lastScore={lastPresence?.Score:F4}",
                 elapsedMs: stopwatch.Elapsed.TotalMilliseconds,
                 details: new()
                 {
                     ["operation"] = operation,
+                    ["stopReason"] = readinessStopReason,
+                    ["timeoutMs"] = timeout,
+                    ["checks"] = lastPresence?.Checks,
+                    ["requestedViewport"] = viewport,
+                    ["captureViewport"] = captureViewport,
+                    ["clientBounds"] = lastFrame?.ClientBounds,
+                    ["viewportBounds"] = lastFrame?.ViewportBounds,
+                    ["detectedFloor"] = autoFloor?.FloorKey,
                     ["attempts"] = attempts,
                     ["successfulCaptures"] = successfulCaptures,
                     ["mapPresenceMode"] = lastPresence?.Mode,
-                    ["mapPresenceScore"] = lastPresence?.Score,
-                    ["blueGrayFraction"] = lastPresence?.BlueGrayFraction,
+                    ["signatureSkipped"] = lastPresence?.Mode == "floor-indicator-pending",
+                    ["mapPresenceScore"] = lastPresence?.Mode == "floor-indicator-pending" ? null : lastPresence?.Score,
+                    ["blueGrayFraction"] = lastPresence?.Mode == "floor-indicator-pending" ? null : lastPresence?.BlueGrayFraction,
                     ["presenceRejections"] = presenceRejections,
                     ["captureFailureReason"] = _lastStableCaptureFailureReason
                     ,["floorIndicatorGroup"] = autoFloor?.Group.Key
@@ -379,94 +416,33 @@ public sealed partial class SessionOrchestrator
         }
     }
 
-    private static void DisposeViewportFrame(IDisposable? frame, int attemptIndex)
-    {
-        if (frame is null)
-            return;
-
-        var dispose = MapOperationTraceAmbient.StartChild(
-            "frame_dispose",
-            MapOperationWaitKind.Io,
-            attemptIndex: attemptIndex);
-        try
-        {
-            frame.Dispose();
-        }
-        finally
-        {
-            dispose.Complete();
-        }
-    }
-
-    private MapViewportColorSignature? GetCurrentMapViewportPresenceReference(string? detectedFloor = null)
-    {
-        var identity = _lastRecognition ?? _pendingAlignmentIdentity;
-        if (identity is null)
-            return null;
-        var floorKey = detectedFloor ?? _currentFloorKey
-            ?? identity.Result.Floor
-            ?? MapFloorRules.GetPrimaryFloorKey(identity.Map);
-        var key = new MapViewportReferenceKey(
-            identity.Map.Id,
-            NormalizeMapViewportFloorKey(floorKey));
-        lock (_mapViewportReferenceGate)
-        {
-            return _mapViewportReferences.GetValueOrDefault(key);
-        }
-    }
-
-    private void RememberMapViewportPresenceReference(
-        RuntimeMapRecognition recognition,
-        CapturedGameFrame frame)
-    {
-        var key = new MapViewportReferenceKey(
-            recognition.Map.Id,
-            NormalizeMapViewportFloorKey(recognition.Result.Floor));
-        var signature = MapViewportPresenceDetector.CreateSignature(frame.Image);
-        lock (_mapViewportReferenceGate)
-        {
-            _mapViewportReferences[key] = signature;
-        }
-    }
-
-    private void ClearMapViewportPresenceReferences()
-    {
-        lock (_mapViewportReferenceGate)
-        {
-            _mapViewportReferences.Clear();
-        }
-    }
-
-    private static string NormalizeMapViewportFloorKey(string? floorKey) =>
-        string.IsNullOrWhiteSpace(floorKey)
-            ? "1f"
-            : floorKey.Trim().ToLowerInvariant();
-
-    private readonly record struct MapViewportReferenceKey(
-        Guid MapId,
-        string FloorKey);
-
     private NormalizedRectangle ResolveMapViewportForCurrentWindow()
     {
         if (_captureSvc.TryGetForegroundClientBounds(
                 out var clientBounds,
-                out _,
+                out var windowHandle,
                 out _)
             && clientBounds is MapScreenRect physicalBounds)
         {
-            return ResolveViewportRegion(
+            var region = ResolveViewportRegion(
                 (int)Math.Round(physicalBounds.Width),
-                (int)Math.Round(physicalBounds.Height));
+                (int)Math.Round(physicalBounds.Height),
+                out var source);
+            if (physicalBounds.IsValid)
+                RecordMapViewportResolution(physicalBounds, windowHandle, region, source);
+            return region;
         }
 
-        return ResolveViewportRegion(0, 0);
+        IDVBuff.Diagnostics.OutputLog.ClearCaptureContext();
+        return ResolveViewportRegion(0, 0, out _);
     }
 
     /// <summary>
     /// 解析地图视口区域：活跃预设的 viewport.toml 优先，
-    /// 缺失则回退 settings.json 的按分辨率 / 全局校准，最后整帧。
+    /// 缺失则回退 settings.json 的按分辨率 / 全局校准，
+    /// 都没有时按游戏参考画布的等比居中布局推算，无需用户校准。
     /// </summary>
-    private NormalizedRectangle ResolveViewportRegion(int width, int height)
+    private NormalizedRectangle ResolveViewportRegion(int width, int height, out string source)
     {
         var toml = _config.Get<ViewportCalibrationConfig>("viewport");
         if (toml.ClientWidth == width
@@ -474,6 +450,7 @@ public sealed partial class SessionOrchestrator
             && toml.MapRegionWidth >= 0.01
             && toml.MapRegionHeight >= 0.01)
         {
+            source = MapViewportSourcePreset;
             return new NormalizedRectangle
             {
                 X = toml.MapRegionX,
@@ -483,7 +460,15 @@ public sealed partial class SessionOrchestrator
             };
         }
 
-        return _settings!.ResolveMapViewportRegion(width, height)
-            ?? new NormalizedRectangle { X = 0, Y = 0, Width = 1, Height = 1 };
+        if (_settings!.ResolveMapViewportRegion(width, height) is { } calibrated)
+        {
+            source = MapViewportSourceManual;
+            return calibrated;
+        }
+
+        source = width > 0 && height > 0
+            ? MapViewportSourceLayout
+            : MapViewportSourceWholeClient;
+        return MapDisplayCalibrationProfile.CreateDefaultMapViewportRegion(width, height);
     }
 }

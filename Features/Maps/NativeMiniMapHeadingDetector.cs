@@ -19,8 +19,8 @@ public sealed class NativeMiniMapHeadingDetector : IDisposable
         {
             foreach (var slot in MapPlayerAssetCatalog.Slots)
             {
-                using var source = Cv2.ImDecode(File.ReadAllBytes(
-                    (resolvePath ?? MapPlayerAssetCatalog.ResolvePath)(slot)), ImreadModes.Grayscale);
+                using var source = RecognitionAssetReader.Decode(
+                    (resolvePath ?? MapPlayerAssetCatalog.ResolvePath)(slot), ImreadModes.Grayscale);
                 if (source.Empty()) throw new IOException($"玩家序号模板为空：{slot}");
                 foreach (var scale in PlayerTrackingRules.TemplateScaleCandidates)
                 {
@@ -40,6 +40,7 @@ public sealed class NativeMiniMapHeadingDetector : IDisposable
 
     public NativeMiniMapHeading? Detect(Mat image, out string reason)
     {
+        IDVBuff.Core.Contracts.Online.RecognitionResources.Demand();
         reason = "marker_not_found";
         if (image.Empty() || image.Channels() is not (3 or 4)) return null;
         using var bgr = new Mat();

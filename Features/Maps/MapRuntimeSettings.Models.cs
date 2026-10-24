@@ -5,12 +5,12 @@ namespace IDVBuff.Features.Maps;
 /// <summary>Persisted runtime configuration for the 解锁地图 status module.</summary>
 public sealed partial class MapRuntimeSettings
 {
-    public const int CurrentSchemaVersion = 21;
+    public const int CurrentSchemaVersion = 22;
     public const int CurrentCalibrationVersion = MapRuntimeSettingsRules.CurrentCalibrationVersion;
 
     public int SchemaVersion { get; set; } = CurrentSchemaVersion;
     public bool IsEnabled { get; set; }
-    /// <summary>Repeatedly observe an open map until its identity is confirmed; opt-in only.</summary>
+    /// <summary>持续观察已由普通开图的正门自动识别取代；保留字段仅为兼容旧设置，始终为 false。</summary>
     public bool ContinuousObservationEnabled { get; set; }
     public ScanPerformanceMode ScanPerformanceMode { get; set; } = ScanPerformanceMode.Balanced;
     public ScanUncertainAction ScanUncertainAction { get; set; } = ScanUncertainAction.ShowCandidates;
@@ -49,7 +49,7 @@ public sealed partial class MapRuntimeSettings
     public string? LastSelectedMapClass { get; set; }
     public bool ShowOverlayStatus { get; set; } = true;
     public bool CollectLogs { get; set; }
-    public bool DiagnosticModeEnabled { get; set; }
+    public bool DiagnosticModeEnabled { get; set; } = true;
     public bool CollectAlignmentResearchData { get; set; }
     public MapCandidateDecisionMode CandidateDecisionMode { get; set; } =
         MapCandidateDecisionMode.Traditional;
@@ -70,6 +70,8 @@ public sealed partial class MapRuntimeSettings
     public double MapOpacity { get; set; } = 0.46d;
     /// <summary>显示受当前地图类能力声明保护的矢量路线。</summary>
     public bool ShowRoutes { get; set; } = true;
+    /// <summary>Opacity of vector route content, independent of the map raster.</summary>
+    public double RouteOpacity { get; set; } = 1d;
     /// <summary>线路粗细：0 细（原始宽度）、1 中、2 粗、3 更粗。</summary>
     public int RouteLineThickness { get; set; } = 1;
     // Compatibility fields retained for older settings files. ShowRoutes is
@@ -147,7 +149,7 @@ public sealed partial class MapRuntimeSettings
         EnableContinuousAlignment = false,
         ShowOverlayStatus = true,
         CollectLogs = false,
-        DiagnosticModeEnabled = false,
+        DiagnosticModeEnabled = true,
         CollectAlignmentResearchData = false,
         CandidateDecisionMode = MapCandidateDecisionMode.Traditional,
         ContinuousMapLearningEnabled = false,
@@ -161,6 +163,7 @@ public sealed partial class MapRuntimeSettings
         ReverseAlternateDisplay = false,
         MapOpacity = 0.46d,
         ShowRoutes = true,
+        RouteOpacity = 1d,
         ShowGateMarkers = true,
         ShowAuxiliaryAnchors = false,
         ShowTextAnnotations = true,
@@ -421,6 +424,7 @@ public sealed partial class MapRuntimeSettings
         MapOpacity = MapOpacity,
         RouteLineThickness = RouteLineThickness,
         ShowRoutes = ShowRoutes,
+        RouteOpacity = RouteOpacity,
         ShowGateMarkers = ShowGateMarkers,
         ShowAuxiliaryAnchors = ShowAuxiliaryAnchors,
         ShowTextAnnotations = ShowTextAnnotations,

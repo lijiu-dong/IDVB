@@ -4,6 +4,8 @@
         <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
         <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
         <OutputType>WinExe</OutputType>
+        <!-- Old Windows 10/11 builds on CET-capable CPUs fail fast with "Your Windows doesn't fully support CET". -->
+        <CetCompat>false</CetCompat>
 
         <!-- WinUI 3 -->
         <UseWinUI>true</UseWinUI>
@@ -30,11 +32,11 @@
         <Product>Identity Vision Bridge</Product>
         <Company>Identity Vision Bridge</Company>
         <!-- Canonical SemVer product identity. The UI adds the conventional v prefix. -->
-        <IDVBProductVersion>1.6.5-stable</IDVBProductVersion>
-        <IDVBReleaseLine>b01.6</IDVBReleaseLine>
+        <IDVBProductVersion>1.7.1-preview.3</IDVBProductVersion>
+        <IDVBReleaseLine>b01.7</IDVBReleaseLine>
         <Version>$(IDVBProductVersion)</Version>
-        <AssemblyVersion>1.6.5.0</AssemblyVersion>
-        <FileVersion>1.6.5.0</FileVersion>
+        <AssemblyVersion>1.7.1.0</AssemblyVersion>
+        <FileVersion>1.7.1.0</FileVersion>
         <InformationalVersion>$(IDVBProductVersion)</InformationalVersion>
         <UseSystemDrawing>true</UseSystemDrawing>
         <Configurations>Debug;Release;Test</Configurations>
@@ -55,21 +57,29 @@
         <DefaultItemExcludes>$(DefaultItemExcludes);Tools\**;**\obj\**;**\bin\**</DefaultItemExcludes>
     </PropertyGroup>
 
+    <PropertyGroup Condition="'$(IDVBDevelopmentBuild)' == 'true'">
+        <DefineConstants>$(DefineConstants);IDVB_DEVELOPMENT_BUILD</DefineConstants>
+    </PropertyGroup>
+
     <PropertyGroup Condition="'$(Configuration)' == 'Test'">
         <DefineConstants>$(DefineConstants);IDVBUFF_TEST_BUILD</DefineConstants>
         <AssemblyName>IDVB.Test</AssemblyName>
     </PropertyGroup>
 
     <ItemGroup>
+        <Using Include="IDVBuff.Presentation.Theming" />
         <FrameworkReference Include="Microsoft.WindowsDesktop.App.WindowsForms" />
         <ProjectReference Include="Core\IDVBuff.Core.csproj" />
+        <ProjectReference Include="IDVB.ScanRaster\IDVB.ScanRaster.csproj" />
+        <ProjectReference Include="IDVB.Vision\IDVB.Vision.csproj" Aliases="VisionEngine" />
+        <ProjectReference Include="IDVBuff.Appearance\IDVBuff.Appearance.csproj" />
         <ProjectReference Include="Infrastructure\IDVBuff.Infrastructure.csproj" />
         <ProjectReference Include="Services\IDVBuff.Services.csproj" />
         <ProjectReference Include="Pipeline\IDVBuff.Pipeline.csproj" />
         <ProjectReference Include="IDVBuff.ModuleContracts\IDVBuff.ModuleContracts.csproj" />
         <ProjectReference Include="UpdateCore\IDVBuff.UpdateCore.csproj" />
         <ProjectReference Include="Updater\IDVBuff.Updater.csproj"
-                          ReferenceOutputAssembly="false" />
+                          ReferenceOutputAssembly="false" Private="false" />
         <ProjectReference Include="Survey\Domain\IDVBuff.Survey.Domain.csproj" />
         <ProjectReference Include="Survey\Contracts\IDVBuff.Survey.Contracts.csproj" />
         <ProjectReference Include="Survey\Application\IDVBuff.Survey.Application.csproj" />
@@ -92,6 +102,8 @@
         <ProjectReference Include="Plugins\DynamicMiniMapZoom\IDVBuff.DynamicMiniMapZoom.csproj" />
         <ProjectReference Include="Plugins\LiveMode\IDVBuff.LiveMode.csproj" />
         <ProjectReference Include="Plugins\CustomPhrases\IDVBuff.CustomPhrases.csproj" />
+        <ProjectReference Include="Plugins\SceneQuickActions\IDVBuff.SceneQuickActions.csproj" />
+        <ProjectReference Include="Plugins\MatchHotkeys\IDVBuff.MatchHotkeys.csproj" />
 
         <Content Include="Assets\SplashScreen.scale-200.png" CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Assets\LockScreenLogo.scale-200.png" CopyToOutputDirectory="PreserveNewest" />
@@ -104,6 +116,10 @@
         <Content Include="Assets\Icons\*.png" CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Assets\Algorithms\structure-zongcai-native-reference-v1.idva"
                  CopyToOutputDirectory="PreserveNewest" />
+        <Content Include="Assets\Games\*.png" CopyToOutputDirectory="PreserveNewest" />
+        <!-- Co-creation templates are installed by users from independent .idvmx packages. -->
+        <Content Remove="Assets\CoCreationTemplates\**\*" />
+        <None Remove="Assets\CoCreationTemplates\**\*" />
         <Content Include="Assets\Algorithms\structure-native-observed-v2.idva"
                  CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Assets\Algorithms\structure-doom-girl-hard-wangqingxin-v1.idva"
@@ -111,7 +127,18 @@
         <Content Include="Assets\FloorIndicators\**\*" CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Assets\Guide\*.png" CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Assets\Markdown\**\*" CopyToOutputDirectory="PreserveNewest" />
+        <!-- Payment artwork is read only from verified assembly resources, never loose files. -->
+        <Content Remove="Assets\Sponsorship\*.png" />
+        <None Remove="Assets\Sponsorship\*.png" />
+        <EmbeddedResource Include="Assets\Sponsorship\*.png"
+                          LogicalName="IDVB.Sponsorship.%(Filename)%(Extension)" />
         <Content Include="LICENSE" CopyToOutputDirectory="PreserveNewest" />
+        <EmbeddedResource Include="LICENSE" LogicalName="IDVB.Legal.LICENSE.txt" />
+        <EmbeddedResource Include="TERMS.md" LogicalName="IDVB.Legal.TERMS.txt" />
+        <Content Remove="Assets\ThirdParty\**\*" />
+        <None Remove="Assets\ThirdParty\**\*" />
+        <EmbeddedResource Include="Assets\ThirdParty\**\*"
+                          LogicalName="IDVB.ThirdParty.%(Filename)%(Extension)" />
         <Content Include="release\trust\idvb-update-2026-01.pem"
                  Link="MapTrust\idvb-update-2026-01.pem"
                  CopyToOutputDirectory="PreserveNewest" />
@@ -137,11 +164,19 @@
 
     <ItemGroup>
         <Compile Remove="Core\**\*.cs" />
+        <Compile Remove="IDVB.ScanRaster\**\*.cs" />
+        <Compile Remove="IDVB.Vision.Contracts\**\*.cs" />
+        <Compile Remove="IDVB.Vision\**\*.cs" />
+        <Compile Remove="IDVB.Vision.Tests\**\*.cs" />
+        <Compile Remove="IDVBuff.Appearance\**\*.cs" />
         <Compile Remove="Infrastructure\**\*.cs" />
         <Compile Remove="Services\**\*.cs" />
         <Compile Remove="Pipeline\**\*.cs" />
         <Compile Remove="IDVBuff.ModuleContracts\**\*.cs" />
         <Compile Remove="IDVBuff.Tests\**\*.cs" />
+        <Compile Remove="IDVBuff.WinUI.RegressionTests\**\*.cs" />
+        <Page Remove="IDVBuff.WinUI.RegressionTests\**\*.xaml" />
+        <ApplicationDefinition Remove="IDVBuff.WinUI.RegressionTests\**\*.xaml" />
         <Compile Remove="IDVBuff.MapAlignment.Probe\**\*.cs" />
         <Compile Remove="IDVBuff.RealCLI\**\*.cs" />
         <!-- The desktop client only collects and uploads training samples.
@@ -189,6 +224,9 @@
         <Page Remove=".claude\**\*.xaml" />
         <Page Remove="scratch\**\*.xaml" />
         <Page Include="Views\MainPage.xaml" />
+        <Page Include="Views\SponsorshipPlanDialog.xaml" />
+        <Page Include="Views\AccountMenu.xaml" />
+        <Page Include="Views\EntitlementRedemptionDialog.xaml" />
         <None Remove="IDVBuff.slnx" />
     </ItemGroup>
 

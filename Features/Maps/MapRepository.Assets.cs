@@ -1,5 +1,6 @@
 using OpenCvSharp;
 using System.Security.Cryptography;
+using IDVBuff.Core.Diagnostics;
 
 namespace IDVBuff.Features.Maps;
 
@@ -51,19 +52,61 @@ public sealed partial class MapRepository
     private static Task CreateThumbnailAsync(string sourcePath, string destinationPath) =>
         Task.Run(() =>
         {
-            using var source = DecodeImage(sourcePath);
-            if (source.Empty())
-                throw new InvalidOperationException($"Image cannot be read: '{sourcePath}'.");
-
-            using var bgr = MapBackgroundProcessor.CompositeToBgr(source);
-            const int maxWidth = 400;
-            var width = Math.Min(maxWidth, bgr.Width);
-            var height = Math.Max(1, (int)Math.Round(bgr.Height * (width / (double)bgr.Width)));
-            using var thumbnail = new Mat();
-            Cv2.Resize(bgr, thumbnail, new Size(width, height), 0, 0, InterpolationFlags.Area);
-            if (!Cv2.ImWrite(destinationPath, thumbnail, [new ImageEncodingParam(ImwriteFlags.JpegQuality, 82)]))
-                throw new InvalidOperationException($"Image cannot be written: '{destinationPath}'.");
+            using var operation = MemoryJournal.BeginOperation("Thumbnail.Generate", sourcePath);
+            Mat? source = null, bgr = null, thumbnail = null;
+            try
+            {
+                source = DecodeImage(sourcePath);
+                if (source.Empty())
+                    throw new InvalidOperationException($"Image cannot be read: '{sourcePath}'.");
+                TrackThumbnailRaster(source, "DecodedInput");
+                if (source.Type() == MatType.CV_8UC4)
+                {
+                    bgr = MapBackgroundProcessor.CompositeExclusiveBgraToBgr(source);
+                    var request = MemoryJournal.Request("Thumbnail.PackedBgrView", 0, "OpenCvSharpExtern.dll");
+                    MemoryJournal.TrackResource(bgr, "Thumbnail.PackedBgrView", 0, "OpenCvSharpExtern.dll", request);
+                }
+                else
+                {
+                    bgr = MapBackgroundProcessor.CompositeToBgr(source);
+                    TrackThumbnailRaster(bgr, "CompositeBgr");
+                    ReleaseThumbnailRaster(ref source);
+                }
+                const int maxWidth = 400;
+                var width = Math.Min(maxWidth, bgr.Width);
+                var height = Math.Max(1, (int)Math.Round(bgr.Height * (width / (double)bgr.Width)));
+                thumbnail = new Mat();
+                Cv2.Resize(bgr, thumbnail, new Size(width, height), 0, 0, InterpolationFlags.Area);
+                TrackThumbnailRaster(thumbnail, "Resized");
+                ReleaseThumbnailRaster(ref bgr);
+                ReleaseThumbnailRaster(ref source);
+                if (!Cv2.ImWrite(destinationPath, thumbnail, [new ImageEncodingParam(ImwriteFlags.JpegQuality, 82)]))
+                    throw new InvalidOperationException($"Image cannot be written: '{destinationPath}'.");
+            }
+            finally
+            {
+                ReleaseThumbnailRaster(ref thumbnail);
+                ReleaseThumbnailRaster(ref bgr);
+                ReleaseThumbnailRaster(ref source);
+            }
         });
+
+    private static void ReleaseThumbnailRaster(ref Mat? raster)
+    {
+        if (raster is null) return;
+        var released = raster;
+        released.Dispose();
+        raster = null;
+        MemoryJournal.ReleaseResource(released);
+    }
+
+    private static void TrackThumbnailRaster(Mat raster, string name)
+    {
+        var resource = "Thumbnail." + name;
+        var bytes = raster.Total() * raster.ElemSize();
+        var request = MemoryJournal.Request(resource, bytes, "OpenCvSharpExtern.dll");
+        MemoryJournal.TrackResource(raster, resource, bytes, "OpenCvSharpExtern.dll", request);
+    }
 
     private static async Task PopulateThumbnailMetadataAsync(
         FloorDefinition floor,
@@ -78,12 +121,11 @@ public sealed partial class MapRepository
         floor.ThumbnailLastWriteUtcTicks = metadata.LastWriteUtcTicks;
     }
 
-    private static void CopyRepairedMetadata(
-        FloorDefinition source,
-        FloorDefinition destination)
+    private void CopyRepairedMetadata(MapRecord map, FloorDefinition source,
+        FloorDefinition destination, RepairMetadataInput input)
     {
-        if (destination.ImageFileLength <= 0
-            || destination.ImageLastWriteUtcTicks <= 0)
+        if (input.Image == AssetMetadata.Image(destination)
+            && HasMatchingFileStamp(GetFloorImagePath(map, destination.Key), source.ImageFileLength, source.ImageLastWriteUtcTicks))
         {
             destination.ImageSha256 = source.ImageSha256;
             destination.ImageWidth = source.ImageWidth;
@@ -92,8 +134,10 @@ public sealed partial class MapRepository
             destination.ImageLastWriteUtcTicks = source.ImageLastWriteUtcTicks;
         }
 
-        if (destination.ThumbnailFileLength <= 0
-            || destination.ThumbnailLastWriteUtcTicks <= 0)
+        if (input.Thumbnail == AssetMetadata.Thumbnail(destination)
+            && input.RecognitionFile == destination.RecognitionFileName
+            && input.RecognitionHash == destination.RecognitionSha256
+            && HasMatchingFileStamp(GetOriginalFloorThumbnailPath(map, destination.Key), source.ThumbnailFileLength, source.ThumbnailLastWriteUtcTicks))
         {
             destination.ThumbnailFileName = source.ThumbnailFileName;
             destination.ThumbnailSha256 = source.ThumbnailSha256;
@@ -126,39 +170,6 @@ public sealed partial class MapRepository
             floor.ImageFileLength = metadata.FileLength;
             floor.ImageLastWriteUtcTicks = metadata.LastWriteUtcTicks;
         }
-    }
-
-    private static bool MatchesStoredDerivedMetadata(
-        string path,
-        string expectedSha256,
-        int expectedWidth,
-        int expectedHeight,
-        long expectedFileLength,
-        long expectedLastWriteUtcTicks,
-        string expectedSourceSha256,
-        bool requiresFile)
-    {
-        if (string.IsNullOrWhiteSpace(expectedSha256)
-            || string.IsNullOrWhiteSpace(expectedSourceSha256)
-            || expectedWidth <= 0
-            || expectedHeight <= 0)
-            return false;
-        if (requiresFile && !File.Exists(path))
-            return false;
-        if (!File.Exists(path))
-            return string.Equals(path, expectedSourceSha256, StringComparison.OrdinalIgnoreCase);
-
-        var info = new FileInfo(path);
-        if (expectedFileLength > 0
-            && expectedLastWriteUtcTicks > 0
-            && info.Length == expectedFileLength
-            && info.LastWriteTimeUtc.Ticks == expectedLastWriteUtcTicks)
-            return true;
-
-        var actual = ReadImageMetadataAsync(path).GetAwaiter().GetResult();
-        return string.Equals(actual.Sha256, expectedSha256, StringComparison.OrdinalIgnoreCase)
-            && actual.Width == expectedWidth
-            && actual.Height == expectedHeight;
     }
 
     private static async Task PopulateDerivedImageMetadataAsync(
@@ -194,9 +205,12 @@ public sealed partial class MapRepository
 
     private static async Task<FloorImageMetadata> ReadImageMetadataAsync(string path)
     {
-        using var image = DecodeImage(path);
-        if (image.Empty())
-            throw new InvalidOperationException($"Image cannot be decoded: '{path}'.");
+        (int Width, int Height) image;
+        try { image = MapImageFileValidation.ValidateImageFile(path, CancellationToken.None); }
+        catch (Exception exception) when (exception is InvalidDataException or EndOfStreamException)
+        {
+            throw new InvalidOperationException($"Image cannot be decoded: '{path}'.", exception);
+        }
 
         await using var stream = File.OpenRead(path);
         var hash = await SHA256.HashDataAsync(stream);
@@ -216,29 +230,68 @@ public sealed partial class MapRepository
         long FileLength,
         long LastWriteUtcTicks);
 
-    private static void CreateRecognitionAssets(
+    private static bool CreateRecognitionAssets(
         string sourcePath,
         string destinationPath,
         FloorRecognitionProfile profile,
         string? overlayPath,
         bool removeBackground = false,
-        int backgroundRemovalIntensity = MapBackgroundProcessor.DefaultBackgroundRemovalIntensity)
+        int backgroundRemovalIntensity = MapBackgroundProcessor.DefaultBackgroundRemovalIntensity,
+        string? thumbnailPath = null)
     {
-        using var source = DecodeImage(sourcePath);
-        if (source.Empty())
-            throw new InvalidOperationException("无法读取地图原图以生成识别区域。");
-        using var processed = MapBackgroundProcessor.Process(
-            source,
-            profile,
-            removeBackground,
-            backgroundRemovalIntensity);
         var needsIndependentRecognition = removeBackground
             || profile.BackgroundLayers.Count > 0
             || !UsesWholeSourceImage(profile);
+        if (TryWriteOwnedUnmaskedRegionAssets(sourcePath, destinationPath, profile, overlayPath,
+                removeBackground, needsIndependentRecognition, thumbnailPath))
+            return needsIndependentRecognition && thumbnailPath is not null;
+        using var processed = ProcessRecognitionSource(
+            sourcePath,
+            profile,
+            removeBackground,
+            backgroundRemovalIntensity);
         if (needsIndependentRecognition && !Cv2.ImWrite(destinationPath, processed.Recognition))
             throw new InvalidOperationException("无法保存地图识别区域。");
         if (overlayPath is not null && !Cv2.ImWrite(overlayPath, processed.Overlay))
             throw new InvalidOperationException("无法保存透明地图图层。");
+        return false;
+    }
+
+    // Process returns independent owned pixels. Close the full-size decoded
+    // input before PNG encoding allocates its own working buffers.
+    private static MapBackgroundProcessingResult ProcessRecognitionSource(
+        string sourcePath,
+        FloorRecognitionProfile profile,
+        bool removeBackground,
+        int backgroundRemovalIntensity,
+        string decodeFailure = "无法读取地图原图以生成识别区域。")
+    {
+        if (!removeBackground && profile.BackgroundLayers is null or { Count: 0 }
+            && profile.FreeCropPoints is null or { Count: 0 }
+            && MapRecognitionRegionDecoder.IsEightBitPng(sourcePath))
+        {
+            var region = UsesWholeSourceImage(profile)
+                ? new NormalizedRectangle { Width = 1d, Height = 1d }
+                : profile.GetEffectiveRecognitionRegion();
+            return MapBackgroundProcessor.ProcessOwnedUnmaskedRegion(
+                MapRecognitionRegionDecoder.Decode(sourcePath, region), profile);
+        }
+        var source = DecodeImage(sourcePath);
+        var tracked = false;
+        try
+        {
+            if (source.Empty()) throw new InvalidOperationException(decodeFailure);
+            var bytes = source.Total() * source.ElemSize();
+            var request = MemoryJournal.Request("Recognition.DecodedInput", bytes, "OpenCvSharpExtern.dll");
+            MemoryJournal.TrackResource(source, "Recognition.DecodedInput", bytes, "OpenCvSharpExtern.dll", request);
+            tracked = true;
+            return MapBackgroundProcessor.Process(source, profile, removeBackground, backgroundRemovalIntensity);
+        }
+        finally
+        {
+            source.Dispose();
+            if (tracked) MemoryJournal.ReleaseResource(source);
+        }
     }
 
     private static Mat DecodeImage(string path) =>
@@ -282,10 +335,27 @@ public sealed partial class MapRepository
     /// </summary>
     public async Task RepairImageMetadataAsync(CancellationToken cancellationToken)
     {
+        // Multiple list/co-creation pages can load while an earlier page's
+        // background repair is running. One catalog owns one repair at a time.
+        var repairGate = MetadataRepairGates.GetOrAdd(CatalogPath, _ => new SemaphoreSlim(1, 1));
+        await repairGate.WaitAsync(cancellationToken);
+        try { await RepairImageMetadataCoreAsync(cancellationToken); }
+        finally { repairGate.Release(); }
+    }
+
+    private async Task RepairImageMetadataCoreAsync(CancellationToken cancellationToken)
+    {
+        using var operation = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("Catalog.RepairImageMetadata");
+        // A page reopening must not deserialize every editable drawing merely
+        // to discover that all source/thumbnail file stamps are still valid.
+        var metadataProjection = await GetImageMetadataSnapshotAsync();
+        if (ImageMetadataIsCurrent(metadataProjection, cancellationToken)) return;
         await Gate.WaitAsync(cancellationToken);
         MapCatalogDocument catalog;
+        MapCatalogRevision originalRevision;
         try
         {
+            originalRevision = GetCatalogRevision();
             catalog = await ReadCatalogAsync();
         }
         finally
@@ -293,6 +363,10 @@ public sealed partial class MapRepository
             Gate.Release();
         }
 
+        var inputs = catalog.Maps.SelectMany(map => map.Floors.Select(floor =>
+            (Key: (map.Id, floor.Key), Input: new RepairMetadataInput(AssetMetadata.Image(floor),
+                AssetMetadata.Thumbnail(floor), floor.RecognitionFileName, floor.RecognitionSha256))))
+            .ToDictionary(entry => entry.Key, entry => entry.Input);
         var changed = false;
         foreach (var map in catalog.Maps)
         {
@@ -330,7 +404,7 @@ public sealed partial class MapRepository
                 var recognitionPath = GetFloorRecognitionPath(map, floor.Key);
                 if (!File.Exists(recognitionPath))
                     recognitionPath = sourcePath;
-                var thumbnailPath = GetFloorThumbnailPath(map, floor.Key);
+                var thumbnailPath = GetOriginalFloorThumbnailPath(map, floor.Key);
                 if (File.Exists(recognitionPath)
                     && (!HasMatchingFileStamp(
                             thumbnailPath,
@@ -352,11 +426,13 @@ public sealed partial class MapRepository
         await Gate.WaitAsync(cancellationToken);
         try
         {
-            var latest = await ReadCatalogAsync();
+            var latestRevision = GetCatalogRevision();
+            var latest = originalRevision == latestRevision ? catalog : await ReadCatalogAsync();
+            var metadataOnly = originalRevision == latestRevision && GetCatalogRevision() == latestRevision;
             foreach (var repairedMap in catalog.Maps)
             {
                 var latestMap = latest.Maps.FirstOrDefault(map => map.Id == repairedMap.Id);
-                if (latestMap is null)
+                if (latestMap is null || latestMap.UpdatedAt != repairedMap.UpdatedAt)
                     continue;
                 foreach (var repairedFloor in repairedMap.Floors)
                 {
@@ -365,11 +441,16 @@ public sealed partial class MapRepository
                     if (latestFloor is null
                         || !string.Equals(latestFloor.ImageFileName, repairedFloor.ImageFileName, StringComparison.Ordinal))
                         continue;
-                    CopyRepairedMetadata(repairedFloor, latestFloor);
+                    if (!ReferenceEquals(latest, catalog))
+                        CopyRepairedMetadata(latestMap, repairedFloor, latestFloor, inputs[(repairedMap.Id, repairedFloor.Key)]);
                 }
             }
             latest.StorageSchemaVersion = CurrentStorageSchemaVersion;
             await WriteCatalogAsync(latest);
+            var committedRevision = GetCatalogRevision();
+            if (metadataOnly && CanonicalCatalogRevisions.TryGetValue(CatalogPath, out var verified)
+                && committedRevision == verified)
+                MetadataRevisionAdvances[CatalogPath] = new(originalRevision, committedRevision);
         }
         finally
         {

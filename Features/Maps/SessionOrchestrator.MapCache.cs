@@ -387,6 +387,7 @@ public sealed partial class SessionOrchestrator
         if (adaptiveQualified
             && cachedAttempt.Recognition is { } cachedRecognition)
         {
+            NoteCacheValidationOutcome(key, succeeded: true);
             return CopyAttempt(
                 cachedAttempt,
                 MarkUsedCachedScale(cachedRecognition));

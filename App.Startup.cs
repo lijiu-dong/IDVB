@@ -15,6 +15,9 @@ public partial class App
 {
     private bool _startupPresentationPending;
     private bool _startupTransitionComplete;
+    private StartupWindowInteractionGuard? _startupWindowInteractionGuard;
+    private StartupFocusSnapshot _startupLaunchFocus;
+    private readonly CancellationTokenSource _startupPresentationCancellation = new();
     private readonly TaskCompletionSource _mainWindowPresentationCompleted =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -27,6 +30,8 @@ public partial class App
 
     private async Task CompleteStartupPresentationAsync(bool startMinimized)
     {
+        if (IsApplicationStopping)
+            return;
         var page = _mainFrame?.Content as MainPage;
         var visual = _mainFrame is null ? null
             : Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.GetElementVisual(_mainFrame);
@@ -45,27 +50,30 @@ public partial class App
             SetMainWindowCloaked(false);
             ShowWindow(
                 WinRT.Interop.WindowNative.GetWindowHandle(window),
-                4); // SW_SHOWNOACTIVATE
+                8); // SW_SHOWNA preserves the restored window size and maximized state.
             WriteStartupTrace(
                 "Main window primed behind startup splash; awaiting initial page readiness.");
+            WriteStartupWindowState("main-primed");
         }
 
         if (page is not null && !startMinimized)
-            await page.InitialReady;
+            await page.InitialReady.WaitAsync(_startupPresentationCancellation.Token);
+        if (IsApplicationStopping)
+            return;
         if (_startupTransitionComplete)
         {
-            if (!startMinimized && !explicitExitRequested) ShowMainWindow();
+            if (!startMinimized) ShowMainWindow();
             return;
         }
         _startupTransitionComplete = true;
         StartupSplash.Complete(StartupSplash.Stage.Ready);
         StartupSplash.Report("准备就绪");
-        if (!startMinimized && !explicitExitRequested)
+        if (!startMinimized && !IsApplicationStopping)
         {
             if (visual is not null && _mainFrame is not null)
             {
                 await StartupSplash.PrepareTransitionAsync();
-                if (explicitExitRequested || window is null) { StartupSplash.Close(); return; }
+                if (IsApplicationStopping || window is null) { StartupSplash.Close(); return; }
 
                 Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.SetIsTranslationEnabled(_mainFrame, true);
                 visual.StopAnimation("Opacity");
@@ -109,6 +117,7 @@ public partial class App
             else
             {
                 await StartupSplash.PrepareTransitionAsync();
+                if (IsApplicationStopping || window is null) { StartupSplash.Close(); return; }
                 _startupPresentationPending = false;
                 ShowMainWindow(bringToForeground: false);
                 await Task.WhenAll(StartupSplash.FadeOutAsync(), Task.Delay(380));
@@ -116,54 +125,164 @@ public partial class App
         }
         _startupPresentationPending = false;
         await StartupSplash.CloseAsync();
-        if (!startMinimized && !explicitExitRequested)
+        ReleaseStartupWindowInteractionGuard();
+        if (IsApplicationStopping)
+            return;
+        if (!startMinimized && !IsApplicationStopping)
         {
-            ShowMainWindow(bringToForeground: true);
+            // Normal startup must yield a visible, active main window even if
+            // the user clicked another application while the splash was loading.
+            // Only StartMinimized opts out of this completed presentation.
+            TraceStartupMainWindowHandoff();
+            ShowMainWindow();
         }
+        WriteStartupWindowState("main-after-handoff");
         _mainWindowPresentationCompleted.TrySetResult();
         WriteStartupTrace("Startup presentation complete; main page ready.");
         StartupTimeline.StopSampling();
     }
 
+    private void BeginStartupWindowInteractionGuard()
+    {
+        if (window is null)
+            return;
+        var handle = WinRT.Interop.WindowNative.GetWindowHandle(window);
+        var wasForeground = StartupFocusSnapshot.Capture().ForegroundWindow == handle;
+        _startupWindowInteractionGuard = new StartupWindowInteractionGuard(handle);
+        // A foreground consent/access dialog is a direct interaction with IDVB.
+        // Rebase only that case; otherwise preserve the snapshot from splash Show.
+        if (wasForeground)
+            _startupLaunchFocus = StartupFocusSnapshot.Capture();
+        WriteStartupWindowState("main-input-guard-installed");
+    }
+
+    private void ReleaseStartupWindowInteractionGuard()
+    {
+        if (_startupWindowInteractionGuard is not { } guard)
+            return;
+        _startupWindowInteractionGuard = null;
+        try
+        {
+            guard.Dispose();
+        }
+        catch (Exception exception)
+        {
+            WriteStartupTrace("Unable to restore startup window interaction state.", exception);
+        }
+        WriteStartupWindowState("main-input-guard-released");
+    }
+
+    private void TraceStartupMainWindowHandoff()
+    {
+        var current = StartupFocusSnapshot.Capture();
+        WriteStartupTrace("Startup foreground handoff: requested=True; "
+            + $"launchForeground=0x{_startupLaunchFocus.ForegroundWindow.ToInt64():X}; "
+            + $"currentForeground=0x{current.ForegroundWindow.ToInt64():X}; "
+            + $"launchInput={_startupLaunchFocus.LastInputTick}; currentInput={current.LastInputTick}.");
+        WriteStartupWindowState("main-before-handoff");
+    }
+
+    private void WriteStartupWindowState(string stage)
+    {
+        if (window is not null)
+            WriteStartupTrace(StartupWindowDiagnostics.Describe(stage,
+                WinRT.Interop.WindowNative.GetWindowHandle(window)));
+    }
+
+    private void StopStartupPresentation()
+    {
+        _servicesReadyTcs.TrySetCanceled();
+        _startupPresentationCancellation.Cancel();
+        _mainWindowPresentationCompleted.TrySetCanceled();
+        ReleaseStartupWindowInteractionGuard();
+        StartupSplash.Close();
+    }
+
     private FrameworkElement? _startupPlaceholder;
     private Frame? _mainFrame;
     private Grid? _startupHost;
+    private readonly object _mapListStartupGate = new();
     private MapListStartupData? _mapListStartupData;
+    private bool _mapListStartupConsumed;
 
     internal static MapListStartupData? TakeMapListStartupData()
     {
         var current = _currentApp;
-        var data = current?._mapListStartupData;
-        if (current is not null)
+        if (current is null) return null;
+        lock (current._mapListStartupGate)
+        {
+            // Taking an unfinished preload consumes the handoff too. The page
+            // loads its own fresh snapshot and must not leave a late result
+            // permanently rooted by App after that first page has gone away.
+            current._mapListStartupConsumed = true;
+            var data = current._mapListStartupData;
             current._mapListStartupData = null;
-        return data;
+            if (data is not null)
+                IDVBuff.Core.Diagnostics.MemoryJournal.ReleaseResource(data);
+            return data;
+        }
+    }
+
+    private bool HasConsumedMapListStartupData()
+    {
+        lock (_mapListStartupGate) return _mapListStartupConsumed;
     }
 
     private async Task PrepareMapListAsync(SessionOrchestrator? session)
     {
         try
         {
+            if (HasConsumedMapListStartupData())
+            {
+                WriteStartupTrace("Map list preload already consumed; page owns its fresh catalog.");
+                StartupSplash.Complete(StartupSplash.Stage.Catalog);
+                return;
+            }
             WriteStartupTrace("Map catalog preload begin.");
             var repository = new MapRepository();
-            var catalog = await repository.GetCatalogSnapshotAsync();
+            var catalog = await repository.GetListCatalogSnapshotAsync();
+            if (IsApplicationStopping) return;
+            if (HasConsumedMapListStartupData())
+            {
+                IDVBuff.Core.Diagnostics.MemoryJournal.ObserveManagedObject(catalog.Maps, "UI.MapList.UnusedStartupMaps");
+                WriteStartupTrace("Map list consumed preload while catalog loaded; unused catalog released.");
+                StartupSplash.Complete(StartupSplash.Stage.Catalog);
+                return;
+            }
             WriteStartupTrace("Map catalog loaded; tag filters begin.");
             var filters = (await new MapTagStore().LoadAsync(catalog.Maps, catalog.Classes))
                 .Where(group => group.IsEnabled)
                 .ToArray();
+            if (IsApplicationStopping) return;
             WriteStartupTrace("Tag filters loaded; survey projects begin.");
             IReadOnlyList<SurveyProjectSummary> projects = session is null
                 ? []
                 : await session.GetSurveyProjectsAsync();
+            if (IsApplicationStopping) return;
             WriteStartupTrace("Survey projects loaded; catalog data prepared.");
             var previews = new Dictionary<string, BitmapImage>(StringComparer.OrdinalIgnoreCase);
-            _mapListStartupData = new MapListStartupData(
-                repository.GetCatalogRevision(), catalog, filters, projects, previews);
-            WriteStartupTrace($"Map list prepared: {catalog.Maps.Count} maps.");
+            lock (_mapListStartupGate)
+            {
+                if (!_mapListStartupConsumed)
+                {
+                    var data = new MapListStartupData(
+                        repository.GetCatalogRevision(), catalog, filters, projects, previews);
+                    IDVBuff.Core.Diagnostics.MemoryJournal.TrackResource(data, "UI.MapList.StartupData", null);
+                    IDVBuff.Core.Diagnostics.MemoryJournal.ObserveManagedObject(data, "UI.MapList.StartupData");
+                    _mapListStartupData = data;
+                }
+            }
+            WriteStartupTrace($"Map list preload finished: {catalog.Maps.Count} maps; consumed={HasConsumedMapListStartupData()}.");
             StartupSplash.Complete(StartupSplash.Stage.Catalog);
         }
         catch (Exception exception)
         {
-            _mapListStartupData = null;
+            lock (_mapListStartupGate)
+            {
+                if (_mapListStartupData is { } data)
+                    IDVBuff.Core.Diagnostics.MemoryJournal.ReleaseResource(data);
+                _mapListStartupData = null;
+            }
             WriteStartupTrace("Map list preloading failed; the page will retry when opened.", exception);
             // The optional preload step has finished via its existing page-level retry path.
             StartupSplash.Complete(StartupSplash.Stage.Catalog);
@@ -203,7 +322,7 @@ public partial class App
 
     private Grid ShowStartupPlaceholder(Frame rootFrame)
     {
-        _startupPlaceholder = new Grid { Background = FluentTheme.WindowBrush() };
+        _startupPlaceholder = new Grid { Background = FluentTheme.Brush(rootFrame, IDVBuff.Appearance.ThemeToken.Window) };
         _mainFrame = rootFrame;
         _startupHost = new Grid();
         _startupHost.Children.Add(rootFrame);

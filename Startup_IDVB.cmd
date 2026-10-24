@@ -1,55 +1,21 @@
-﻿@echo off
-setlocal EnableExtensions
-
-rem Request administrator privileges if not already elevated.
-net session >nul 2>&1
-if %errorlevel% neq 0 (
-    echo Requesting administrator privileges...
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
-    exit /b
-)
-
-rem Start the normal IDVB GUI and expose its real SessionOrchestrator to RealCLI.
-set "ROOT=%~dp0"
-cd /d "%ROOT%"
-set "PIPE=IDVB.RealCLI"
-
-rem Prefer the x64 outputs used by IDVBuff.slnx.
-set "IDVB_EXE=%ROOT%bin\x64\Debug\net10.0-windows10.0.19041.0\win-x64\IDVB.exe"
-
-rem If x64 Debug does not exist, fall back to other candidates
-if not exist "%IDVB_EXE%" set "IDVB_EXE=%ROOT%bin\Debug\net10.0-windows10.0.19041.0\win-x64\IDVB.exe"
-if not exist "%IDVB_EXE%" set "IDVB_EXE=%ROOT%bin\x64\Release\net10.0-windows10.0.19041.0\win-x64\IDVB.exe"
-if not exist "%IDVB_EXE%" set "IDVB_EXE=%ROOT%bin\Release\net10.0-windows10.0.19041.0\win-x64\IDVB.exe"
-
-rem If bin\Debug exists and is newer than the chosen binary, prefer bin\Debug
-if exist "%ROOT%bin\Debug\net10.0-windows10.0.19041.0\win-x64\IDVB.exe" (
-    xcopy /d /l /y "%ROOT%bin\Debug\net10.0-windows10.0.19041.0\win-x64\IDVB.exe" "%IDVB_EXE%" 2>nul | findstr /b /c:"1 " >nul
-    if not errorlevel 1 (
-        set "IDVB_EXE=%ROOT%bin\Debug\net10.0-windows10.0.19041.0\win-x64\IDVB.exe"
-    )
-)
-
-if not exist "%IDVB_EXE%" (
-    echo [错误] 未找到 IDVB.exe。
-    echo 请先运行 dotnet build 构建项目后再启动。
+@echo off
+setlocal EnableExtensions DisableDelayedExpansion
+set "IDVB_STARTUP_ROOT=%~dp0"
+set "IDVB_STARTUP_CMD=%~f0"
+set "IDVB_PWSH="
+rem Explorer does not inherit Codex's runtime PATH. Find a PowerShell 7 bootstrap.
+if exist "%USERPROFILE%\.dotnet\tools\pwsh.exe" set "IDVB_PWSH=%USERPROFILE%\.dotnet\tools\pwsh.exe"
+if not defined IDVB_PWSH if exist "%ProgramFiles%\PowerShell\7\pwsh.exe" set "IDVB_PWSH=%ProgramFiles%\PowerShell\7\pwsh.exe"
+if not defined IDVB_PWSH if exist "%USERPROFILE%\.cache\codex-runtimes\codex-primary-runtime\dependencies\native\powershell\pwsh.exe" set "IDVB_PWSH=%USERPROFILE%\.cache\codex-runtimes\codex-primary-runtime\dependencies\native\powershell\pwsh.exe"
+for /f "delims=" %%P in ('where.exe pwsh.exe 2^>nul') do if not defined IDVB_PWSH set "IDVB_PWSH=%%P"
+if not defined IDVB_PWSH (
+    echo [IDVB] PowerShell 7 was not found. Install pwsh before launching IDVB.
     pause
     exit /b 2
 )
-
-echo ========================================================
-echo  Identity Vision Bridge (IDVB) 启动器
-echo ========================================================
-echo  程序路径: %IDVB_EXE%
-echo  控制管道: %PIPE%
-echo ========================================================
-
-tasklist /fi "imagename eq IDVB.exe" 2>nul | find /i "IDVB.exe" >nul
-if %errorlevel% equ 0 (
-    echo [警告] 检测到系统中已有正在运行的 IDVB.exe 进程！
-    echo 若旧进程未关闭，可能会被重定向唤醒旧版本窗口。
-)
-
-echo 正在启动 IDVB GUI...
-start "Identity Vision Bridge" /D "%ROOT%" "%IDVB_EXE%" --isolated-dev-instance --idvb-control-pipe "%PIPE%"
-exit /b 0
+rem Select the newest available pwsh, elevate, then resolve the certified bin\dev.
+rem No fixed build number, old-output fallback, or installed-instance redirect.
+"%IDVB_PWSH%" -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference = 'Stop'; try { $candidates = @($env:IDVB_PWSH; (Get-Command pwsh.exe -CommandType Application -All -ErrorAction SilentlyContinue).Source; (Get-ChildItem -Path (Join-Path $env:ProgramFiles 'PowerShell\*\pwsh.exe') -File -ErrorAction SilentlyContinue).FullName; (Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\native\powershell\pwsh.exe')); $latest = $candidates | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Get-Item | Where-Object { $_.VersionInfo.ProductVersion -match '^\d+\.\d+\.\d+' } | Sort-Object { [version]([regex]::Match($_.VersionInfo.ProductVersion, '^\d+\.\d+\.\d+').Value) } -Descending | Select-Object -First 1 -ExpandProperty FullName; if (-not $latest) { throw 'No valid PowerShell 7 executable was found.' }; $identity = [Security.Principal.WindowsIdentity]::GetCurrent(); $principal = [Security.Principal.WindowsPrincipal]::new($identity); if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { $p = Start-Process -FilePath $env:IDVB_STARTUP_CMD -WorkingDirectory $env:IDVB_STARTUP_ROOT -Verb RunAs -PassThru -ErrorAction Stop; $p.WaitForExit(); exit $p.ExitCode }; & $latest -NoProfile -ExecutionPolicy Bypass -File (Join-Path $env:IDVB_STARTUP_ROOT 'Tools\DevelopmentBuild.ps1') -Mode Gui -RepositoryRoot $env:IDVB_STARTUP_ROOT; exit $LASTEXITCODE } catch { Write-Error $_; exit 2 }"
+set "IDVB_STARTUP_EXIT=%ERRORLEVEL%"
+if not "%IDVB_STARTUP_EXIT%"=="0" pause
+exit /b %IDVB_STARTUP_EXIT%

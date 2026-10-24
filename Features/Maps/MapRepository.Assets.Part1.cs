@@ -7,36 +7,42 @@ public sealed partial class MapRepository
 
     public async Task EnsureDerivedAssetsAsync(IReadOnlyList<MapRecord> maps)
     {
-        await Gate.WaitAsync();
-        Dictionary<string, MapClassProperties> classProperties;
-        try
-        {
-            var catalog = await ReadCatalogAsync();
-            classProperties = catalog.ClassProperties.ToDictionary(
-                pair => pair.Key,
-                pair => pair.Value.Clone(),
-                StringComparer.OrdinalIgnoreCase);
-        }
-        finally
-        {
-            Gate.Release();
-        }
+        MapOperationProgress.Report(0, "正在读取地图资源目录……");
+        var classProperties = await GetClassPropertiesSnapshotAsync();
+        await EnsureDerivedAssetsFromSnapshotAsync(maps, classProperties);
+    }
 
+    internal async Task EnsureDerivedAssetsFromSnapshotAsync(IReadOnlyList<MapRecord> maps,
+        IReadOnlyDictionary<string, MapClassProperties> classProperties)
+    {
+        using var memory = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("Catalog.EnsureDerived", $"maps={maps.Count}");
         var assetsChanged = await Task.Run(() =>
             {
                 var changed = false;
+                var totalFloors = Math.Max(1, maps.Sum(map => MapFloorRules.GetOrderedFloors(map).Count));
+                var completedFloors = 0;
                 foreach (var map in maps)
                 {
+                    using var mapMemory = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("Catalog.ValidateMapAssets", map.Id.ToString());
                     map.NormalizeRecognition();
+                    var fixedTemplate = _fixedTemplates.GetFixedStructureAsync(map.SourceVisualSha256).GetAwaiter().GetResult();
+                    if (fixedTemplate is not null)
+                        fixedTemplate.ValidateGeometry(map.Floors, map.Recognition);
                     var scanFloorKey = MapScanFloorRules.ResolveScanFloorKey(map);
-                    if (!map.Recognition.HasRequiredIdentificationData()
+                    if (fixedTemplate is null && !map.Recognition.HasRequiredIdentificationData()
                         && !MapScanFloorRules.HasRequiredScanMarkers(
                             map,
                             scanFloorKey))
+                    {
+                        completedFloors += MapFloorRules.GetOrderedFloors(map).Count;
+                        MapOperationProgress.Report(.95 * completedFloors / totalFloors, "正在校验地图资源……");
                         continue;
+                    }
 
                     foreach (var floor in MapFloorRules.GetOrderedFloors(map))
                     {
+                        MapOperationProgress.Report(.95 * completedFloors++ / totalFloors,
+                            $"正在校验地图资源：{map.DisplayName} · {floor.DisplayName}……");
                         var profile = MapFloorRules.GetFloorProfile(map, floor.Key);
                         if (profile is null)
                             continue;
@@ -59,7 +65,7 @@ public sealed partial class MapRepository
                                 GetMapDirectory(map.Id),
                                 GetFloorRecognitionFileName(floor.Key))
                             : GetFloorRecognitionPath(map, floor.Key);
-                        var overlayPath = GetFloorOverlayPath(map, floor.Key);
+                        var overlayPath = GetOriginalFloorOverlayPath(map, floor.Key);
                         if (!File.Exists(sourcePath))
                             continue;
 
@@ -71,7 +77,8 @@ public sealed partial class MapRepository
                             floor.RecognitionFileLength,
                             floor.RecognitionLastWriteUtcTicks,
                             floor.ImageSha256,
-                            requiresFile: needsIndependentRecognition);
+                            requiresFile: needsIndependentRecognition,
+                            out var recognitionMetadata);
                         recognitionMatches &= string.Equals(
                             floor.RecognitionSourceSha256,
                             floor.ImageSha256,
@@ -84,11 +91,27 @@ public sealed partial class MapRepository
                             floor.OverlayFileLength,
                             floor.OverlayLastWriteUtcTicks,
                             floor.RecognitionSha256,
-                            requiresFile: true)
+                            requiresFile: true,
+                            out var overlayMetadata)
                             && string.Equals(
                                 floor.OverlaySourceSha256,
                                 floor.RecognitionSha256,
                                 StringComparison.OrdinalIgnoreCase);
+                        // A byte-identical file can acquire a new timestamp when
+                        // copied/restored. Persist its fully verified stamp once,
+                        // so later matches do not decompress the same PNG again.
+                        if (recognitionMatches && recognitionMetadata is { } refreshedRecognition)
+                        {
+                            floor.RecognitionFileLength = refreshedRecognition.FileLength;
+                            floor.RecognitionLastWriteUtcTicks = refreshedRecognition.LastWriteUtcTicks;
+                            changed = true;
+                        }
+                        if (overlayMatches && overlayMetadata is { } refreshedOverlay)
+                        {
+                            floor.OverlayFileLength = refreshedOverlay.FileLength;
+                            floor.OverlayLastWriteUtcTicks = refreshedOverlay.LastWriteUtcTicks;
+                            changed = true;
+                        }
                         if (!recognitionMatches
                             || !overlayMatches
                             || floor.RecognitionWidth != profile.RecognitionPixelWidth
@@ -111,9 +134,13 @@ public sealed partial class MapRepository
                             changed = true;
                         }
 
-                        // Side-entrance features are derived from the recognition
-                        // image as well. Missing, stale, or legacy features must
-                        // be regenerated before the recognition cache is built.
+                        // Restore the current fixed contour before deriving scan
+                        // features. Its changed hash invalidates binary-era features
+                        // before either scanning or alignment can cache them.
+                        if (fixedTemplate is not null)
+                            changed |= RestoreFixedTemplateFloorAsync(map, floor, fixedTemplate).GetAwaiter().GetResult();
+                        else if (map.IsCoCreationTemplate)
+                            changed |= RebindPortableFixedFloorAsync(map, floor).GetAwaiter().GetResult();
                         changed |= EnsureCurrentSideEntranceFeature(
                             map,
                             floor.Key,
@@ -127,6 +154,7 @@ public sealed partial class MapRepository
                 return changed;
             });
 
+        MapOperationProgress.Report(.95, "正在保存地图资源目录……");
         if (assetsChanged)
         {
             await Gate.WaitAsync();
@@ -136,8 +164,9 @@ public sealed partial class MapRepository
                 foreach (var map in maps)
                 {
                     var stored = catalog.Maps.FirstOrDefault(candidate => candidate.Id == map.Id);
-                    if (stored is null)
+                    if (stored is null || stored.TemplateOrigin != map.TemplateOrigin)
                         continue;
+                    stored.IsCoCreationTemplate |= map.IsCoCreationTemplate;
                     foreach (var floor in MapFloorRules.GetOrderedFloors(map))
                     {
                         var sourceProfile = MapFloorRules.GetFloorProfile(map, floor.Key);
@@ -204,10 +233,13 @@ public sealed partial class MapRepository
                 Gate.Release();
             }
         }
+        MapOperationProgress.Report(1, "地图资源校验完成");
     }
 
-    private static void ValidateDraft(MapDraft draft)
+    private static void ValidateDraft(MapDraft draft, MapNavigationTopology? navigation)
     {
+        if (navigation is not null)
+            MapNavigationRules.Validate(navigation, draft.Floors.Select(f => f.Key));
         // V6: validate at least one floor has a valid image
         var validFloorPaths = draft.FloorPaths
             .Where(kvp => IsSupportedImage(kvp.Value) && File.Exists(kvp.Value))

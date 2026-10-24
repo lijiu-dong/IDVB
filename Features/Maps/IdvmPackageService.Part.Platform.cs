@@ -8,6 +8,13 @@ public enum IdvmExportScope
     AllClasses
 }
 
+/// <summary>Maximum is lossless IDVM 1.6; Compatible writes the legacy ZIP layout.</summary>
+public enum IdvmCompressionMode
+{
+    Maximum,
+    Compatible
+}
+
 public sealed record IdvmImportResult(
     Guid PackageId,
     IReadOnlyList<string> CreatedClasses,

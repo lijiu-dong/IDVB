@@ -1,273 +1,105 @@
-using System.Net.Http.Headers;
-using System.Net.Sockets;
-using System.Security.Cryptography;
-using System.Text;
-using System.Text.Json;
+using IDVBuff.Core.Contracts.Online;
 using IDVBuff.Features.Maps;
-using IDVBuff.UpdateCore;
-using Windows.Security.Credentials;
+using IDVBuff.Services.Online;
+using IDVBuff.Core.Contracts.Online.Security;
 
 namespace IDVBuff.Features.Accounts;
 
-internal sealed record AccountIdentity(
-    string DisplayName,
-    string PublisherHandle,
-    string? AvatarUrl,
-    bool IsOfficial,
-    bool IsBuilder);
-
-internal static class AccountSession
+internal static partial class AccountSession
 {
-    private const string CredentialResource = "IdentityVisionBridge.Account";
-    private const string CredentialUserName = "current";
-    private const long MaximumPublicationPackageBytes = 90L * 1024 * 1024;
-    private static readonly HttpClient Http = new(new SocketsHttpHandler
+    private static readonly Lazy<IAccountService> Instance = new(Create);
+    internal static IAccountService Service => Instance.Value;
+    public static string? PublishToken => Service.PublishToken;
+    public static AccountIdentity? Identity => Service.Identity;
+    public static event EventHandler? Changed { add => Service.Changed += value; remove => Service.Changed -= value; }
+    /// <summary>
+    /// Set by the desktop host to the native login window (1.7.1-preview.3). When absent (CLI, tests, public
+    /// build) login falls back to the configured account service.
+    /// </summary>
+    internal static Func<CancellationToken, Task<AccountIdentity>>? InteractiveLogin { get; set; }
+    public static Task<AccountIdentity> LoginAsync(CancellationToken cancellationToken = default) =>
+        InteractiveLogin is { } login && DesktopLoginGateHost.Gate.IsConfigured ? login(cancellationToken) : Service.LoginAsync(cancellationToken);
+    public static void Set(string token, AccountIdentity identity) => Service.Set(token, identity);
+    public static void Clear() => Service.Clear();
+    internal static void ClearIfCurrent(string? token) => Service.ClearIfCurrent(token);
+    public static Task LogoutAsync() => Service.LogoutAsync();
+    public static Task<AccountIdentity> RequirePublishAccessAsync(CancellationToken cancellationToken = default) => Service.RequirePublishAccessAsync(cancellationToken);
+    public static Task RefreshAsync() => Service.RefreshAsync();
+    public static Task<string> UploadPublicationAsync(MapPublicationResult publication, CancellationToken cancellationToken = default) =>
+        CoCreationPublicationClient.Service.PublishAsync(new(publication.PublicationId, publication.PublisherHandle,
+            publication.SubscriptionLink, publication.OutputDirectory, publication.PackagePath, publication.PackageName,
+            publication.CoverPath), cancellationToken);
+    public static Task UpdatePublicationMetadataAsync(MapPublicationMetadataUpdate update, CancellationToken cancellationToken = default) =>
+        CoCreationPublicationClient.Service.UpdateMetadataAsync(new(update.PublicationId, update.PublisherHandle,
+            update.SubscriptionLink, update.PackageName, update.CoverPath, update.FeedBytes, update.ExpectedFeedSha256), cancellationToken);
+    private static IAccountService Create()
     {
-        ConnectTimeout = TimeSpan.FromSeconds(5),
-    })
-    {
-        BaseAddress = new Uri("https://community.idvb.xgflee.com/"),
-        Timeout = TimeSpan.FromSeconds(60),
-    };
-    private static string? _publishToken;
-    public static string? PublishToken => _publishToken;
-    public static AccountIdentity? Identity { get; private set; }
-    public static event EventHandler? Changed;
-
-    static AccountSession() => Restore();
-
-    public static async Task<AccountIdentity> LoginAsync(CancellationToken cancellationToken = default)
-    {
-        var verifier = Base64Url(RandomNumberGenerator.GetBytes(32));
-        var challenge = Base64Url(SHA256.HashData(Encoding.ASCII.GetBytes(verifier)));
-        var state = Base64Url(RandomNumberGenerator.GetBytes(32));
-        using var listener = new TcpListener(System.Net.IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
-        var redirectUri = $"http://127.0.0.1:{port}/callback";
-        var authorize = new UriBuilder(Http.BaseAddress!) { Path = "oauth/authorize" };
-        authorize.Query = string.Join("&",
-            $"client_id=idvb-desktop",
-            $"redirect_uri={Uri.EscapeDataString(redirectUri)}",
-            $"code_challenge={challenge}",
-            $"state={state}");
-        if (!await Windows.System.Launcher.LaunchUriAsync(authorize.Uri))
-            throw new InvalidOperationException("无法打开系统浏览器。");
-
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromMinutes(3));
-        using var client = await listener.AcceptTcpClientAsync(timeout.Token);
-        await using var stream = client.GetStream();
-        using var reader = new StreamReader(stream, Encoding.ASCII, leaveOpen: true);
-        var requestLine = await reader.ReadLineAsync(timeout.Token) ?? string.Empty;
-        var target = requestLine.Split(' ').ElementAtOrDefault(1);
-        var callback = target is null ? null : new Uri(new Uri(redirectUri), target);
-        var values = ParseQuery(callback?.Query);
-        values.TryGetValue("code", out var code);
-        var callbackAccepted = values.GetValueOrDefault("state") == state
-            && code is not null;
-        var responseMessage = callbackAccepted
-            ? "登录完成，可以关闭此页面并返回 IDVB。"
-            : values.GetValueOrDefault("error") == "access_denied"
-                ? "已取消登录，可以关闭此页面并返回 IDVB。"
-                : "登录未完成，请返回 IDVB 后重试。";
-        var responseText = $"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n<!doctype html><meta charset=utf-8><title>IDVB</title><p>{responseMessage}</p>";
-        await stream.WriteAsync(Encoding.UTF8.GetBytes(responseText), timeout.Token);
-        if (!callbackAccepted)
-            throw values.GetValueOrDefault("error") == "access_denied"
-                ? new OperationCanceledException("已取消登录。")
-                : new UnauthorizedAccessException("登录未完成，请重试。");
-
-        using var tokenResponse = await Http.PostAsync("api/oauth/token", new StringContent(
-            JsonSerializer.Serialize(new { clientId = "idvb-desktop", redirectUri, code = code!, codeVerifier = verifier }),
-            Encoding.UTF8, "application/json"), timeout.Token);
-        var json = await tokenResponse.Content.ReadAsStringAsync(timeout.Token);
-        if (!tokenResponse.IsSuccessStatusCode)
-        {
-            using var error = JsonDocument.Parse(json);
-            throw new UnauthorizedAccessException(
-                error.RootElement.TryGetProperty("message", out var message)
-                    ? message.GetString() ?? "登录未完成或已过期。"
-                    : "登录未完成或已过期。");
-        }
-        using var document = JsonDocument.Parse(json);
-        var root = document.RootElement;
-        var user = root.GetProperty("user");
-        var identity = new AccountIdentity(
-            user.GetProperty("displayName").GetString() ?? "IDVB 用户",
-            user.GetProperty("publisherHandle").GetString() ?? throw new InvalidDataException("账户缺少发布者标识。"),
-            user.TryGetProperty("avatarUrl", out var avatar) ? avatar.GetString() : null,
-            user.TryGetProperty("isOfficial", out var official) && official.GetBoolean(),
-            user.TryGetProperty("isBuilder", out var builder) && builder.GetBoolean());
-        Set(root.GetProperty("token").GetString()!, identity);
-        return identity;
+        IAccountService service = new UnavailableAccountService();
+        ConfigurePrivate(ref service);
+        return service;
     }
+    static partial void ConfigurePrivate(ref IAccountService service);
+}
 
-    public static void Set(string token, AccountIdentity identity)
+internal static partial class DesktopSecurityRuntimeHost
+{
+    private sealed record Services(IOnlineSecurityTransport Transport, IDesktopSecurityRuntime Runtime);
+    private static readonly Lazy<Services> Instance = new(Create);
+    internal static IOnlineSecurityTransport Transport => Instance.Value.Transport;
+    internal static IDesktopSecurityRuntime Runtime => Instance.Value.Runtime;
+    internal static void Stop() { if (Instance.IsValueCreated) Instance.Value.Runtime.Dispose(); }
+    private static Services Create()
     {
-        _publishToken = token;
-        Identity = identity;
-        Save(token, identity);
-        Changed?.Invoke(null, EventArgs.Empty);
+        IOnlineSecurityTransport transport = new UnavailableOnlineSecurityTransport();
+        IDesktopSecurityRuntime runtime = new UnavailableDesktopSecurityRuntime();
+        ConfigurePrivate(ref transport, ref runtime);
+        var services = new Services(transport, runtime);
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => services.Runtime.Dispose();
+        return services;
     }
+    static partial void ConfigurePrivate(ref IOnlineSecurityTransport transport, ref IDesktopSecurityRuntime runtime);
+}
 
-    public static void Clear()
+/// <summary>Native desktop login gate; the public build has none and starts without it.</summary>
+internal static partial class DesktopLoginGateHost
+{
+    private static readonly Lazy<IDesktopLoginGate> Instance = new(Create);
+    internal static IDesktopLoginGate Gate => Instance.Value;
+    private static IDesktopLoginGate Create()
     {
-        _publishToken = null;
-        Identity = null;
-        RemoveSaved();
-        Changed?.Invoke(null, EventArgs.Empty);
+        IDesktopLoginGate gate = new UnavailableDesktopLoginGate();
+        ConfigurePrivate(ref gate);
+        return gate;
     }
+    static partial void ConfigurePrivate(ref IDesktopLoginGate gate);
+}
 
-    public static async Task LogoutAsync()
+/// <summary>Optional resource capability. Public builds explicitly report unavailable.</summary>
+internal static partial class DesktopResourceUnlockHost
+{
+    private static readonly Lazy<IDesktopResourceUnlock> Instance = new(Create);
+    internal static IDesktopResourceUnlock Service => Instance.Value;
+    private static IDesktopResourceUnlock Create()
     {
-        var token = _publishToken;
-        try
-        {
-            if (!string.IsNullOrWhiteSpace(token))
-            {
-                using var request = new HttpRequestMessage(HttpMethod.Delete, "api/auth/publish-token");
-                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-                _ = await Http.SendAsync(request);
-            }
-        }
-        finally
-        {
-            Clear();
-        }
+        IDesktopResourceUnlock service = new UnavailableDesktopResourceUnlock();
+        ConfigurePrivate(ref service);
+        if (service is IDisposable disposable) AppDomain.CurrentDomain.ProcessExit += (_, _) => disposable.Dispose();
+        return service;
     }
+    static partial void ConfigurePrivate(ref IDesktopResourceUnlock service);
+}
 
-    public static async Task<AccountIdentity> RequirePublishAccessAsync(CancellationToken cancellationToken = default)
+/// <summary>Play-time metering for match start/end. Public builds meter and limit nothing.</summary>
+internal static partial class DesktopUsageMeterHost
+{
+    private static readonly Lazy<IUsageMeter> Instance = new(Create);
+    internal static IUsageMeter Meter => Instance.Value;
+    private static IUsageMeter Create()
     {
-        if (string.IsNullOrWhiteSpace(_publishToken))
-            throw new UnauthorizedAccessException("请先在左侧“账户”中登录。");
-
-        using var request = new HttpRequestMessage(HttpMethod.Get, "api/auth/publish-token");
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _publishToken);
-        using var response = await Http.SendAsync(request, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            Clear();
-            throw new UnauthorizedAccessException("登录已过期，请重新登录。");
-        }
-        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
-        var user = document.RootElement.GetProperty("user");
-        return new AccountIdentity(
-            user.GetProperty("displayName").GetString() ?? "IDVB 用户",
-            user.GetProperty("publisherHandle").GetString() ?? throw new InvalidDataException("账户缺少发布者标识。"),
-            user.TryGetProperty("avatarUrl", out var avatar) ? avatar.GetString() : null,
-            user.TryGetProperty("isOfficial", out var official) && official.GetBoolean(),
-            user.TryGetProperty("isBuilder", out var builder) && builder.GetBoolean());
+        IUsageMeter meter = new UnavailableUsageMeter();
+        ConfigurePrivate(ref meter);
+        if (meter is IDisposable disposable) AppDomain.CurrentDomain.ProcessExit += (_, _) => disposable.Dispose();
+        return meter;
     }
-
-    public static async Task RefreshAsync()
-    {
-        try
-        {
-            var identity = await RequirePublishAccessAsync();
-            if (identity != Identity && _publishToken is { } token)
-                Set(token, identity);
-        }
-        catch (UnauthorizedAccessException) { }
-        catch (HttpRequestException) { }
-        catch (TaskCanceledException) { }
-    }
-
-    public static async Task<string> UploadPublicationAsync(
-        MapPublicationResult publication,
-        CancellationToken cancellationToken = default)
-    {
-        _ = await RequirePublishAccessAsync(cancellationToken);
-        var link = MapSubscriptionLink.Parse(publication.SubscriptionLink);
-        var feedPath = Path.Combine(publication.OutputDirectory, "feed.json");
-        var packagePath = publication.PackagePath;
-        var packageLength = new FileInfo(packagePath).Length;
-        if (packageLength > MaximumPublicationPackageBytes)
-            throw new InvalidOperationException(
-                $"地图发布包为 {packageLength / 1024d / 1024d:F1} MB，超过官网 90 MB 限制。请改为发布当前地图类，或减少地图内容后重试。");
-        await using var package = File.OpenRead(packagePath);
-        using var form = new MultipartFormDataContent();
-        AddFormPart(form, new ByteArrayContent(
-            await File.ReadAllBytesAsync(feedPath, cancellationToken)), "feed", "feed.json");
-        AddFormPart(form, new StreamContent(package), "package", Path.GetFileName(packagePath));
-        AddFormPart(form, new StringContent(Base64Url(link.ContentKey)), "contentKey");
-        AddFormPart(form, new StringContent(publication.PackageName), "name");
-        var cover = new StreamContent(File.OpenRead(publication.CoverPath));
-        cover.Headers.ContentType = new MediaTypeHeaderValue(
-            Path.GetExtension(publication.CoverPath).Equals(".png", StringComparison.OrdinalIgnoreCase)
-                ? "image/png" : "image/jpeg");
-        AddFormPart(form, cover, "cover", Path.GetFileName(publication.CoverPath));
-        using var request = new HttpRequestMessage(HttpMethod.Post, "api/maps/publish") { Content = form };
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _publishToken);
-        using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-        var json = await response.Content.ReadAsStringAsync(cancellationToken);
-        using var document = JsonDocument.Parse(json);
-        if (!response.IsSuccessStatusCode)
-            throw new InvalidOperationException(document.RootElement.TryGetProperty("message", out var message)
-                ? message.GetString() ?? "官网拒绝了地图发布。"
-                : "官网拒绝了地图发布。");
-        return document.RootElement.GetProperty("subscriptionLink").GetString()
-            ?? throw new InvalidDataException("官网没有返回更新订阅链接。");
-    }
-
-    private static void AddFormPart(
-        MultipartFormDataContent form,
-        HttpContent content,
-        string name,
-        string? fileName = null)
-    {
-        content.Headers.ContentDisposition = new ContentDispositionHeaderValue("form-data")
-        {
-            Name = $"\"{name}\"",
-            FileName = fileName is null ? null : $"\"{fileName}\""
-        };
-        form.Add(content);
-    }
-
-    private static string Base64Url(byte[] value) => Convert.ToBase64String(value)
-        .TrimEnd('=').Replace('+', '-').Replace('/', '_');
-
-    private static void Save(string token, AccountIdentity identity)
-    {
-        RemoveSaved();
-        new PasswordVault().Add(new PasswordCredential(
-            CredentialResource,
-            CredentialUserName,
-            JsonSerializer.Serialize(new { token, identity })));
-    }
-
-    private static void Restore()
-    {
-        try
-        {
-            var vault = new PasswordVault();
-            var credential = vault.Retrieve(CredentialResource, CredentialUserName);
-            credential.RetrievePassword();
-            using var document = JsonDocument.Parse(credential.Password);
-            var root = document.RootElement;
-            _publishToken = root.GetProperty("token").GetString();
-            Identity = root.GetProperty("identity").Deserialize<AccountIdentity>();
-        }
-        catch
-        {
-            _publishToken = null;
-            Identity = null;
-        }
-    }
-
-    private static void RemoveSaved()
-    {
-        try
-        {
-            var vault = new PasswordVault();
-            vault.Remove(vault.Retrieve(CredentialResource, CredentialUserName));
-        }
-        catch { }
-    }
-
-    private static Dictionary<string, string> ParseQuery(string? query) =>
-        (query ?? string.Empty).TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries)
-            .Select(part => part.Split('=', 2))
-            .Where(part => part.Length == 2)
-            .ToDictionary(part => Uri.UnescapeDataString(part[0]), part => Uri.UnescapeDataString(part[1]));
+    static partial void ConfigurePrivate(ref IUsageMeter meter);
 }

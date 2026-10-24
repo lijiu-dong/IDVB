@@ -1,6 +1,9 @@
 using IDVBuff.Features.Maps;
+using IDVBuff.Core.Contracts.Online;
+using IDVBuff.Features.Accounts;
 using IDVBuff.Diagnostics;
 using IDVBuff.Survey.Domain;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -38,24 +41,7 @@ public sealed partial class MapListPage : UserControl
     private static readonly Color OptionalAnchorOrange = Color.FromArgb(255, 236, 150, 61);
     private static readonly Color RecognitionRegionOrange = Color.FromArgb(255, 239, 103, 42);
     private static readonly Color RecognitionRegionRed = Color.FromArgb(255, 235, 55, 55);
-    private static readonly Color DeleteRed = Color.FromArgb(255, 222, 45, 50);
     private static readonly Color DisabledGray = Color.FromArgb(255, 210, 210, 210);
-    private static readonly (Color LightFill, Color LightOutline, Color DarkFill, Color DarkOutline)[]
-        VariantPalette =
-    [
-        (Hex("EFCBD4"), Hex("B4234D"), Hex("3A1722"), Hex("FF809F")),
-        (Hex("EFD0C7"), Hex("B13A21"), Hex("3A1C16"), Hex("FF9275")),
-        (Hex("EED8BB"), Hex("A85B00"), Hex("382414"), Hex("FFB45B")),
-        (Hex("E9DCAD"), Hex("8A6800"), Hex("32290E"), Hex("E8C84E")),
-        (Hex("DDE2B9"), Hex("6C7300"), Hex("282B12"), Hex("C6D35C")),
-        (Hex("CBE4D4"), Hex("1F7A3F"), Hex("143021"), Hex("65D58B")),
-        (Hex("C7E4DC"), Hex("147363"), Hex("12302B"), Hex("5ED0B9")),
-        (Hex("DDD2EF"), Hex("6842A6"), Hex("261B3A"), Hex("B69AE9")),
-        (Hex("E4CDEE"), Hex("8038A5"), Hex("2D1738"), Hex("D899EF")),
-        (Hex("EECBDD"), Hex("9B2D70"), Hex("35162B"), Hex("E58AC0")),
-        (Hex("EDCACD"), Hex("9E3941"), Hex("34191C"), Hex("E68D94")),
-        (Hex("E1D3C7"), Hex("7C5234"), Hex("2E2119"), Hex("D1A27E"))
-    ];
     private static readonly Color[] AnnotationColors =
     [
         Color.FromArgb(255, 255, 59, 48),   // 0: 红
@@ -72,10 +58,12 @@ public sealed partial class MapListPage : UserControl
     private const double MarkerPanelTopSafeInset = 48d;
     private const double MarkerPanelPreferredWidth = 170d;
 
-    private readonly MapRepository _repository = new();
+    private readonly MapRepository _repository;
     private readonly IdvmPackageService _idvmPackageService;
-    private readonly MapSubscriptionService _mapSubscriptionService;
-    private readonly MapPublicationService _mapPublicationService;
+    private readonly IMapSubscriptionService _mapSubscriptionService;
+    private readonly IMapPublicationService _mapPublicationService;
+    private readonly IAccountService _accountService;
+    private readonly ICommunityService _communityService;
     private readonly ContentPresenter _workflowHost = new();
     internal ScrollViewer? ParentScrollViewer { get; set; }
     internal Action<bool>? NavigationCompactStateChanged { get; set; }
@@ -103,6 +91,7 @@ public sealed partial class MapListPage : UserControl
     private bool _hasInitializedClassSelection;
     private bool _surveyProjectsCollapsed = ShellLayoutMemory.Load().SurveyProjectsCollapsed;
     private bool _isPackageOperation;
+    private bool _editMapPending;
     private ComboBox? _classComboBox;
     private List<MapRecord>? _batchQueue;
     private int _batchQueueIndex;
@@ -148,25 +137,35 @@ public sealed partial class MapListPage : UserControl
     private Point _panelPositionRatio = new(1d, 0d);
     private double _imageAspectRatio = 16d / 9d;
 
-    public MapListPage()
+    public MapListPage(bool coCreationMode = false)
+        : this(App.Services.GetRequiredService<MapRepository>(), coCreationMode,
+            App.Services.GetRequiredService<IMapSubscriptionService>(),
+            App.Services.GetRequiredService<IMapPublicationService>(),
+            AccountSession.Service, CoCreationPublicationClient.Service)
     {
+    }
+
+    internal MapListPage(MapRepository repository, bool coCreationMode,
+        IMapSubscriptionService subscriptions, IMapPublicationService publications,
+        IAccountService accounts, ICommunityService community)
+    {
+        _repository = repository;
+        _coCreationMode = coCreationMode;
         _idvmPackageService = new IdvmPackageService(_repository);
-        _mapSubscriptionService = new MapSubscriptionService(_repository);
-        _mapPublicationService = new MapPublicationService(_repository);
+        _mapSubscriptionService = subscriptions;
+        _mapPublicationService = publications;
+        _accountService = accounts;
+        _communityService = community;
+        if (coCreationMode) _accountService.Changed += CoCreationAccountChanged;
         Content = _workflowHost;
         Loaded += MapListPage_Loaded;
         Unloaded += OnUnloaded;
         ActualThemeChanged += (_, _) => UpdateSelectedCardVisuals();
-        KeyDown += MapListPage_KeyDown;
+        FluentTheme.Observe(this, _ => UpdateSelectedCardVisuals());
+        AddHandler(UIElement.KeyDownEvent, new KeyEventHandler(MapListPage_KeyDown), true);
     }
 
     private bool HasSelection => _selectedMapIds.Count > 0;
-
-    private static Color Hex(string value) => Color.FromArgb(
-        255,
-        Convert.ToByte(value[..2], 16),
-        Convert.ToByte(value.Substring(2, 2), 16),
-        Convert.ToByte(value.Substring(4, 2), 16));
 
     private bool IsBatchOperation => _batchQueue is { Count: > 0 };
 
@@ -232,7 +231,7 @@ public sealed partial class MapListPage : UserControl
             CloseButtonText = "取消",
             DefaultButton = ContentDialogButton.Close
         };
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+        if (await dialog.ShowThemedAsync(this) != ContentDialogResult.Primary)
         {
             ResetBatchOperation();
             return;
@@ -240,11 +239,18 @@ public sealed partial class MapListPage : UserControl
 
         try
         {
-            foreach (var map in _batchQueue)
-                await _repository.DeleteAsync(map.Id);
+            await RunMapOperationAsync("正在删除地图……", async () =>
+            {
+                var deleted = 0;
+                foreach (var map in _batchQueue)
+                {
+                    await Task.Run(() => _repository.DeleteAsync(map.Id));
+                    MapOperationProgress.Report(.9 * ++deleted / _batchQueue.Count, "正在删除地图……");
+                }
 
-            if (!App.IsSafeMode)
-                await App.Session.RefreshMapCacheAsync();
+                if (!App.IsSafeMode)
+                    await MapOperationProgress.RunAsync(.9, 1, () => App.Session.RefreshMapCacheAsync());
+            });
         }
         catch (Exception exception)
         {
@@ -283,16 +289,22 @@ public sealed partial class MapListPage : UserControl
     private async void MapListPage_Loaded(object sender, RoutedEventArgs e)
     {
         Loaded -= MapListPage_Loaded;
-        var startupTimer = Stopwatch.StartNew();
-        var prepared = App.TakeMapListStartupData();
-        if (prepared is not null
-            && prepared.Revision != _repository.GetCatalogRevision())
-            prepared = null;
-        await ShowListAsync(prepared);
-        OutputLog.Write("INFO", "STARTUP",
-            $"Map list first render: prepared={prepared is not null}, elapsedMs={startupTimer.Elapsed.TotalMilliseconds:F1}.");
-        if (!App.IsSafeMode)
-            _ = RepairMapMetadataInBackgroundAsync();
+        try
+        {
+            var startupTimer = Stopwatch.StartNew();
+            var prepared = _coCreationMode ? null : App.TakeMapListStartupData();
+            await ShowListAsync(prepared);
+            _initialListReady.TrySetResult();
+            OutputLog.Write("INFO", "STARTUP",
+                $"Map list first render: startupSnapshotAvailable={prepared is not null}, elapsedMs={startupTimer.Elapsed.TotalMilliseconds:F1}.");
+            if (!App.IsSafeMode) _ = RepairMapMetadataInBackgroundAsync();
+        }
+        catch (Exception exception)
+        {
+            _initialListReady.TrySetException(exception);
+            System.Diagnostics.Debug.WriteLine($"Map list load failed: {exception}");
+            _workflowHost.Content = CreateDescription("地图列表加载失败：" + exception.Message);
+        }
     }
 
     private async Task RepairMapMetadataInBackgroundAsync()
@@ -310,8 +322,11 @@ public sealed partial class MapListPage : UserControl
 
     private void MapListPage_KeyDown(object sender, KeyRoutedEventArgs e)
     {
-        if (HandleModernMarkerEditorKeyDown(e))
+        if (_modernEditorActive)
+        {
+            HandleModernMarkerEditorKeyDown(e);
             return;
+        }
 
         if (e.Key == Windows.System.VirtualKey.A
             && (Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(Windows.System.VirtualKey.Control)
@@ -323,24 +338,97 @@ public sealed partial class MapListPage : UserControl
         }
     }
 
+    private MapCatalogRevision? _loadedCatalogRevision;
+    private long _workflowRevision;
+
+    private bool IsWorkflowCurrent(long revision, string stage)
+    {
+        if (revision == _workflowRevision) return true;
+        IDVBuff.Core.Diagnostics.MemoryJournal.Current?.Record("workflow-superseded",
+            new { revision, currentRevision = _workflowRevision, stage });
+        return false;
+    }
+
     private async Task ShowListAsync(MapListStartupData? prepared = null)
     {
+        using var memory = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("UI.MapList.Show", _coCreationMode ? "co-creation" : "local");
+        var workflowRevision = ++_workflowRevision;
         ResetMarkerEditorSession();
         ResetBatchOperation();
-        var snapshot = prepared?.Catalog ?? await _repository.GetCatalogSnapshotAsync();
+        if (_coCreationMode)
+        {
+            // The community/template gallery consumes remote/template metadata,
+            // not every local drawing. A selected owned class resolves its own
+            // records before displaying saved-map identities.
+            if (_coCreationSelectedClass is { } selection)
+            {
+                if (!await LoadCoCreationLocalClassAsync(selection)) return;
+            }
+            else
+            {
+                _loadedMaps = [];
+                _classes = [];
+                _classProperties = new Dictionary<string, MapClassProperties>(StringComparer.OrdinalIgnoreCase);
+                _variantGroups = [];
+                _loadedCatalogRevision = null;
+            }
+            if (!IsWorkflowCurrent(workflowRevision, "co-creation-class")) return;
+            ReleaseMapCardPreviews();
+            await ShowCoCreationAsync();
+            return;
+        }
+        var revision = _repository.GetCatalogRevision();
+        if (prepared is not null && prepared.Revision != revision
+            && !_repository.IsMetadataOnlyRevisionAdvance(prepared.Revision, revision))
+            prepared = null;
+        var metadataOnly = _loadedCatalogRevision is { } loaded && _repository.IsMetadataOnlyRevisionAdvance(loaded, revision);
+        var scanFloorOnly = false;
+        if (_loadedCatalogRevision is { } previous
+            && _repository.TryGetScanFloorAdvance(previous, revision, out var changedClass, out var floorKey))
+        {
+            var updatedProperties = _classProperties.ToDictionary(pair => pair.Key, pair => pair.Value.Clone(), StringComparer.OrdinalIgnoreCase);
+            if (updatedProperties.TryGetValue(changedClass, out var properties))
+                properties.ScanFloorKey = floorKey;
+            else updatedProperties[changedClass] = new MapClassProperties { ScanFloorKey = floorKey };
+            _classProperties = updatedProperties;
+            foreach (var map in _loadedMaps.Where(map => string.Equals(map.Class, changedClass, StringComparison.OrdinalIgnoreCase)))
+                map.ClassProperties = updatedProperties[changedClass].Clone();
+            scanFloorOnly = true;
+        }
+        var snapshot = prepared?.Catalog ?? (_loadedCatalogRevision == revision || metadataOnly || scanFloorOnly
+            ? new MapCatalogSnapshot(_classes, _loadedMaps) { ClassProperties = _classProperties, VariantGroups = _variantGroups }
+            : await _repository.GetListCatalogSnapshotAsync());
+        if (!IsWorkflowCurrent(workflowRevision, "list-catalog")) return;
+        // Page-local, detached metadata is reusable until an actual catalog
+        // mutation. Switching gallery tabs must not clone every map again.
+        _loadedCatalogRevision = revision;
+        if (metadataOnly)
+            IDVBuff.Core.Diagnostics.MemoryJournal.Current?.Record("catalog-metadata-reuse", new { revision,
+                meaning = "list identity/tags unchanged; editors still resolve current image bindings by id" });
         _classes = snapshot.Classes;
         _classProperties = snapshot.ClassProperties;
         _loadedMaps = snapshot.Maps;
         _variantGroups = snapshot.VariantGroups;
-        _filterGroups = prepared?.FilterGroups
+        if (scanFloorOnly && !_coCreationMode && _mapCardsRepeater is not null)
+        {
+            IDVBuff.Core.Diagnostics.MemoryJournal.Current?.Record("catalog-scan-floor-reuse", new { revision,
+                meaning = "only scan-floor property changed; retained list records and control tree" });
+            RefreshMapCardsOnly();
+            return;
+        }
+        var filterGroups = prepared?.FilterGroups
             ?? (await new MapTagStore().LoadAsync(snapshot.Maps, snapshot.Classes))
                 .Where(group => group.IsEnabled)
                 .ToArray();
-        _surveyProjects = prepared?.SurveyProjects
+        if (!IsWorkflowCurrent(workflowRevision, "list-tags")) return;
+        var surveyProjects = prepared?.SurveyProjects
             ?? (App.IsSafeMode
                 ? []
                 : await App.Session.GetSurveyProjectsAsync());
-        _previewImages.Clear();
+        if (!IsWorkflowCurrent(workflowRevision, "list-projects")) return;
+        _filterGroups = filterGroups;
+        _surveyProjects = surveyProjects;
+        ReleaseMapCardPreviews();
         if (prepared is not null)
         {
             foreach (var (path, bitmap) in prepared.PreviewImages)

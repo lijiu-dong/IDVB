@@ -22,6 +22,18 @@ public sealed partial class MapRecord
     public bool SubscriptionPublisherIsBuilder { get; set; }
     public string? SubscriptionPublisherKeyId { get; set; }
     public string? SubscriptionVersion { get; set; }
+
+    internal void DetachSubscription()
+    {
+        if (AcquisitionKind == MapAcquisitionKind.Subscription)
+            AcquisitionKind = MapAcquisitionKind.ImportedPackage;
+        SubscriptionId = null;
+        SubscriptionPublisherHandle = null;
+        SubscriptionPublisherIsOfficial = false;
+        SubscriptionPublisherIsBuilder = false;
+        SubscriptionPublisherKeyId = null;
+        SubscriptionVersion = null;
+    }
 }
 
 public sealed partial class MapDraft

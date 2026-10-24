@@ -4,7 +4,7 @@ namespace IDVBuff.Features.Maps;
 
 public sealed partial class MapRepository
 {
-    private void ValidateFloorDefinitions(MapRecord record)
+    private static void ValidateFloorDefinitions(MapRecord record)
     {
         var floors = MapFloorRules.GetOrderedFloors(record);
         if (floors.Count == 0)
@@ -268,9 +268,11 @@ public sealed partial class MapRepository
             throw new InvalidOperationException(
                 $"{context} uses an unsupported image format: '{path}'. Use PNG, JPG, or JPEG.");
 
-        using var image = DecodeImage(path);
-        if (image.Empty())
-            throw new InvalidOperationException($"{context} image cannot be decoded: '{path}'.");
+        try { MapImageFileValidation.ValidateImageFile(path, CancellationToken.None); }
+        catch (Exception exception) when (exception is InvalidDataException or EndOfStreamException)
+        {
+            throw new InvalidOperationException($"{context} image cannot be decoded: '{path}'.", exception);
+        }
     }
 
     private string GetMapDirectory(Guid id) => Path.Combine(_rootDirectory, id.ToString("N"));

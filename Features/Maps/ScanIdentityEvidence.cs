@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using OpenCvSharp;
+using IDVBuff.Core.Imaging;
 
 namespace IDVBuff.Features.Maps;
 
@@ -16,6 +17,8 @@ public sealed record ScanIdentityEvidence(ScanIdentityState State, int TestedPoi
     int TotalPoints, double ForwardMeanPixels, double SupportedFraction,
     double LongestConflictPixels, string Reason)
 {
+    public int UnknownReferencePoints { get; init; }
+    public int StrongTestedPoints { get; init; }
     public int ConflictCell { get; init; } = -1;
     public int ConflictCellPoints { get; init; }
     public int ConflictCellHits { get; init; }
@@ -29,8 +32,9 @@ public sealed record ScanIdentityEvidence(ScanIdentityState State, int TestedPoi
 }
 
 /// <summary>Managed immutable full-floor distance index; never a cropped template.
-/// Lifetime is tied to the catalog Mat, including its map/floor/anchor revision.</summary>
-internal sealed class ScanStructureIndex
+/// Runtime ownership belongs to the scan cache for its map/floor/anchor revision.
+/// The Mat association only shares construction work while the source is alive.</summary>
+internal sealed partial class ScanStructureIndex : IDisposable
 {
     // Identity verification only distinguishes sub-pixel support bands up to
     // 5.5 px. Keeping an IEEE float for every authored-map pixel made the
@@ -46,43 +50,119 @@ internal sealed class ScanStructureIndex
     private static readonly ConditionalWeakTable<Mat, ScanStructureIndex> Cache = new();
     public int Width { get; }
     public int Height { get; }
-    internal int RetainedDistanceBytes => _distances.Length;
-    private readonly byte[] _distances;
-    private ScanStructureIndex(Mat line)
+    internal long RetainedDistanceBytes => _distanceBytes;
+    private readonly IDVBuff.Core.Collections.CompactByteField? _distances;
+    internal SemanticStructureIndex? SemanticIndex { get; }
+    internal DeepScanStructureIndex? LocalGeometry { get; set; }
+    internal long RetainedMemoryBytes => RetainedDistanceBytes + (SemanticIndex?.MemoryBytes ?? 0);
+    internal void PrepareLocalGeometry(Mat line)
     {
-        Width = line.Width; Height = line.Height;
-        using var inverse = new Mat();
-        Cv2.Threshold(line, inverse, 128, 255, ThresholdTypes.BinaryInv);
-        using var distances = new Mat();
-        Cv2.DistanceTransform(inverse, distances, DistanceTypes.L2, DistanceTransformMasks.Precise);
-        using var encodedDistances = new Mat();
-        distances.ConvertTo(
-            encodedDistances,
-            MatType.CV_8UC1,
-            FineDistanceUnitsPerPixel);
-        using var coarseDistances = new Mat();
-        distances.ConvertTo(
-            coarseDistances,
-            MatType.CV_8UC1,
-            CoarseDistanceUnitsPerPixel,
-            CoarseDistanceOffset);
-        using var coarseMask = new Mat();
-        Cv2.Compare(distances, FineDistanceLimit, coarseMask, CmpTypes.GT);
-        coarseDistances.CopyTo(encodedDistances, coarseMask);
-        _distances = new byte[Width * Height];
-        Marshal.Copy(encodedDistances.Data, _distances, 0, _distances.Length);
+        DeepScanStructureIndex.Prewarm(line);
+        if (DeepScanStructureIndex.TryGet(line, out var geometry)) LocalGeometry = geometry;
     }
-    public static ScanStructureIndex Get(Mat line) => Cache.GetValue(line, m => new(m));
+    internal void PrepareLocalGeometryFromLabels(Mat labels) =>
+        LocalGeometry = DeepScanStructureIndex.FromPreparedLabels(this, labels);
+    private readonly Rect _unknownBounds;
+    // Candidate views share immutable distance storage and retain only this
+    // floor's explicitly erased anchor rectangle, evaluated at each candidate pose.
+    private ScanStructureIndex(ScanStructureIndex source, Rect unknownBounds)
+    {
+        Width = source.Width; Height = source.Height;
+        _distances = source._distances;
+        _distanceReader = source._distanceReader;
+        _distanceBytes = source._distanceBytes;
+        SemanticIndex = source.SemanticIndex;
+        _unknownBounds = unknownBounds.Intersect(new(0, 0, Width, Height));
+    }
+    internal ScanStructureIndex WithUnknownBounds(Rect bounds) => new(this, bounds);
+    internal ScanStructureIndex WithScanAnchor(MapRecord map, string floor)
+    {
+        var bounds = MapScanFloorRules.GetScanFeatureAnchor(map, floor)?.Bounds;
+        // Exactly the rectangle erased by BuildSideEntranceFeatureCache.
+        return bounds?.IsValid == true ? WithUnknownBounds(new(
+            (int)Math.Floor(bounds.X * Width), (int)Math.Floor(bounds.Y * Height),
+            (int)Math.Ceiling(bounds.Width * Width), (int)Math.Ceiling(bounds.Height * Height))) : this;
+    }
+    internal bool IsUnknown(double x, double y) => _unknownBounds.Width > 0 && _unknownBounds.Height > 0
+        && x >= _unknownBounds.X && y >= _unknownBounds.Y
+        && x < _unknownBounds.Right && y < _unknownBounds.Bottom;
+    internal bool IsUnknownWithinSupport(double x, double y, double scale)
+    {
+        if (_unknownBounds.Width <= 0 || _unknownBounds.Height <= 0) return false;
+        // A live point may legitimately match any reference pixel within the
+        // support disk. Erasing that possible match cannot prove a contradiction,
+        // even when the point's inverse projection is just outside the rectangle.
+        var dx = Math.Max(0, Math.Max(_unknownBounds.X - x, x - (_unknownBounds.Right - 1)));
+        var dy = Math.Max(0, Math.Max(_unknownBounds.Y - y, y - (_unknownBounds.Bottom - 1)));
+        var radius = ScanIdentityVerifier.SupportTolerancePixels / scale;
+        return dx * dx + dy * dy <= radius * radius;
+    }
+    internal static bool HasEnoughKnownPoints(int known, int total, int minimum) =>
+        known >= minimum && known >= total * .65;
+    private ScanStructureIndex(Mat labels, bool semantic, bool deterministicDistanceStorage, bool nativeSemanticStorage,
+        SemanticStructureIndex? semanticSource = null, byte erasedKinds = 3)
+    {
+        Width = labels.Width; Height = labels.Height;
+        // Preserve the exact quantized distance field without overlapping
+        // full-floor float, inverse, mask and coarse conversion rasters.
+        using (var encoded = ScanDistanceRaster.Encode(labels))
+        {
+            var encodedDistances = encoded.Image;
+            if (!encodedDistances.IsContinuous())
+                throw new InvalidOperationException("扫描距离场必须连续存储。");
+            var data = MemoryMarshal.CreateReadOnlySpan(ref encodedDistances.At<byte>(0, 0), checked(Width * Height));
+            if (deterministicDistanceStorage)
+            {
+                using var owner = IDVBuff.Core.Collections.NativeEncodedByteField.Encode(data, Width, Height, "ScanStructureIndex.NativeDistance");
+                _distanceReader = owner.TryRent() ?? throw new InvalidOperationException("New native index was retired during construction.");
+                _distanceBytes = _distanceReader.PayloadBytes;
+                _ownsDistanceReader = true;
+            }
+            else
+            {
+                _distances = new IDVBuff.Core.Collections.CompactByteField(data, Width, Height, "ScanStructureIndex.Distance");
+                _distanceBytes = _distances.MemoryBytes;
+            }
+        }
+        try
+        {
+            if (semantic) SemanticIndex = semanticSource is null
+                ? new(labels, prepareCorrelationBits: false, nativeStorage: nativeSemanticStorage)
+                : SemanticStructureIndex.FromMaskedLabels(labels, semanticSource, erasedKinds, nativeSemanticStorage);
+            _ownsSemanticReader = SemanticIndex?.UsesNativeStorage == true;
+        }
+        catch { _distanceReader?.Dispose(); throw; }
+    }
+    // Borrow already validated, anchor-masked labels only during construction.
+    // Both fields own their compressed bytes; neither retains this native Mat.
+    internal static ScanStructureIndex FromPreparedLabels(Mat labels, bool semantic, bool deterministicDistanceStorage = false, bool nativeSemanticStorage = false)
+    {
+        if (labels.Empty() || labels.Type() != MatType.CV_8UC1)
+            throw new ArgumentException("扫描标签必须为非空单通道图。", nameof(labels));
+        return new(labels, semantic, deterministicDistanceStorage, nativeSemanticStorage);
+    }
+    public static ScanStructureIndex Get(Mat line) => Cache.GetValue(line, m =>
+    {
+        using var labels = SemanticStructureContours.Decode(m);
+        return FromPreparedLabels(labels, m.Channels() == 3);
+    });
+    internal static void ForgetSource(Mat line) => Cache.Remove(line);
     public double Distance(double x, double y, double scale)
     {
         if (!double.IsFinite(x) || !double.IsFinite(y) || x < 0 || y < 0 || x >= Width - 1 || y >= Height - 1)
             return 50d;
         var ix = (int)x; var iy = (int)y;
         var fx = x - ix; var fy = y - iy;
-        var distance = (DecodeDistance(_distances[iy * Width + ix]) * (1 - fx)
-                + DecodeDistance(_distances[iy * Width + ix + 1]) * fx) * (1 - fy)
-            + (DecodeDistance(_distances[(iy + 1) * Width + ix]) * (1 - fx)
-                + DecodeDistance(_distances[(iy + 1) * Width + ix + 1]) * fx) * fy;
+        if (_distanceReader is not null)
+        {
+            var pixels = _distanceReader.ReadQuad(ix, iy);
+            return ((DecodeDistance((byte)pixels) * (1 - fx) + DecodeDistance((byte)(pixels >> 8)) * fx) * (1 - fy)
+                + (DecodeDistance((byte)(pixels >> 16)) * (1 - fx) + DecodeDistance((byte)(pixels >> 24)) * fx) * fy) * scale;
+        }
+        var distance = (DecodeDistance(_distances!.At(ix, iy)) * (1 - fx)
+                + DecodeDistance(_distances!.At(ix + 1, iy)) * fx) * (1 - fy)
+            + (DecodeDistance(_distances!.At(ix, iy + 1)) * (1 - fx)
+                + DecodeDistance(_distances!.At(ix + 1, iy + 1)) * fx) * fy;
         return distance * scale;
     }
 
@@ -90,20 +170,97 @@ internal sealed class ScanStructureIndex
         encoded <= FineDistanceLimit * FineDistanceUnitsPerPixel
             ? encoded / FineDistanceUnitsPerPixel
             : (encoded - CoarseDistanceOffset) / CoarseDistanceUnitsPerPixel;
-    public double Score(IReadOnlyList<Point> points, double scale, double x, double y)
+    // DeepScan evaluates many local poses. Decode its immutable byte distances
+    // once instead of repeating four piecewise decodes for every sampled pixel.
+    // Ordinary modes and the final identity verifier retain their original path.
+    private static class DeepScanDecoder
     {
-        var sum = 0d;
-        foreach (var p in points)
+        internal static readonly double[] Values = Enumerable.Range(0, 256)
+            .Select(value => DecodeDistance((byte)value)).ToArray();
+    }
+    internal double DeepScanDistance(double x, double y, double scale)
+    {
+        if (!double.IsFinite(x) || !double.IsFinite(y) || x < 0 || y < 0 || x >= Width - 1 || y >= Height - 1)
+            return 50d;
+        var ix = (int)x; var iy = (int)y;
+        var fx = x - ix; var fy = y - iy;
+        var lookup = DeepScanDecoder.Values;
+        if (_distanceReader is not null)
         {
-            var d = Distance((p.X - x) / scale, (p.Y - y) / scale, scale);
-            sum += d <= .8 ? 1 : d <= 2.5 ? .7 : d <= 5.5 ? .4 : 0;
+            var pixels = _distanceReader.ReadQuad(ix, iy);
+            return ((lookup[(byte)pixels] * (1 - fx) + lookup[(byte)(pixels >> 8)] * fx) * (1 - fy)
+                + (lookup[(byte)(pixels >> 16)] * (1 - fx) + lookup[(byte)(pixels >> 24)] * fx) * fy) * scale;
         }
-        return points.Count == 0 ? 0 : sum / points.Count;
+        var distance = (lookup[_distances!.At(ix, iy)] * (1 - fx)
+                + lookup[_distances!.At(ix + 1, iy)] * fx) * (1 - fy)
+            + (lookup[_distances!.At(ix, iy + 1)] * (1 - fx)
+                + lookup[_distances!.At(ix + 1, iy + 1)] * fx) * fy;
+        return distance * scale;
+    }
+    public double Score(ReadOnlySpan<Point> points, double scale, double x, double y,
+        double minimumCompetitiveScore = 0, byte[]? semanticLabels = null)
+    {
+        if (_distanceReader is not null && (SemanticIndex is null || SemanticIndex.UsesNativeStorage))
+            return NativeScanScoring.Score(points, scale, x, y, minimumCompetitiveScore, semanticLabels,
+                _unknownBounds, ScanIdentityVerifier.SupportTolerancePixels, Width, Height, _distanceReader,
+                SemanticIndex?.NativeWarm, SemanticIndex?.NativeCool, DeepScanDecoder.Values);
+        var sum = 0d;
+        var known = 0;
+        var semanticRadius = Math.Max(2d, 2d / scale);
+        for (var i = 0; i < points.Length; i++)
+        {
+            var p = points[i];
+            var rx = (p.X - x) / scale;
+            var ry = (p.Y - y) / scale;
+            if (IsUnknownWithinSupport(rx, ry, scale)) continue;
+            // The shared byte decoder preserves the exact distance bands, while
+            // the span avoids allocating an interface enumerator for every pose.
+            var d = SemanticIndex is not null && semanticLabels is not null && semanticLabels[i] != 0
+                && !SemanticIndex.IsHit((int)Math.Round(rx), (int)Math.Round(ry), semanticLabels[i], semanticRadius)
+                ? 50d : DeepScanDistance(rx, ry, scale);
+            known++;
+            sum += d <= .8 ? 1 : d <= 2.5 ? .7 : d <= 5.5 ? .4 : 0;
+            // Assume every remaining point is known and matches perfectly. This
+            // is an upper bound even with erased anchors: skipping a future point
+            // cannot improve it. Retain ties and every potentially improving pose.
+            var remaining = points.Length - i - 1;
+            if (sum + remaining + 1e-9 < minimumCompetitiveScore * (known + remaining))
+                return 0;
+        }
+        return known > 0 && HasEnoughKnownPoints(known, points.Length, Math.Min(80, points.Length))
+            ? sum / known : 0;
     }
 }
 
 internal static class ScanIdentityVerifier
 {
+    internal static T? FirstCompetingMap<T>(IReadOnlyList<T> ranked, Func<T, Guid> mapId,
+        IReadOnlyList<Guid[]>? variantGroups) where T : class
+    {
+        if (ranked.Count == 0) return null;
+        var winner = mapId(ranked[0]);
+        var families = (variantGroups ?? []).Where(group => group.Contains(winner)).ToArray();
+        // Catalog groups are disjoint. Malformed overlapping groups must not
+        // transitively hide an unrelated competitor.
+        var family = families.Length == 1 ? families[0] : new[] { winner };
+        return ranked.Skip(1).FirstOrDefault(candidate => !family.Contains(mapId(candidate)));
+    }
+
+    internal static bool TryConfirmHypotheses(IReadOnlyList<SideEntranceScanCandidate> hypotheses,
+        ScanExecutionContext context, Func<SideEntranceScanCandidate, bool> tryConfirm)
+    {
+        // A pose is only one explanation of an identity. Local lack of evidence
+        // must not prevent another pose of the same map from being registered.
+        var ordered = hypotheses.OrderByDescending(h => h.IdentityEvidence.State == ScanIdentityState.Supported)
+            .ThenBy(h => FitCost(h.IdentityEvidence)).ThenByDescending(h => h.MatchScore).ToArray();
+        foreach (var hypothesis in ordered)
+        {
+            if (!context.CanCompute) return false;
+            if (tryConfirm(hypothesis)) return context.CanCompute;
+        }
+        return false;
+    }
+
     internal readonly record struct SelectionDecision(Guid? MapId, string Reason);
     public static Guid? SelectIdentity(IReadOnlyList<SideEntranceScanCandidate> candidates,
         bool retrievalComplete, bool withinBudget, IReadOnlyList<Guid[]>? variantGroups = null,
@@ -116,27 +273,36 @@ internal static class ScanIdentityVerifier
     {
         if (!retrievalComplete) return new(null, "retrieval-incomplete");
         if (!withinBudget) return new(null, "execution-unavailable");
-        if (candidates.Any(c => c.IdentityEvidence.State == ScanIdentityState.Unverified))
-            return new(null, "unverified-identities");
         var supported = candidates.Where(c => c.IdentityEvidence.State == ScanIdentityState.Supported)
             .OrderBy(c => FitCost(c.IdentityEvidence))
             .ThenByDescending(c => c.IdentityEvidence.SupportedFraction)
             .ThenBy(c => c.Map.SequenceNumber).ThenBy(c => c.Map.Id).ToArray();
-        var verified = supported.Where(c => c.Disposition == SideEntranceCandidateDisposition.Reliable).ToArray();
-        if (verified.Length == 0) return new(null, supported.Length == 0
-            ? "all-identities-excluded" : "supported-without-confirmed-alignment");
+        Guid[] FamilyOf(Guid id)
+        {
+            var declared = (variantGroups ?? []).Where(group => group.Contains(id)).ToArray();
+            return declared.Length == 1 ? declared[0] : new[] { id };
+        }
+        var verified = supported.Where(c => c.Disposition == SideEntranceCandidateDisposition.Reliable)
+            .Select(c => (Candidate: c, Family: FamilyOf(c.Map.Id)))
+            .Select(item => (item.Candidate, item.Family,
+                Cost: supported.Where(c => item.Family.Contains(c.Map.Id)).Min(c => FitCost(c.IdentityEvidence))))
+            .OrderBy(item => item.Cost).ToArray();
+        if (verified.Length == 0) return new(null,
+            candidates.Any(c => c.IdentityEvidence.State == ScanIdentityState.Unverified) ? "unverified-identities"
+            : supported.Length == 0 ? "all-identities-excluded" : "supported-without-confirmed-alignment");
         // Compare identities at the user-selectable family boundary. Only the
         // selected member needs a confirmed alignment; a fully compared losing
         // identity must not force a dialog merely because it was not aligned.
-        var winnerId = verified[0].Map.Id;
-        var winnerCost = FitCost(verified[0].IdentityEvidence);
-        // Do not transitively merge overlapping groups. Each declared family has
-        // to beat every supported identity outside that one family independently.
-        var families = (variantGroups ?? []).Where(group => group.Contains(winnerId))
-            .Append(new[] { winnerId });
-        var selected = families.Any(family => supported.Where(c => !family.Contains(c.Map.Id)).All(c =>
+        var winnerId = verified[0].Candidate.Map.Id;
+        var family = verified[0].Family;
+        // A declared family is one identity. Unknown siblings cannot veto its
+        // aligned member; unknown outside families must still prevent selection.
+        if (candidates.Any(c => c.IdentityEvidence.State == ScanIdentityState.Unverified && !family.Contains(c.Map.Id)))
+            return new(null, "unverified-identities");
+        var winnerCost = verified[0].Cost;
+        var selected = supported.Where(c => !family.Contains(c.Map.Id)).All(c =>
             selectionPolicy == ScanIdentitySelectionPolicy.AllowDominantSupport
-            && FitCost(c.IdentityEvidence) - winnerCost >= DominantFitMargin));
+            && FitCost(c.IdentityEvidence) - winnerCost >= DominantFitMargin);
         return new(selected ? winnerId : null, selected ? "selected" : "competing-supported-identities");
     }
     internal const double DominantFitMargin = .35;
@@ -148,7 +314,18 @@ internal static class ScanIdentityVerifier
     // Same safety policy in every mode. Distances are measured in screen pixels.
     internal const double SupportTolerancePixels = 5.5;
     internal const double MinimumSupport = .88;
-    internal const double MaximumContinuousConflictPixels = 30;
+    internal const double MinimumRefinementSupport = .80;
+    internal const double MaximumContinuousConflictFraction = .15;
+    internal static double GetContinuousConflictLimitPixels(int width, int height) => Math.Min(width, height) * MaximumContinuousConflictFraction;
+    internal static bool HasRefinablePose(ScanIdentityEvidence evidence) =>
+        evidence.State == ScanIdentityState.Excluded && evidence.TestedPoints >= 80
+        && evidence.TestedPoints + evidence.UnknownReferencePoints == evidence.TotalPoints
+        && evidence.SupportedFraction >= MinimumRefinementSupport && double.IsFinite(evidence.ForwardMeanPixels);
+
+    internal static bool ShouldAttemptStructureRegistration(ScanIdentityEvidence evidence, ScanPerformanceMode mode) =>
+        evidence.State == ScanIdentityState.Supported
+        || (mode != ScanPerformanceMode.DeepScan && HasRefinablePose(evidence));
+
     public static ScanIdentityEvidence Verify(ScanFrameEvidence frame, ScanStructureIndex index,
         MapOverlayTransform transform, MapScreenRect viewport, ScanExecutionContext? context)
     {
@@ -158,53 +335,116 @@ internal static class ScanIdentityVerifier
             || Math.Abs(transform.ScaleX - transform.ScaleY) > .000001
             || !double.IsFinite(transform.OffsetX) || !double.IsFinite(transform.OffsetY))
             return ScanIdentityEvidence.Unverified("invalid-transform");
-        var points = frame.DensePoints;
-        if (points.Length < 80 || frame.Contours.Count == 0)
-            return ScanIdentityEvidence.Unverified("insufficient-visible-structure");
+        if (index.SemanticIndex is { } semantics)
+        {
+            var colors = semantics.VerifyObservation(frame.Observation,
+                transform.ScaleX, transform.OffsetX, transform.OffsetY, viewport,
+                (x, y) => index.IsUnknownWithinSupport(x, y, transform.ScaleX));
+            // Support failure has enough observed samples and has already
+            // disproved this pose. Only missing/insufficient evidence is unknown;
+            // treating a compared loser as unverified vetoes every valid winner.
+            if (!colors.Accepted) return new(colors.Reason is "semantic-color-conflict" or "semantic-support-insufficient"
+                    ? ScanIdentityState.Excluded : ScanIdentityState.Unverified, colors.Tested, colors.Tested,
+                0, colors.Tested == 0 ? 0 : colors.Hits / (double)colors.Tested, 0, colors.Reason);
+        }
         var scale = transform.ScaleX;
         var tx = transform.OffsetX - viewport.X;
         var ty = transform.OffsetY - viewport.Y;
-        double Distance(Point p) => index.Distance((p.X - tx) / scale, (p.Y - ty) / scale, scale);
-        var hits = 0; var tested = 0; var distance = 0d;
+        ScanIdentityEvidence WithPose(ScanIdentityEvidence evidence) => evidence with
+            { EvaluatedScale = scale, ViewportOffsetX = tx, ViewportOffsetY = ty };
+        var points = frame.DensePoints;
+        if (points.Length < 80 || frame.Contours.Count == 0)
+            return WithPose(ScanIdentityEvidence.Unverified("insufficient-visible-structure"));
+        var deep = policy.Mode == ScanPerformanceMode.DeepScan;
+        double SampleDistance(double x, double y) => deep ? index.DeepScanDistance(x, y, scale) : index.Distance(x, y, scale);
+        bool Unknown(Point p) => index.IsUnknownWithinSupport((p.X - tx) / scale, (p.Y - ty) / scale, scale);
+        // Weak photometric recovery remains useful positive/global evidence, but
+        // cannot establish a local contradiction on its own. In fog its boundary
+        // is less reliable than the strong semantic edge stream. Unknown/weak
+        // pixels break a hard conflict run without adding supporting hits.
+        bool Strong(Point p) => frame.Observation.ProposalEdges.At<byte>(p.Y, p.X) != 0;
+        double Distance(Point p) => Unknown(p) || !Strong(p) ? 0 : SampleDistance((p.X - tx) / scale, (p.Y - ty) / scale);
+        var hits = 0; var tested = 0; var unknown = 0; var strongTested = 0; var distance = 0d;
         Span<int> cellTotals = stackalloc int[16];
         Span<int> cellHits = stackalloc int[16];
         foreach (var p in points)
         {
-            if ((tested & 255) == 0 && context is { CanCompute: false })
-                return ScanIdentityEvidence.Unverified("deadline");
-            var d = Distance(p);
-            var cell = Math.Min(3, p.X * 4 / frame.Source.Width) + 4 * Math.Min(3, p.Y * 4 / frame.Source.Height);
-            cellTotals[cell]++;
-            if (d <= SupportTolerancePixels) cellHits[cell]++;
+            if (((tested + unknown) & 255) == 0 && context is { CanCompute: false })
+                return WithPose(ScanIdentityEvidence.Unverified("deadline"));
+            var rx = (p.X - tx) / scale;
+            var ry = (p.Y - ty) / scale;
+            if (index.IsUnknownWithinSupport(rx, ry, scale)) { unknown++; continue; }
+            var d = SampleDistance(rx, ry);
+            if (Strong(p))
+            {
+                strongTested++;
+                var cell = Math.Min(3, p.X * 4 / frame.Source.Width) + 4 * Math.Min(3, p.Y * 4 / frame.Source.Height);
+                cellTotals[cell]++;
+                if (d <= SupportTolerancePixels) cellHits[cell]++;
+            }
             distance += d;
             if (d <= SupportTolerancePixels) hits++;
             tested++;
-            // Conservative upper bound: even if every remaining pixel matches this transform cannot pass.
-            if (context?.Policy.Mode != ScanPerformanceMode.Quality
-                && hits + points.Length - tested < MinimumSupport * points.Length)
-                return new(ScanIdentityState.Excluded, tested, points.Length, distance / tested,
-                    hits / (double)tested, 0, "unexplained-visible-structure");
+            // Only stop once even perfect remaining support cannot qualify for
+            // corrective registration. A prefix cannot describe the fit of the
+            // whole frame: using the acceptance threshold here made near-fit
+            // eligibility depend on which wall FindNonZero visited first.
+            if (context?.Policy.Mode is not (ScanPerformanceMode.Quality or ScanPerformanceMode.DeepScan)
+                // Do not exclude an identity before enough known reference is
+                // established: remaining points may all lie in its erased anchor.
+                && ScanStructureIndex.HasEnoughKnownPoints(tested, points.Length, 80)
+                && hits + points.Length - tested - unknown < MinimumRefinementSupport * (points.Length - unknown))
+                return WithPose(new(ScanIdentityState.Excluded, tested, points.Length, distance / tested,
+                    hits / (double)tested, 0, "unexplained-visible-structure")
+                    { UnknownReferencePoints = unknown, StrongTestedPoints = strongTested });
         }
+        if (!ScanStructureIndex.HasEnoughKnownPoints(tested, points.Length, 80))
+        {
+            // Coverage is required to support a pose, not to ignore contradictions.
+            // Give every erased point perfect support: if even that upper bound
+            // cannot reach corrective registration, this pose cannot compete.
+            // Keep genuinely unknown poses unresolved and the positive gates intact.
+            if (strongTested >= 80
+                && hits + unknown < MinimumRefinementSupport * points.Length)
+                return WithPose(new(ScanIdentityState.Excluded, tested, points.Length, distance / tested,
+                    hits / (double)tested, 0, "unexplained-visible-structure")
+                    { UnknownReferencePoints = unknown, StrongTestedPoints = strongTested });
+            return WithPose(ScanIdentityEvidence.Unverified("insufficient-unmasked-reference-structure")
+                with { TestedPoints = tested, TotalPoints = points.Length, UnknownReferencePoints = unknown,
+                    StrongTestedPoints = strongTested });
+        }
+        // An all-weak observation cannot establish identity by merely avoiding
+        // the conflict checks. Wait for enough known strong structure instead.
+        if (strongTested < 80)
+            return WithPose(ScanIdentityEvidence.Unverified("insufficient-strong-visible-structure")
+                with { TestedPoints = tested, TotalPoints = points.Length, UnknownReferencePoints = unknown,
+                    StrongTestedPoints = strongTested });
+        var conflictLimit = GetContinuousConflictLimitPixels(frame.Source.Width, frame.Source.Height);
         var longest = 0d;
         Point? conflictStart = null, conflictEnd = null;
-        foreach (var contour in frame.Contours)
+        var prepared = deep ? frame.PreparedConflictContours : null;
+        for (var i = 0; i < frame.Contours.Count; i++)
         {
-            if (context is { CanCompute: false }) return ScanIdentityEvidence.Unverified("deadline");
-            var measured = MeasureStraightConflict(contour, Distance, out var start, out var end);
-            if (measured > longest) { longest = measured; conflictStart = start; conflictEnd = end; }
-            if (longest >= MaximumContinuousConflictPixels) break;
+            if (context is { CanCompute: false }) return WithPose(ScanIdentityEvidence.Unverified("deadline"));
+            var measured = MeasureStraightConflict(frame.Contours[i], Distance, out var measuredStart, out var measuredEnd,
+                preparedVertices: prepared?[i], stopAtPixels: conflictLimit);
+            if (measured > longest) { longest = measured; conflictStart = measuredStart; conflictEnd = measuredEnd; }
+            if (longest >= conflictLimit) break;
         }
-        var support = hits / (double)points.Length;
+        var support = hits / (double)tested;
         var spatialConflict = false;
         var conflictCell = -1;
         for (var cell = 0; cell < cellTotals.Length; cell++)
             if (cellTotals[cell] >= 30 && cellHits[cell] < cellTotals[cell] * .70)
             { spatialConflict = true; if (conflictCell < 0) conflictCell = cell; }
-        var accepted = support >= MinimumSupport && !spatialConflict && longest < MaximumContinuousConflictPixels;
+        var accepted = support >= MinimumSupport && !spatialConflict && longest < conflictLimit;
         return new(accepted ? ScanIdentityState.Supported : ScanIdentityState.Excluded,
             tested, points.Length, distance / tested, support, longest,
-            accepted ? "visible-structure-supported" : spatialConflict ? "spatial-support-conflict" : "visible-contour-conflict")
+            accepted ? "visible-structure-supported" : support < MinimumSupport ? "unexplained-visible-structure"
+                : spatialConflict ? "spatial-support-conflict" : "visible-contour-conflict")
         {
+            UnknownReferencePoints = unknown,
+            StrongTestedPoints = strongTested,
             ConflictCell = conflictCell,
             ConflictCellPoints = conflictCell < 0 ? 0 : cellTotals[conflictCell],
             ConflictCellHits = conflictCell < 0 ? 0 : cellHits[conflictCell],
@@ -213,43 +453,46 @@ internal static class ScanIdentityVerifier
             EvaluatedScale = scale, ViewportOffsetX = tx, ViewportOffsetY = ty
         };
     }
-
     internal static double MeasureStraightConflict(Point[] contour, Func<Point, double> distance)
         => MeasureStraightConflict(contour, distance, out _, out _);
 
     internal static double MeasureStraightConflict(Point[] contour, Func<Point, double> distance,
-        out Point? conflictStart, out Point? conflictEnd)
+        out Point? conflictStart, out Point? conflictEnd, Point[]? preparedVertices = null,
+        double stopAtPixels = double.PositiveInfinity)
     {
         conflictStart = null; conflictEnd = null;
         // A small badge's perimeter (or a contour visited twice) is not the length
         // of an unexplained wall. Split at genuine turns, tolerating raster stair
         // steps, and measure supported/unsupported runs on each straight segment.
-        var vertices = Cv2.ApproxPolyDP(contour, 1.5, true);
+        if (contour.Length == 0) return 0;
+        var vertices = preparedVertices ?? Cv2.ApproxPolyDP(contour, 1.5, true);
+        if (vertices.Length < 2) return 0;
+        // Approximation identifies turns only. Rasterizing its chords invents
+        // pixels outside the observed contour and can turn a fully supported
+        // wall into a long conflict near the distance tolerance boundary.
+        var cursor = Array.IndexOf(contour, vertices[0]);
+        if (cursor < 0) throw new ArgumentException("Conflict vertices must belong to the observed contour.", nameof(preparedVertices));
         var longest = 0d;
         for (var i = 0; i < vertices.Length; i++)
         {
-            var a = vertices[i];
-            var b = vertices[(i + 1) % vertices.Length];
-            var dx = b.X - a.X; var dy = b.Y - a.Y;
-            var length = Math.Sqrt((double)dx * dx + (double)dy * dy);
-            var steps = Math.Max(Math.Abs(dx), Math.Abs(dy));
-            if (steps == 0) continue;
-            var run = 0d;
-            var runStart = a;
-            for (var step = 0; step <= steps; step++)
+            var end = vertices[(i + 1) % vertices.Length];
+            Point? runStart = null;
+            var previous = contour[cursor];
+            for (var visited = 0; visited <= contour.Length; visited++)
             {
-                var p = new Point((int)Math.Round(a.X + dx * (step / (double)steps)),
-                    (int)Math.Round(a.Y + dy * (step / (double)steps)));
+                var p = contour[cursor];
                 if (distance(p) > SupportTolerancePixels)
                 {
-                    if (run == 0) runStart = step == 0 ? a : new Point(
-                        (int)Math.Round(a.X + dx * ((step - 1d) / steps)),
-                        (int)Math.Round(a.Y + dy * ((step - 1d) / steps)));
-                    run += step == 0 ? 0 : length / steps;
+                    runStart ??= previous;
+                    var dx = p.X - runStart.Value.X; var dy = p.Y - runStart.Value.Y;
+                    var run = Math.Sqrt((double)dx * dx + (double)dy * dy);
+                    if (run > longest) { longest = run; conflictStart = runStart; conflictEnd = p; }
+                    if (longest >= stopAtPixels) return longest;
                 }
-                else run = 0;
-                if (run > longest) { longest = run; conflictStart = runStart; conflictEnd = p; }
-                if (longest >= MaximumContinuousConflictPixels) return longest;
+                else runStart = null;
+                if (p == end) break;
+                previous = p;
+                cursor = (cursor + 1) % contour.Length;
             }
         }
         return longest;

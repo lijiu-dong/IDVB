@@ -1,5 +1,6 @@
 // IDVB Remaster — Session Orchestrator（新架构唯一入口）
 using IDVBuff.Core.Contracts;
+using IDVBuff.Core.Contracts.Online;
 using IDVBuff.Core.Models;
 using IDVBuff.Pipeline;
 using Microsoft.UI.Dispatching;
@@ -37,7 +38,7 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
     private readonly MapRecognitionStatisticsRepository _recognitionStatsRepo;
     private readonly MapFeatureCacheRepository _mapFeatureCacheRepository;
     private readonly MapOverlayStatusCoordinator _overlayStatus;
-    private readonly MapControlPanelWindow? _controlPanel;
+    private readonly IMapControlPanelView? _controlPanel = null;
     private readonly ICaptureProtectionService? _captureProtection;
     private readonly GameOverlayProgressBar _scanProgressOverlay;
     private readonly RealtimeMapTransformPublisher _realtimeMapTransformPublisher;
@@ -111,7 +112,8 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
         SurveyCaptureTuning? surveyCaptureTuning = null,
         ICaptureProtectionService? captureProtection = null,
         bool headless = false,
-        IMapCandidateLearningEngine? learningEngine = null)
+        IMapCandidateLearningEngine? learningEngine = null,
+        IUsageMeter? usageMeter = null)
     {
         _dispatcher = dispatcher;
         _settingsRepo = settingsRepo;
@@ -136,13 +138,22 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
             action => _dispatcher.TryEnqueue(() => action()),
             ApplyRealtimeMapTransform);
         _learningEngine = learningEngine ?? new MapSampleProviderEngine();
+#if IDVB_PRIVATE_ONLINE_SERVICES
+        _usageMeter = usageMeter ?? throw new InvalidOperationException("私有服务模式必须配置对局时长授权。");
+#else
+        _usageMeter = usageMeter ?? new UnavailableUsageMeter();
+#endif
         _surveyCoordinator.StatusChanged += SurveyCoordinator_StatusChanged;
         _headless = headless;
 
         // Create internal concrete services
         _mapRepository = new MapRepository();
         _rtSettingsRepo = new MapRuntimeSettingsRepository();
-        _recognition = new MapCvRecognitionService(_mapRepository);
+        _recognition = new MapCvRecognitionService(_mapRepository, MapOverlayBitmapRenderer.InvalidateImageCache,
+            matchScopedResources: true, deterministicScanStorage: true,
+            // Experimental semantic backend remains isolated to the validated
+            // development memory-test root until end-to-end gates pass.
+            deterministicSemanticStorage: AppDataPaths.IsMemoryTest);
         _playerMarkerDetector = new MapPlayerMarkerDetector();
         _researchCollector = researchCollector;
         _logCollector = new MapLogCollector();
@@ -174,6 +185,9 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
         // MapControlPanelWindow 仅在 GUI 模式创建（headless CLI 跳过）
         if (!headless)
         {
+#if IDVB_HEADLESS
+            throw new InvalidOperationException("当前宿主仅支持 headless 模式，不能创建可视控制面板。");
+#else
             _controlPanel = new MapControlPanelWindow(
                 mapClass => BeginMatchAsync(mapClass),
                 GetMapClassesAsync,
@@ -189,7 +203,9 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
                 GetCurrentVariantContextAsync,
                 SwitchVariantAsync,
                 _captureProtection,
-                CorrectMapAsync);
+                CorrectMapAsync,
+                beginMatchWithPendingSave: (mapClass, pendingSave) => BeginMatchAsync(mapClass, pendingSave));
+#endif
         }
 
         // 全局输入事件仅在 GUI 模式订阅（headless CLI 无输入设备）
@@ -205,6 +221,11 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
                     RunManualRecognitionAsync);
             _input.GameMapToggleInvoked += (_, _) =>
                 StartInputOperation("game-map-toggle", HandleGameMapToggleAsync);
+            _input.GameMapCloseInvoked += (_, _) =>
+                StartInputOperation("game-map-close", HandleGameMapCloseAsync);
+            _input.GameMapClickObserved += (_, _) =>
+                StartInputOperation("game-map-click", HandleGameMapClickAsync);
+            _input.SetGameMapClickWatch(CanWatchGameMapClick);
             _input.ControlPanelToggleInvoked += (_, _) =>
                 ToggleControlPanel();
             _input.SwitchFloorInvoked += (_, _) =>
@@ -222,78 +243,6 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
         }
     }
 
-    private void RunInputAction(string actionName, Action action)
-    {
-        LogInputHandlerOutcome(actionName, "handler-started");
-        try
-        {
-            action();
-            LogInputHandlerOutcome(actionName, "handler-completed");
-        }
-        catch (Exception exception)
-        {
-            LogInputHandlerOutcome(actionName, "handler-failed", exception);
-        }
-    }
-
-    private void StartInputOperation(
-        string actionName,
-        Func<Task> operation)
-    {
-        LogInputHandlerOutcome(actionName, "handler-started");
-        Task task;
-        try
-        {
-            task = operation();
-        }
-        catch (Exception exception)
-        {
-            LogInputHandlerOutcome(actionName, "handler-failed", exception);
-            return;
-        }
-
-        _ = ObserveInputOperationAsync(actionName, task);
-    }
-
-    private async Task ObserveInputOperationAsync(
-        string actionName,
-        Task operation)
-    {
-        try
-        {
-            await operation;
-            LogInputHandlerOutcome(actionName, "handler-completed");
-        }
-        catch (Exception exception)
-        {
-            LogInputHandlerOutcome(actionName, "handler-failed", exception);
-        }
-    }
-
-    private void LogInputHandlerOutcome(
-        string actionName,
-        string outcome,
-        Exception? exception = null)
-    {
-        try
-        {
-            _logCollector.Append(
-                MapLogCategory.System,
-                exception is null ? MapLogLevel.Info : MapLogLevel.Error,
-                $"Input handler: {actionName} · {outcome}",
-                details: new()
-                {
-                    ["outcome"] = outcome,
-                    ["action"] = actionName,
-                    ["exceptionType"] = exception?.GetType().FullName,
-                    ["exception"] = exception?.ToString()
-                });
-        }
-        catch
-        {
-        }
-    }
-
     // ════════════════ Initialize ════════════════
 
     public async Task InitializeAsync()
@@ -306,7 +255,7 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
             await Task.Run(FloorIndicatorTemplateRegistry.Prepare);
             var settingsObj = await _settingsRepo.LoadAsync();
             _settings = settingsObj is MapRuntimeSettings s ? s : new MapRuntimeSettings();
-            _logCollector.IsEnabled = _settings.CollectLogs;
+            InitializeLogCollection();
             try
             {
                 await _researchCollector.SetEnabledAsync(
@@ -445,7 +394,7 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
     public MapAlignmentResearchCollector ResearchCollector => _researchCollector;
     public ISurveyCoordinator SurveyCoordinator => _surveyCoordinator;
     public MapMatchSnapshot MatchSnapshot => _matchSession.Snapshot;
-    public bool IsMatchStarted => _matchSession.Snapshot.IsStarted;
+    public bool IsMatchStarted => _matchSession.Snapshot.IsStarted && HasMatchUsageAuthorization;
     public string? CurrentMatchId => _matchSession.Snapshot is { IsStarted: true }
         ? _matchSession.Snapshot.MatchId.ToString()
         : null;

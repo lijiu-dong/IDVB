@@ -12,6 +12,12 @@ public sealed partial class SessionOrchestrator
         "resolution_preset",
         "recognition_dispatch_wait",
         "initial_recognition",
+        "automatic_candidate_verification",
+        "automatic_identity_selection",
+        "recognition_result_finalize",
+        "automatic_commit_validation",
+        "automatic_commit_and_publish",
+        "tracking_start",
         "candidate_selection_wait",
         "selected_candidate_alignment",
         "manual_floor_alignment",
@@ -227,6 +233,11 @@ public sealed partial class SessionOrchestrator
         }
         else
         {
+            if (ScanRequestDiagnostics.Current is { } request)
+            {
+                request.TraceId = summary.OperationId;
+                request.Complete(summary.Outcome, summary.TerminalReason);
+            }
             _lastScanOperationTrace = summary;
             _lastScanPhaseTimings = summary.ToPhaseTimings();
             if (_lastDiagnostics is { } diagnostics)

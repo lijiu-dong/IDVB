@@ -18,32 +18,70 @@ public sealed partial class SessionOrchestrator
 
     private async Task HandleGameMapToggleAsync()
     {
-        if (_disposed || !_settings!.IsEnabled
-            || !_matchSession.Snapshot.IsStarted)
-            return;
-
-        // 如果地图当前处于打开状态，用户按下切换键必然是希望立即关图。
-        // 关图享受最高优先级零延迟短路：不检查前台失焦、不等待分辨率预设解析，1ms 内立即关图并取消后台对齐！
-        if (_gameMapToggleState.IsOpen)
+        MapGameToggleTransition toggle;
+        // Serialize only the state transition. Alignment runs outside this gate
+        // so a close input or variant change can cancel it while it awaits.
+        await _matchLifecycleGate.WaitAsync();
+        try
         {
-            _gameMapToggleState.Toggle();
-            await EndMapDisplayAsync("game map closed");
+            if (_disposed || _settings is not { IsEnabled: true }
+                || !_matchSession.Snapshot.IsStarted)
+            {
+                ReportInputDecision("game-map-toggle", "rejected", _disposed ? "disposed"
+                    : _settings is not { IsEnabled: true } ? "runtime-disabled" : "match-not-started");
+                return;
+            }
+
+            // 如果地图当前处于打开状态，用户按下切换键必然是希望立即关图。
+            // 立即关闭显示和实时跟踪；已经取得截图的扫描仍独立完成计算。
+            if (_gameMapToggleState.IsOpen)
+            {
+                _gameMapToggleState.Toggle();
+                await EndMapDisplayAsync("game map closed");
+                ReportInputDecision("game-map-toggle", "applied", "map-closed");
+                return;
+            }
+
+            if (!_captureSvc.TryGetForegroundClientBounds(
+                    out var clientBoundsObj, out var windowHandleObj, out var targetFailure)
+                || clientBoundsObj is not MapScreenRect clientBounds)
+            {
+                ReportInputDecision("game-map-toggle", "rejected", "capture-target-unavailable:" + targetFailure);
+                return;
+            }
+
+            var windowHandle = windowHandleObj is IntPtr hwnd ? hwnd : IntPtr.Zero;
+            await ApplySelectedResolutionPresetAsync(clientBounds);
+            toggle = _gameMapToggleState.Toggle();
+            if (!toggle.IsOpen)
+            {
+                await EndMapDisplayAsync("game map closed");
+                ReportInputDecision("game-map-toggle", "applied", "map-closed-after-preset");
+                return;
+            }
+        }
+        finally
+        {
+            _matchLifecycleGate.Release();
+        }
+        if (!_gameMapToggleState.IsCurrent(toggle))
+            return;
+        if (HasActiveQuickScan && (!_hasCompletedQuickScanAlignment
+            || _lastRecognition?.Result.OverlayTransform is null))
+        {
+            // The scan owns its captured frame and will publish according to
+            // the latest display state. Do not start a competing alignment.
+            ReportInputDecision("game-map-toggle", "applied", "scan-still-running");
+            StateChanged?.Invoke(this, EventArgs.Empty);
             return;
         }
-
-        if (!_captureSvc.TryGetForegroundClientBounds(
-                out var clientBoundsObj, out var windowHandleObj, out _)
-            || clientBoundsObj is not MapScreenRect clientBounds)
-            return;
-
-        var windowHandle = windowHandleObj is IntPtr hwnd ? hwnd : IntPtr.Zero;
-        await ApplySelectedResolutionPresetAsync(clientBounds);
-        var toggle = _gameMapToggleState.Toggle();
-        if (!toggle.IsOpen)
-        {
-            await EndMapDisplayAsync("game map closed");
-            return;
-        }
+        var route = _matchSession.Snapshot.Mode == MapRunMode.Survey ? "survey"
+            : CanObserveMap ? "front-entrance-continuous"
+            : _settings.SilentScanEnabled && _pendingAlignmentIdentity is null && _lastRecognition is null
+                ? "silent-scan"
+            : _backgroundScanStatus == BackgroundScanStatus.CompletedFailed ? "background-failed-alignment"
+            : IsBackgroundScanCompleted ? "consume-background-scan" : "locked-map-alignment";
+        ReportInputDecision("game-map-toggle", "dispatched", route);
         if (_matchSession.Snapshot.Mode == MapRunMode.Survey)
             await HandleSurveyMapOpenAsync(toggle);
         else if (CanObserveMap)
@@ -87,6 +125,7 @@ public sealed partial class SessionOrchestrator
             : _currentFloorKey ?? identity.Result.Floor
                 ?? MapFloorRules.GetPrimaryFloorKey(identity.Map);
         _gameMapToggleState.SetOpenForExternalController(false);
+        CancelQuickScan();
         await EndMapDisplayAsync("manual REST requested");
         if (identity is not null && !string.IsNullOrWhiteSpace(floorKey))
             await ResetLockedMapAlignmentEvidenceAsync(identity, floorKey);
@@ -95,7 +134,6 @@ public sealed partial class SessionOrchestrator
     private async Task EndMapDisplayAsync(string reason)
     {
         CancelMapObservation();
-        CancelQuickScan();
         ClearOptimisticPresentation();
         CancelMapOpenAlignment();
         EndAdaptiveMapOpen(reason);

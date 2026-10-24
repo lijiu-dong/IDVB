@@ -2,7 +2,6 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Diagnostics;
 using System.Numerics;
-using System.Runtime.InteropServices;
 using IDVBuff.Diagnostics;
 using Forms = System.Windows.Forms;
 
@@ -11,12 +10,10 @@ namespace IDVBuff.Lifecycle;
 /// <summary>A small independent message loop keeps startup feedback alive while WinUI loads.</summary>
 internal static class StartupSplash
 {
-    private static IntPtr _targetWindow;
-
-    public static void SetTargetWindow(IntPtr windowHandle) => Volatile.Write(ref _targetWindow, windowHandle);
+    internal static StartupFocusSnapshot? LaunchFocus { get; private set; }
 
     [Flags]
-    internal enum Stage { Interface = 1, Window = 2, Services = 4, Maps = 8, Extensions = 16, Catalog = 32, Ready = 64 }
+    internal enum Stage { Interface = 1, Window = 2, Services = 4, Maps = 8, Extensions = 16, Catalog = 32, Ready = 64, Connection = 128 }
     private static int _planned = 127;
     private static int _completed;
     private static int _transition;
@@ -24,8 +21,9 @@ internal static class StartupSplash
     private static readonly TaskCompletionSource TransitionReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private static readonly TaskCompletionSource Dismissed = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    public static void Configure(bool safeMode) => _planned = safeMode
-        ? (int)(Stage.Interface | Stage.Window | Stage.Catalog | Stage.Ready) : 127;
+    public static void Configure(bool safeMode, bool connectToServer = false) => _planned = (safeMode
+        ? (int)(Stage.Interface | Stage.Window | Stage.Catalog | Stage.Ready) : 127)
+        | (connectToServer ? (int)Stage.Connection : 0);
 
     public static void Complete(Stage stage)
     {
@@ -52,16 +50,37 @@ internal static class StartupSplash
     private static int _closed;
     private static int _started;
     private static readonly ManualResetEventSlim FirstPaint = new(false);
+    private static SplashForm? _window;
+
+    // Login is interactive; temporarily yield the existing splash without ending its message loop.
+    public static async Task SetVisibleAsync(bool visible)
+    {
+        var window = Volatile.Read(ref _window);
+        if (window is null || !window.IsHandleCreated || Volatile.Read(ref _closed) != 0) return;
+        var applied = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            window.BeginInvoke(() =>
+            {
+                if (!window.IsDisposed && Volatile.Read(ref _closed) == 0) window.Visible = visible;
+                applied.TrySetResult();
+            });
+            await Task.WhenAny(applied.Task, Dismissed.Task);
+        }
+        catch (InvalidOperationException) when (window.IsDisposed || Volatile.Read(ref _closed) != 0) { }
+    }
 
     public static void Show()
     {
         if (Interlocked.Exchange(ref _started, 1) != 0)
             return;
+        LaunchFocus = StartupFocusSnapshot.Capture();
         var thread = new Thread(() =>
         {
             try
             {
                 using var splash = new SplashForm();
+                Volatile.Write(ref _window, splash);
                 if (Volatile.Read(ref _closed) == 0)
                     Forms.Application.Run(splash);
             }
@@ -69,7 +88,7 @@ internal static class StartupSplash
             {
                 StartupTimeline.Write("Native startup splash unavailable; application startup continues.", exception);
             }
-            finally { FirstPaint.Set(); TransitionReady.TrySetResult(); Dismissed.TrySetResult(); }
+            finally { Volatile.Write(ref _window, null); FirstPaint.Set(); TransitionReady.TrySetResult(); Dismissed.TrySetResult(); }
         }) { IsBackground = true, Name = "IDVB startup splash" };
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
@@ -91,9 +110,6 @@ internal static class StartupSplash
         }
     }
 
-    [DllImport("user32.dll")]
-    private static extern bool SetForegroundWindow(IntPtr hWnd);
-
     private sealed class SplashForm : Forms.Form
     {
         private readonly Forms.Timer _timer = new() { Interval = 16 };
@@ -102,6 +118,18 @@ internal static class StartupSplash
         private Bitmap? _logo;
         private bool _paintRecorded;
 
+        protected override bool ShowWithoutActivation => true;
+
+        protected override Forms.CreateParams CreateParams
+        {
+            get
+            {
+                var parameters = base.CreateParams;
+                parameters.ExStyle |= 0x08000000; // WS_EX_NOACTIVATE from the first Show.
+                return parameters;
+            }
+        }
+
         public SplashForm()
         {
             Text = "Identity Vision Bridge";
@@ -109,8 +137,7 @@ internal static class StartupSplash
             StartPosition = Forms.FormStartPosition.Manual;
             ShowInTaskbar = false;
             MaximizeBox = MinimizeBox = false;
-            // The splash has its own UI thread and must remain visible while WinUI is loading.
-            // Waiting until the handoff leaves it behind whichever window activated meanwhile.
+            // Assign once; do not continually reorder the user's topmost window band.
             TopMost = true;
             // One scale for layout, fonts and logo; avoid automatic DPI plus manual scaling twice.
             AutoScaleMode = Forms.AutoScaleMode.None;
@@ -144,6 +171,22 @@ internal static class StartupSplash
                 Invalidate();
             };
             _timer.Start();
+        }
+
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            StartupTimeline.Write(StartupWindowDiagnostics.Describe("splash-shown", Handle));
+        }
+
+        protected override void WndProc(ref Forms.Message message)
+        {
+            if (message.Msg == 0x0021) // WM_MOUSEACTIVATE
+            {
+                message.Result = new IntPtr(3); // MA_NOACTIVATE
+                return;
+            }
+            base.WndProc(ref message);
         }
 
         internal static Rectangle CalculateBounds(Rectangle workArea, int dpi)
@@ -207,12 +250,7 @@ internal static class StartupSplash
         protected override void OnFormClosing(Forms.FormClosingEventArgs e)
         {
             base.OnFormClosing(e);
-            TopMost = false;
-            var target = Volatile.Read(ref _targetWindow);
-            if (target != IntPtr.Zero)
-            {
-                SetForegroundWindow(target);
-            }
+            StartupTimeline.Write(StartupWindowDiagnostics.Describe("splash-closing", Handle));
         }
 
         protected override void Dispose(bool disposing)

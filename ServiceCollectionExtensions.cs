@@ -2,6 +2,10 @@
 
 using IDVBuff.Diagnostics;
 using IDVBuff.Core.Contracts;
+using IDVBuff.Core.Contracts.Online;
+using IDVBuff.Core.Contracts.Online.Security;
+using IDVBuff.Features.Accounts;
+using IDVBuff.Lifecycle;
 using IDVBuff.Features.Maps;
 using IDVBuff.Features.Maps.Adapters;
 using IDVBuff.Features.Capture;
@@ -19,7 +23,9 @@ using IDVBuff.Survey.Fusion.OpenCv;
 using IDVBuff.Survey.Idvm;
 using IDVBuff.PluginContracts;
 using IDVBuff.Features.Notifications;
+using IdentityVisionBridge.PluginSdk;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.UI.Dispatching;
 
 namespace IDVBuff;
@@ -40,7 +46,7 @@ public static class ServiceCollectionExtensions
         // ════════════════════════════════════════════════════════════
         using var registrationTiming = StartupTimeline.Measure("DI registration body (after method JIT)");
         using (StartupTimeline.Measure("DI configuration provider construction"))
-            configProvider ??= new TomlConfigProvider();
+            configProvider ??= new TomlConfigProvider(AppDataPaths.RootDirectory);
         services.AddSingleton(configProvider);
         if (configProvider is TomlConfigProvider toml)
             services.AddSingleton(toml);
@@ -48,7 +54,7 @@ public static class ServiceCollectionExtensions
             new ResolutionProfileManager(
                 sp.GetRequiredService<IConfigProvider>() is TomlConfigProvider t
                     ? t
-                    : new TomlConfigProvider()));
+                    : new TomlConfigProvider(AppDataPaths.RootDirectory)));
 
         // 将 TOML 配置应用到各算法模块的静态规则类
         using (StartupTimeline.Measure("DI GateTemplateRules.ApplyConfig"))
@@ -66,6 +72,26 @@ public static class ServiceCollectionExtensions
         // Data — Repository
         // ════════════════════════════════════════════════════════════
         services.AddSingleton<IMapRepository, MapRepositoryAdapter>();
+        services.AddSingleton<MapRepository>();
+        services.AddSingleton<ISubscriptionMapInstallation, SubscriptionMapInstallation>();
+        services.AddSingleton<IMapSubscriptionService>(sp => new MapSubscriptionService(
+            sp.GetRequiredService<ISubscriptionMapInstallation>()));
+        services.AddSingleton<IMapPublicationService>(sp => new MapPublicationService(
+            sp.GetRequiredService<MapRepository>()));
+        services.AddSingleton<IAccountService>(_ => AccountSession.Service);
+        services.TryAddSingleton<IUsageMeter>(_ => DesktopUsageMeterHost.Meter);
+        services.TryAddSingleton<IEntitlementRedemptionService>(_ => DesktopEntitlementRedemptionHost.Service);
+#if !IDVB_HEADLESS
+        services.TryAddSingleton<SponsorshipPlanCatalog>();
+        services.AddTransient(sp => new AccountUsageViewModel(sp.GetRequiredService<IUsageMeter>(),
+            sp.GetRequiredService<IAccountService>(), sp.GetRequiredService<SponsorshipPlanCatalog>(),
+            action => dispatcher.TryEnqueue(() => action())));
+#endif
+        services.AddSingleton<ICommunityService>(_ => CoCreationPublicationClient.Service);
+        services.AddSingleton<IVersionPolicyService>(_ => VersionAccessClient.Service);
+        services.AddSingleton<IApplicationUpdateService>(_ => AutomaticUpdateLauncher.Service);
+        services.TryAddSingleton<IOnlineSecurityTransport>(_ => DesktopSecurityRuntimeHost.Transport);
+        services.TryAddSingleton<IDesktopSecurityRuntime>(_ => DesktopSecurityRuntimeHost.Runtime);
         services.AddSingleton<ISettingsRepository, SettingsRepositoryAdapter>();
         services.AddSingleton(_ => new SurveyStoragePaths(
             Path.Combine(AppDataPaths.RootDirectory, "SurveyProjects")));
@@ -128,6 +154,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IGameWindowCapture, GameWindowCaptureAdapter>();
         services.AddSingleton<IPluginScreenshotService, PluginScreenshotService>();
         services.AddSingleton<IPluginGameWindowService, PluginGameWindowService>();
+        // 游戏内浮层提示通道（插件用它给「已进入对局 / 已结束对局」这类动作一个可见反馈）。
+        services.AddSingleton<IGameOverlayToast, GameOverlayToast>();
         services.AddSingleton<IGlobalInput>(_ =>
             new GlobalInputAdapter(dispatcher));
 
@@ -218,8 +246,14 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<ISurveyCoordinator>(),
                 sp.GetRequiredService<SurveyCaptureTuning>(),
                 sp.GetRequiredService<ICaptureProtectionService>(),
-                headless: headless));
+                headless: headless,
+                // 只有桌面主程序的开始/结束对局计时；无界面宿主（RealCLI）不计时。
+                usageMeter: sp.GetRequiredService<IUsageMeter>()));
         services.AddSingleton<ISessionOrchestrator>(sp =>
+            sp.GetRequiredService<SessionOrchestrator>());
+        // 插件对局控制能力：内置插件与第三方插件共用同一套语义
+        // （实现见 Features\Maps\SessionOrchestrator.HostMatchCapability.cs，只做转发）。
+        services.AddSingleton<IHostMatchCapability>(sp =>
             sp.GetRequiredService<SessionOrchestrator>());
 
         return services;

@@ -32,6 +32,7 @@ public sealed partial class SessionOrchestrator
         var displayName = string.Empty;
         var sideTimings = new Dictionary<string, double>();
         MapOperationTrace.MapOperationSpanScope? initialPostProcess = null;
+        MapOperationTrace.MapOperationSpanScope? identitySelection = null;
 
         try
         {
@@ -51,6 +52,7 @@ public sealed partial class SessionOrchestrator
                     progress: value => _scanProgressOverlay.Report(
                         0.38d + value * 0.38d,
                         "正在扫描地图特征..."));
+                Interlocked.Exchange(ref pendingSideEntranceScan, sideScan)?.Dispose();
             }
             finally
             {
@@ -59,8 +61,8 @@ public sealed partial class SessionOrchestrator
             initialPostProcess = MapOperationTraceAmbient.StartTopLevel(
                 "initial_recognition",
                 MapOperationWaitKind.Compute);
-            pendingSideEntranceScan = sideScan;
-            _lastSideEntranceScan = sideScan;
+            var retainedLastScan = sideScan.Retain();
+            Interlocked.Exchange(ref _lastSideEntranceScan, retainedLastScan)?.Dispose();
             _lastDiagnostics = new MapScanDiagnostics
             {
                 ReadyMapCount = _recognition.ReadyMapCount,
@@ -75,12 +77,11 @@ public sealed partial class SessionOrchestrator
             sideTimings["side_entrance_scan"] = sideSw.Elapsed.TotalMilliseconds;
             sideTimings["gate_detection"] = sideScan.GateDetection.ElapsedMilliseconds;
             _lastScanPhaseTimings = sideTimings;
-            if (sideScan.GateDetection.Gates.Count == 0)
+            if (sideScan.GateDetection.Gates.Count == 0
+                && ScanExecutionContext.Current?.Policy.Mode != ScanPerformanceMode.DeepScan)
             {
                 var missingGateContext = ScanExecutionContext.Current;
-                var rawEvidencePath = MapDiagnosticModeCapture.WriteUnresolvedScan(frame,
-                    missingGateContext?.Frame, candidates,
-                    missingGateContext?.Policy.Mode ?? ScanPerformanceMode.Balanced);
+                QueueUnresolvedScanDiagnostic(frame, candidates);
                 failureReason =
                     "识别失败：侧门扫描要求当前地图暴露一个门特征，但未检测到门";
                 _logCollector.Append(
@@ -89,8 +90,7 @@ public sealed partial class SessionOrchestrator
                     failureReason, details: new()
                     {
                         ["reason"] = sideScan.GateDetection.BudgetExceeded ? "gate-search-interrupted" : "no-confirmed-gate",
-                        ["computeStopReason"] = missingGateContext?.ComputeStopReason,
-                        ["rawEvidencePath"] = rawEvidencePath
+                        ["computeStopReason"] = missingGateContext?.ComputeStopReason
                     });
                 initialPostProcess.Complete();
                 initialPostProcess = null;
@@ -99,7 +99,8 @@ public sealed partial class SessionOrchestrator
             if (candidates.Count == 0)
             {
                 failureReason =
-                    $"识别失败：已检测到门，但{sideScan.FailureReason}";
+                    ScanExecutionContext.Current?.Policy.Mode == ScanPerformanceMode.DeepScan
+                        ? sideScan.FailureReason : $"识别失败：已检测到门，但{sideScan.FailureReason}";
                 _logCollector.Append(
                     MapLogCategory.ScanLifecycle,
                     MapLogLevel.Warning,
@@ -130,6 +131,8 @@ public sealed partial class SessionOrchestrator
 
             var reliable = VerifySideEntranceCandidates(frame, candidates, sideAlignmentTuning, sideTimings,
                 result.IdentitySelectionPolicy);
+            identitySelection = MapOperationTraceAmbient.StartTopLevel(
+                "automatic_identity_selection", MapOperationWaitKind.Compute);
             // Preserve the verified choices even if publication later loses its
             // deadline/context. Never rebuild an empty list from catalog order.
             if (!result.ObserveUntilConfirmed)
@@ -150,6 +153,8 @@ public sealed partial class SessionOrchestrator
                     ["retrievalComplete"] = context?.RetrievalCompleted,
                     ["computeStopReason"] = context?.ComputeStopReason,
                     ["eligibleCount"] = sideScan.EligibleMapCount,
+                    ["readyCount"] = sideScan.ReadyMapCount,
+                    ["candidateCount"] = candidates.Count,
                     ["variantGroups"] = context?.VariantGroups,
                     ["candidates"] = candidates.Select(c => new
                     {
@@ -171,18 +176,17 @@ public sealed partial class SessionOrchestrator
                     failureReason = "正在观察可见结构，地图身份尚未确定。";
                     return;
                 }
-                var diagnosticPath = MapDiagnosticModeCapture.WriteUnresolvedScan(
-                    frame, context?.Frame, candidates,
-                    context?.Policy.Mode ?? ScanPerformanceMode.Balanced);
-                if (diagnosticPath is not null)
-                    _logCollector.Append(MapLogCategory.ScanLifecycle, MapLogLevel.Info,
-                        "未确定身份的扫描原始证据已保存",
-                        details: new() { ["path"] = diagnosticPath });
+                QueueUnresolvedScanDiagnostic(frame, candidates);
                 pendingChoicesReason = decision.Reason switch
                 {
                     "all-identities-excluded" => "地图尚未确定：所有候选均未通过可见结构校验，请查看冲突诊断。",
+                    "supported-without-confirmed-alignment" when context is not null
+                        && ScanUncertainPolicies.DeferAmbiguousDeepScanAlignment(context, candidates)
+                        => "多张地图具有相似的局部结构，请选择当前地图。",
                     "supported-without-confirmed-alignment" => "地图尚未确定：存在结构匹配，但尚未完成可信对齐。",
                     "unverified-identities" => "地图尚未确定：仍有候选未完成验证。",
+                    "retrieval-incomplete" when sideScan.ReadyMapCount != sideScan.EligibleMapCount
+                        => sideScan.FailureReason,
                     "retrieval-incomplete" => "地图尚未确定：候选检索未完成。",
                     "execution-unavailable" => "地图尚未确定：扫描已取消、被新请求替代或计算预算已用尽。",
                     _ => "地图尚未确定：多张地图通过结构校验，尚不能唯一确认。"
@@ -208,6 +212,15 @@ public sealed partial class SessionOrchestrator
         }
         catch (Exception alignEx)
         {
+            identitySelection?.Complete(MapOperationSpanStatus.Failed, "identity-selection-exception");
+            if (ScanExecutionContext.Current is { Policy.Mode: ScanPerformanceMode.DeepScan } deepScan)
+            {
+                deepScan.RetrievalCompleted = false;
+                recognition = null;
+                pendingSideEntranceIdentity = null;
+                pendingSideEntranceSeed = null;
+                pendingChoices = null;
+            }
             initialPostProcess?.Complete();
             initialPostProcess = null;
             RecordResearchAttemptForMap(
@@ -227,6 +240,13 @@ public sealed partial class SessionOrchestrator
             return;
         }
 
+        finally
+        {
+            identitySelection?.Complete();
+        }
+
+        using var finalizeResult = MapOperationTraceAmbient.StartTopLevel(
+            "recognition_result_finalize", MapOperationWaitKind.Compute);
         _lastDiagnostics = sideAttempt.Diagnostics;
         _lastDiagnostics.SideEntranceReadyMapCount =
             pendingSideEntranceScan?.ReadyMapCount ?? 0;
@@ -270,4 +290,5 @@ public sealed partial class SessionOrchestrator
             failureReason = $"侧门对齐失败：{sideAttempt.FailureReason}";
         }
     }
+
 }

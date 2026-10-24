@@ -89,7 +89,7 @@ public sealed partial class SqliteSurveyProjectRepository
         SurveyProject project,
         CancellationToken cancellationToken)
     {
-        var command = connection.CreateCommand();
+        using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
             INSERT INTO projects(
@@ -122,7 +122,7 @@ public sealed partial class SqliteSurveyProjectRepository
         SurveyFloor floor,
         CancellationToken cancellationToken)
     {
-        var command = connection.CreateCommand();
+        using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
             INSERT INTO floors(

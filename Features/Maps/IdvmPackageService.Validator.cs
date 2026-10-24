@@ -53,8 +53,18 @@ public sealed partial class IdvmPackageService
             && parsedHeader.MinorVersion == 4
             && manifest.FormatVersion == "1.4"
             && manifest.MinimumReader == "1.4";
+        var isVersion15 = parsedHeader.MajorVersion == 1
+            && parsedHeader.MinorVersion == 5
+            && manifest.FormatVersion == "1.5"
+            && manifest.MinimumReader == "1.5";
+        var isVersion16 = parsedHeader.MinorVersion == 6
+            && manifest.FormatVersion == "1.6" && manifest.MinimumReader == "1.6";
+        if (!isVersion16 && manifest.Capabilities.NavigationTopology != isVersion15)
+            throw new InvalidDataException("导航能力必须声明为 IDVM 1.5 或更高版本。");
+        if (isVersion16 ? manifest.Compression != SolidCompression : manifest.Compression is not null)
+            throw new InvalidDataException("IDVM 压缩方式与格式版本不一致。");
         if (manifest.Format != "idvm"
-            || (!isVersion10 && !isVersion11 && !isVersion12 && !isVersion13 && !isVersion14)
+            || (!isVersion10 && !isVersion11 && !isVersion12 && !isVersion13 && !isVersion14 && !isVersion15 && !isVersion16)
             || manifest.PackageType != "class-set")
         {
             throw new InvalidDataException("不支持的 IDVM 格式或读取器版本。");
@@ -67,7 +77,7 @@ public sealed partial class IdvmPackageService
             throw new InvalidDataException("IDVM 1.2 包必须声明 floorMarkerKeys 能力。");
         if (isVersion13 && (!manifest.Capabilities.FloorMarkerKeys || !manifest.Capabilities.MapTags))
             throw new InvalidDataException("IDVM 1.3 包必须声明 floorMarkerKeys 和 mapTags 能力。");
-        if (isVersion14)
+        if (isVersion14 || isVersion15 || isVersion16)
         {
             if (!manifest.Capabilities.FloorMarkerKeys || !manifest.Capabilities.MapTags)
                 throw new InvalidDataException("IDVM 1.4 包必须声明 floorMarkerKeys 和 mapTags 能力。");
@@ -85,13 +95,22 @@ public sealed partial class IdvmPackageService
         if (manifest.Classes.Count is < 1 or > 256 || manifest.Maps.Count is < 1 or > 4096)
             throw new InvalidDataException("IDVM 包的 Class 或地图数量超出限制。");
 
+        ValidateExportLimits(manifest, manifestBytes.Length);
+        ValidateManifestRelationships(manifest, isVersion12 || isVersion13 || isVersion14 || isVersion15 || isVersion16);
+        if (isVersion16)
+            await RestoreSolidPayloadAsync(root, manifest, cancellationToken);
+        else if (manifest.Files.Any(file => file.StorageOffset is not null))
+            throw new InvalidDataException("旧版 IDVM 不允许声明压缩存储偏移。");
+
         var actualFiles = Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
             .Select(path => ToLogicalPath(root, path))
             .Where(path => path is not "header" and not "manifest.json")
             .ToHashSet(StringComparer.Ordinal);
         var declaredPaths = new HashSet<string>(StringComparer.Ordinal);
+        var verifiedFiles = 0;
         foreach (var file in manifest.Files)
         {
+            MapOperationProgress.Report((isVersion16 ? .7 : 0) + (isVersion16 ? .3 : 1) * verifiedFiles++ / manifest.Files.Count, "正在验证地图资源……");
             ValidateLogicalPath(file.Path);
             if (!file.Path.StartsWith("maps/", StringComparison.Ordinal)
                 || !declaredPaths.Add(file.Path))
@@ -107,7 +126,6 @@ public sealed partial class IdvmPackageService
         if (!actualFiles.SetEquals(declaredPaths))
             throw new InvalidDataException("manifest 文件清单与包内容不一致。");
 
-        ValidateManifestRelationships(manifest, isVersion12 || isVersion13 || isVersion14);
         return manifest;
     }
 
@@ -308,9 +326,13 @@ public sealed partial class IdvmPackageService
             }
             foreach (var annotation in anchorFloor.Annotations)
             {
+                if (annotation.IsMarker && (annotation.Type != "text" || !MapMarkerTool.IsValidLabel(annotation.Text)))
+                    throw new InvalidDataException("地图包含无效标记图案。");
                 if (!IsValidAnnotation(annotation, anchors.SchemaVersion))
                     throw new InvalidDataException($"楼层 {floor.Key} 包含无效标注。");
                 ValidateAnnotationGeometry(annotation);
+                if (annotation.Type == "route" && metadata.Navigation is null)
+                    throw new InvalidDataException("自动路线阶段必须具有所属地图的导航数据。");
             }
             if (anchors.SchemaVersion >= 4 && anchorFloor.BackgroundLayers is null)
                 throw new InvalidDataException("schema 4 的 anchors.json 必须包含 backgroundLayers 数组。");
@@ -378,11 +400,22 @@ public sealed partial class IdvmPackageService
     private static void ValidateLogicalPath(string path)
     {
         if (string.IsNullOrWhiteSpace(path) || path.StartsWith("/", StringComparison.Ordinal)
-            || path.Contains('\\') || path.Contains('\0')
-            || path.Split('/').Any(segment => segment.Length == 0 || segment == "." || segment == ".."))
+            || path.Contains('\\') || path.Any(char.IsControl)
+            || path.Split('/').Any(segment => segment.Length == 0 || segment == "." || segment == ".."
+                || segment.EndsWith('.') || segment.EndsWith(' ')
+                || segment.IndexOfAny([':', '<', '>', '"', '|', '?', '*']) >= 0
+                || IsWindowsDeviceName(segment)))
         {
             throw new InvalidDataException($"IDVM 包含不安全路径：{path}");
         }
+    }
+
+    private static bool IsWindowsDeviceName(string segment)
+    {
+        var name = segment.Split('.')[0].ToUpperInvariant();
+        return name is "CON" or "PRN" or "AUX" or "NUL"
+            || (name.Length == 4 && (name.StartsWith("COM") || name.StartsWith("LPT"))
+                && (name[3] is >= '0' and <= '9' or '¹' or '²' or '³'));
     }
 
     private static string ToPhysicalPath(string root, string logicalPath)
@@ -409,8 +442,8 @@ public sealed partial class IdvmPackageService
 
     // ── 验证工具方法 ──────────────────────────────────────────────────
 
-    private static bool IsSha256(string value) =>
-        value.Length == 64 && value.All(character =>
+    private static bool IsSha256(string? value) =>
+        value is { Length: 64 } && value.All(character =>
             character is >= '0' and <= '9' or >= 'a' and <= 'f');
 
     private static bool IsSafeIdentifier(string? value) =>
@@ -455,40 +488,8 @@ public sealed partial class IdvmPackageService
             return annotation.Type is "text" or "outline"
                 && annotation.ColorIndex is >= 0 and <= 8;
         }
-        return annotation.Type is "text" or "outline" or "line"
+        return annotation.Type is "text" or "outline" or "line" or "route"
             && MapAnnotationColor.TryNormalize(annotation.Color, out _);
-    }
-
-    private static void ValidateAnnotationGeometry(AnnotationDto annotation)
-    {
-        if (annotation.Type == "text")
-            ValidateTextStyle(annotation);
-        if (annotation.Type != "line")
-        {
-            ValidateRectangle(annotation.Bounds, allowNull: false, "annotation.bounds");
-            if (annotation.Start is not null || annotation.End is not null)
-                throw new InvalidDataException("非直线标注不能包含端点。");
-            return;
-        }
-
-        ValidatePoint(annotation.Start, "annotation.start");
-        ValidatePoint(annotation.End, "annotation.end");
-        if (Math.Abs(annotation.Start!.X - annotation.End!.X) <= 0.000001d
-            && Math.Abs(annotation.Start.Y - annotation.End.Y) <= 0.000001d)
-        {
-            throw new InvalidDataException("直线标注的两个端点不能重合。");
-        }
-        ValidateRectangle(annotation.Bounds, allowNull: true, "annotation.bounds");
-    }
-
-    private static void ValidateTextStyle(AnnotationDto annotation)
-    {
-        if (annotation.FontFamily is { Length: > 256 }
-            || annotation.FontFamily?.Any(char.IsControl) is true
-            || annotation.FontSize is { } size && (!double.IsFinite(size) || size is < 1d or > 256d))
-        {
-            throw new InvalidDataException("文字标注样式无效。");
-        }
     }
 
 }

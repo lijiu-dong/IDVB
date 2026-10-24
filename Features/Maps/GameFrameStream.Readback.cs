@@ -15,8 +15,16 @@ internal sealed partial class GameFrameStream
         lock (_readbackGate)
         {
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _resourcesDisposed) != 0, this);
-            _readback ??= new ViewportReadback(_device);
-            return _readback.Read(surface, roi);
+            try
+            {
+                _readback ??= new ViewportReadback(_device);
+                return _readback.Read(surface, roi);
+            }
+            catch
+            {
+                _deviceFailed = true;
+                throw;
+            }
         }
     }
 
@@ -31,6 +39,7 @@ internal sealed partial class GameFrameStream
         private readonly UnmapResource _unmap;
         private IntPtr _staging;
         private Size _size;
+        private IDisposable? _stagingOwnership;
 
         public ViewportReadback(IDirect3DDevice device)
         {
@@ -52,6 +61,8 @@ internal sealed partial class GameFrameStream
             if (_staging == IntPtr.Zero || _size != roi.Size)
             {
                 if (_staging != IntPtr.Zero) Marshal.Release(_staging);
+                _stagingOwnership?.Dispose();
+                _stagingOwnership = null;
                 _staging = IntPtr.Zero;
                 var description = new TextureDescription
                 {
@@ -59,7 +70,11 @@ internal sealed partial class GameFrameStream
                     MipLevels = 1, ArraySize = 1, Format = 87, SampleCount = 1,
                     Usage = 3, CpuAccessFlags = 0x20000
                 };
+                var request = IDVBuff.Core.Diagnostics.MemoryJournal.Request("WGC.StagingTexture",
+                    (long)roi.Width * roi.Height * 4, "d3d11.dll");
                 Marshal.ThrowExceptionForHR(_createTexture(_device, in description, IntPtr.Zero, out _staging));
+                _stagingOwnership = IDVBuff.Core.Diagnostics.MemoryJournal.Own("WGC.StagingTexture",
+                    (long)roi.Width * roi.Height * 4, "d3d11.dll", request);
                 _size = roi.Size;
             }
             var iid = new Guid("6F15AAF2-D208-4E89-9AB4-489535D34F9C");
@@ -89,6 +104,8 @@ internal sealed partial class GameFrameStream
         public void Dispose()
         {
             if (_staging != IntPtr.Zero) Marshal.Release(_staging);
+            _stagingOwnership?.Dispose();
+            _stagingOwnership = null;
             if (_context != IntPtr.Zero) Marshal.Release(_context);
             if (_device != IntPtr.Zero) Marshal.Release(_device);
         }

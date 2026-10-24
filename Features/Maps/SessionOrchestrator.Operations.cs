@@ -21,11 +21,13 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
 
     public async Task RefreshMapCacheAsync(Guid? changedMapId = null)
     {
-        await _recognition.RefreshCacheAsync(changedMapId);
+        await MapOperationProgress.RunAsync(0, .98, () => _recognition.RefreshCacheAsync(changedMapId));
+        MapOperationProgress.Report(.98, "正在同步地图会话……");
         if (_learningEngineInitialized)
             await _learningEngine.InvalidateReferenceCacheAsync(
                 _lifetimeCts.Token);
         StateChanged?.Invoke(this, EventArgs.Empty);
+        MapOperationProgress.Report(1, "地图刷新完成");
     }
 
     public async Task EnsureMapCacheSynchronizedAsync()
@@ -43,6 +45,8 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
     public async Task RunAlignmentAsync()
     {
         if (_disposed)
+            return;
+        if (RejectUnauthorizedMatchOperation("alignment"))
             return;
         _lastAlignmentPhaseTimings = null;
         _lastAlignmentOperationTrace = null;
@@ -114,13 +118,12 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
         if (!isOpen)
         {
             CancelMapObservation();
-            CancelQuickScan();
             EndAdaptiveMapOpen("external game map closed");
             CancelOrbTracking("external game map closed");
             _overlay.ClearMap();
             RefreshMiniMapForCurrentFloor();
         }
-        else if (CanObserveMap)
+        else if (CanObserveMap && !HasActiveQuickScan)
             StartMapObservation();
         StateChanged?.Invoke(this, EventArgs.Empty);
     }
@@ -276,10 +279,13 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
 
     private async Task ObserveControlPanelToggleAsync()
     {
+        using var input = new MapInputOperationContext();
         const string action = "control-panel-toggle";
         LogInputHandlerOutcome(action, "handler-started");
         if (_controlPanelToggleInProgress)
         {
+            input.Outcome = "rejected";
+            input.Reason = "operation-in-progress";
             LogInputHandlerOutcome(action, "handler-rejected:operation-in-progress");
             return;
         }
@@ -287,11 +293,15 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
         try
         {
             var outcome = await ToggleControlPanelAsync();
+            input.Outcome = outcome.StartsWith("handler-rejected:", StringComparison.Ordinal) ? "rejected" : "applied";
+            input.Reason = outcome;
             LogInputHandlerOutcome(action, outcome);
         }
         catch (Exception exception)
         {
             _statusMessage = $"外置控件层显示失败：{exception.Message}";
+            input.Outcome = "failed";
+            input.Reason = exception.GetType().FullName ?? exception.GetType().Name;
             LogInputHandlerOutcome(action, "handler-failed", exception);
         }
         finally
@@ -342,10 +352,6 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
             if (_controlPanel?.IsVisible == true)
                 _controlPanel.Hide();
             await EndMatchAsync(saveAutomaticMapCache: false);
-            if (!_headless)
-            {
-                OverlayNotificationCenter.Warning("已结束对局");
-            }
         }
         else
         {
@@ -364,10 +370,6 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
                 await SetLastSelectedMapClassAsync(mapClass);
             }
             await BeginMatchAsync(mapClass);
-            if (!_headless)
-            {
-                OverlayNotificationCenter.Notice(!string.IsNullOrWhiteSpace(mapClass) ? $"已进入对局 · {mapClass}" : "已进入对局");
-            }
         }
     }
 
@@ -417,9 +419,12 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
                 _matchSession.End();
             _lifetimeCts.Cancel();
             CancelMatchOperations();
+            await SetMatchPluginsActivatedCoreAsync(false);
+            await StopUsageMeteringAsync();
             await DrainMatchOperationsAsync();
             await DrainMapCacheWritesAsync();
             await DrainHumanMapSelectionRecordingAsync();
+            await _recognition.ReleaseMatchResourcesAsync();
             ResetMatchTransientState(resetAutomaticCacheSamples: true);
         }
         finally
@@ -427,6 +432,7 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
             _matchLifecycleGate.Release();
         }
         _input.Dispose();
+        _gameMapCloseWarning?.Dispose();
         _overlayStatus.Dispose();
         _scanProgressOverlay.Dispose();
         _overlay.Dispose();

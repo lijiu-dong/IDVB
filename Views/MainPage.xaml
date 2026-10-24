@@ -7,24 +7,9 @@
 
     <Page.Resources>
         <ResourceDictionary>
-            <ResourceDictionary.ThemeDictionaries>
-                <ResourceDictionary x:Key="Light">
-                    <SolidColorBrush x:Key="FeedbackButtonBackgroundBrush" Color="#7C3AED" />
-                    <SolidColorBrush x:Key="FeedbackButtonPointerOverBackgroundBrush" Color="#6D28D9" />
-                    <SolidColorBrush x:Key="FeedbackButtonPressedBackgroundBrush" Color="#5B21B6" />
-                    <SolidColorBrush x:Key="FeedbackButtonForegroundBrush" Color="#FFFFFF" />
-                </ResourceDictionary>
-                <ResourceDictionary x:Key="Dark">
-                    <SolidColorBrush x:Key="FeedbackButtonBackgroundBrush" Color="#8B5CF6" />
-                    <SolidColorBrush x:Key="FeedbackButtonPointerOverBackgroundBrush" Color="#9D4EDD" />
-                    <SolidColorBrush x:Key="FeedbackButtonPressedBackgroundBrush" Color="#7C3AED" />
-                    <SolidColorBrush x:Key="FeedbackButtonForegroundBrush" Color="#FFFFFF" />
-                </ResourceDictionary>
-            </ResourceDictionary.ThemeDictionaries>
 
-        <Style x:Key="PurpleFeedbackButtonStyle" TargetType="Button">
-            <Setter Property="Background" Value="{ThemeResource FeedbackButtonBackgroundBrush}" />
-            <Setter Property="Foreground" Value="{ThemeResource FeedbackButtonForegroundBrush}" />
+
+        <Style x:Key="FeedbackButtonStyle" TargetType="Button" BasedOn="{StaticResource AccentButtonStyle}">
             <Setter Property="BorderBrush" Value="Transparent" />
             <Setter Property="BorderThickness" Value="0" />
             <Setter Property="CornerRadius" Value="6" />
@@ -42,7 +27,7 @@
             <Setter Property="Margin" Value="4,2" />
             <Setter Property="MinHeight" Value="40" />
             <Setter Property="Background" Value="Transparent" />
-            <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
+            <Setter Property="Foreground" Value="{ThemeResource IdvbTextBrush}" />
             <Setter Property="BorderBrush" Value="Transparent" />
             <Setter Property="BorderThickness" Value="0" />
             <Setter Property="Template">
@@ -87,19 +72,19 @@
                         <SymbolIcon Grid.Column="0"
                                     Symbol="{Binding Icon}"
                                     Visibility="{Binding SymbolIconVisibility}"
-                                    Foreground="{ThemeResource TextFillColorPrimaryBrush}"
+                                    Foreground="{ThemeResource IdvbTextBrush}"
                                     HorizontalAlignment="Center"
                                     VerticalAlignment="Center" />
                         <FontIcon Grid.Column="0"
                                   Glyph="{Binding IconGlyph}"
                                   Visibility="{Binding FontIconVisibility}"
                                   FontFamily="{StaticResource SymbolThemeFontFamily}"
-                                  Foreground="{ThemeResource TextFillColorPrimaryBrush}"
+                                  Foreground="{ThemeResource IdvbTextBrush}"
                                   HorizontalAlignment="Center"
                                   VerticalAlignment="Center" />
                         <TextBlock Grid.Column="1"
                                    Text="{Binding DisplayName}"
-                                   Foreground="{ThemeResource TextFillColorPrimaryBrush}"
+                                   Foreground="{ThemeResource IdvbTextBrush}"
                                    Style="{StaticResource BodyTextBlockStyle}"
                                    TextTrimming="CharacterEllipsis"
                                    VerticalAlignment="Center" />
@@ -111,7 +96,7 @@
                                    Height="24"
                                    Margin="0,0,16,0"
                                    FontSize="18"
-                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                   Foreground="{ThemeResource IdvbTextSecondaryBrush}"
                                    TextAlignment="Center"
                                    HorizontalAlignment="Right"
                                    VerticalAlignment="Center"
@@ -136,11 +121,17 @@
                                     Loaded="NavigationRow_Loaded"
                                     Unloaded="NavigationRow_Unloaded">
                                     <Grid Height="40" Margin="38,0,0,0">
-                                    <TextBlock Text="{Binding DisplayName}"
-                                               Margin="24,0,0,0"
-                                               Foreground="{ThemeResource TextFillColorPrimaryBrush}"
-                                               Style="{StaticResource BodyTextBlockStyle}"
-                                               VerticalAlignment="Center" />
+                                    <StackPanel Orientation="Horizontal" Spacing="10" Margin="24,0,0,0" VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding DisplayName}"
+                                                   Foreground="{ThemeResource IdvbTextBrush}"
+                                                   Style="{StaticResource BodyTextBlockStyle}"
+                                                   VerticalAlignment="Center" />
+                                        <Border Visibility="{Binding BadgeVisibility}" Padding="5,2" CornerRadius="4"
+                                                Background="{ThemeResource AccentFillColorDefaultBrush}" VerticalAlignment="Center">
+                                            <TextBlock Text="{Binding Badge}" FontSize="9" FontWeight="SemiBold"
+                                                       Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
+                                        </Border>
+                                    </StackPanel>
                                 </Grid>
                             </Button>
                         </DataTemplate>
@@ -157,7 +148,7 @@
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <Grid x:Name="AppTitleBar" Grid.Row="0" Background="Transparent" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,0,0,1">
+        <Grid x:Name="AppTitleBar" Grid.Row="0" Background="Transparent" BorderBrush="{ThemeResource IdvbDividerBrush}" BorderThickness="0,0,0,1">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="330" />
                 <ColumnDefinition Width="*" />
@@ -178,13 +169,13 @@
             <AutoSuggestBox Grid.Column="1" PlaceholderText="Search modules..." Width="480" HorizontalAlignment="Center" VerticalAlignment="Center" QueryIcon="Find" />
             <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Spacing="8" Margin="0,0,12,0">
                 <Button x:Name="FeedbackButton"
-                        Style="{StaticResource PurpleFeedbackButtonStyle}"
+                        Style="{StaticResource FeedbackButtonStyle}"
                         ToolTipService.ToolTip="反馈问题"
                         AutomationProperties.Name="反馈问题"
                         Click="FeedbackButton_Click">
                     <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-                        <FontIcon Glyph="&#xED15;" FontSize="14" FontFamily="{StaticResource SymbolThemeFontFamily}" Foreground="{ThemeResource FeedbackButtonForegroundBrush}" />
-                        <TextBlock Text="反馈问题" FontSize="13" VerticalAlignment="Center" Foreground="{ThemeResource FeedbackButtonForegroundBrush}" />
+                        <FontIcon Glyph="&#xED15;" FontSize="14" FontFamily="{StaticResource SymbolThemeFontFamily}" Foreground="{ThemeResource IdvbOnAccentBrush}" />
+                        <TextBlock Text="反馈问题" FontSize="13" VerticalAlignment="Center" Foreground="{ThemeResource IdvbOnAccentBrush}" />
                     </StackPanel>
                 </Button>
                 <Button x:Name="NotificationButton"
@@ -227,21 +218,23 @@
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
 
-            <Grid x:Name="NavigationSurface" Grid.Column="0" Background="Transparent" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,0,1,0" LayoutUpdated="NavigationSurface_LayoutUpdated">
-                <Border x:Name="NavigationSelectionIndicator"
-                        Height="40"
-                        Margin="4,16,4,0"
-                        VerticalAlignment="Top"
-                        Background="{ThemeResource SubtleFillColorSecondaryBrush}"
-                        CornerRadius="4"
-                        IsHitTestVisible="False" />
+            <Grid x:Name="NavigationSurface" Grid.Column="0" Background="Transparent" BorderBrush="{ThemeResource IdvbDividerBrush}" BorderThickness="0,0,1,0" LayoutUpdated="NavigationSurface_LayoutUpdated">
                 <Border x:Name="NavigationHoverIndicator"
                         Height="40"
                         Margin="4,16,4,0"
                         VerticalAlignment="Top"
-                        Background="{ThemeResource SubtleFillColorSecondaryBrush}"
+                        Background="{ThemeResource IdvbControlHoverBrush}"
                         CornerRadius="4"
                         Opacity="0"
+                        IsHitTestVisible="False" />
+                <Border x:Name="NavigationSelectionIndicator"
+                        Height="40"
+                        Margin="4,16,4,0"
+                        VerticalAlignment="Top"
+                        Background="{ThemeResource IdvbSelectionBrush}"
+                        BorderBrush="{ThemeResource IdvbSelectionBorderBrush}"
+                        BorderThickness="1"
+                        CornerRadius="4"
                         IsHitTestVisible="False" />
                 <Grid>
                     <Grid.RowDefinitions>
@@ -261,6 +254,9 @@
                                 Margin="0,0,0,14"
                                 PointerMoved="Navigation_PointerMoved"
                                 PointerExited="Navigation_PointerExited">
+                        <Button Tag="{x:Bind SupportNavigationItem}" AutomationProperties.Name="支持开发" UseSystemFocusVisuals="True" ToolTipService.ToolTip="支持开发" Style="{StaticResource NavigationButtonStyle}" Click="Navigation_ParentClick" Loaded="NavigationRow_Loaded" Unloaded="NavigationRow_Unloaded">
+                            <Grid Height="40"><Grid.ColumnDefinitions><ColumnDefinition Width="60"/><ColumnDefinition Width="*"/><ColumnDefinition Width="34"/></Grid.ColumnDefinitions><FontIcon x:Name="SupportHeart" Grid.Column="0" Glyph="&#xEB51;" Foreground="{ThemeResource IdvbTextBrush}" HorizontalAlignment="Center"/><TextBlock Grid.Column="1" Text="支持开发" VerticalAlignment="Center"/></Grid>
+                        </Button>
                         <Button Tag="{x:Bind TutorialNavigationItem}" ToolTipService.ToolTip="教程" Style="{StaticResource NavigationButtonStyle}" Click="Navigation_ParentClick" Loaded="NavigationRow_Loaded" Unloaded="NavigationRow_Unloaded">
                             <Grid Height="40"><Grid.ColumnDefinitions><ColumnDefinition Width="60"/><ColumnDefinition Width="*"/><ColumnDefinition Width="34"/></Grid.ColumnDefinitions><SymbolIcon Grid.Column="0" Symbol="Help" HorizontalAlignment="Center"/><TextBlock Grid.Column="1" Text="教程" VerticalAlignment="Center"/></Grid>
                         </Button>
@@ -268,7 +264,7 @@
                             <Grid Height="40"><Grid.ColumnDefinitions><ColumnDefinition Width="60"/><ColumnDefinition Width="*"/><ColumnDefinition Width="34"/></Grid.ColumnDefinitions><SymbolIcon Grid.Column="0" Symbol="Setting" HorizontalAlignment="Center"/><TextBlock Grid.Column="1" Text="主设置" VerticalAlignment="Center"/></Grid>
                         </Button>
                         <Button x:Name="AccountNavigationButton" Tag="{x:Bind AccountNavigationItem}" ToolTipService.ToolTip="未登录" Style="{StaticResource NavigationButtonStyle}" Click="Navigation_ParentClick" Loaded="NavigationRow_Loaded" Unloaded="NavigationRow_Unloaded">
-                            <Grid Height="40"><Grid.ColumnDefinitions><ColumnDefinition Width="60"/><ColumnDefinition Width="*"/><ColumnDefinition Width="34"/></Grid.ColumnDefinitions><Grid Grid.Column="0" Width="32" Height="32" HorizontalAlignment="Center" VerticalAlignment="Center"><PersonPicture x:Name="AccountNavigationAvatar" Width="28" Height="28" DisplayName="未登录" HorizontalAlignment="Center" VerticalAlignment="Center"/><Border x:Name="AccountOfficialBadge" Width="13" Height="13" CornerRadius="7" Background="#1687FF" BorderBrush="White" BorderThickness="1" HorizontalAlignment="Right" VerticalAlignment="Bottom" Visibility="Collapsed" ToolTipService.ToolTip="官方认证"><FontIcon Glyph="&#xE73E;" FontSize="7" Foreground="White"/></Border><Border x:Name="AccountBuilderBadge" Width="13" Height="13" CornerRadius="7" Background="#E98522" BorderBrush="White" BorderThickness="1" HorizontalAlignment="Right" VerticalAlignment="Bottom" Canvas.ZIndex="1" Visibility="Collapsed" ToolTipService.ToolTip="建设者认证"><PathIcon Data="M1,1H12V5H9V16H5V5H1ZM12,2H16V6H10V5H12Z" Width="11" Height="11" Foreground="White"/></Border></Grid><TextBlock x:Name="AccountNavigationLabel" Grid.Column="1" Text="未登录" VerticalAlignment="Center"/></Grid>
+                            <Grid Height="40"><Grid.ColumnDefinitions><ColumnDefinition Width="60"/><ColumnDefinition Width="*"/><ColumnDefinition Width="34"/></Grid.ColumnDefinitions><Grid Grid.Column="0" Width="32" Height="32" HorizontalAlignment="Center" VerticalAlignment="Center"><PersonPicture x:Name="AccountNavigationAvatar" Width="28" Height="28" DisplayName="未登录" HorizontalAlignment="Center" VerticalAlignment="Center"/><Border x:Name="AccountOfficialBadge" Width="13" Height="13" CornerRadius="7" Background="#1687FF" BorderBrush="White" BorderThickness="1" HorizontalAlignment="Right" VerticalAlignment="Bottom" Visibility="Collapsed" ToolTipService.ToolTip="官方认证"><FontIcon Glyph="&#xE73E;" FontSize="7" Foreground="White"/></Border><Border x:Name="AccountBuilderBadge" Width="13" Height="13" CornerRadius="7" Background="#E98522" BorderBrush="White" BorderThickness="1" HorizontalAlignment="Right" VerticalAlignment="Bottom" Canvas.ZIndex="1" Visibility="Collapsed" ToolTipService.ToolTip="建设者认证"><PathIcon Data="M1,1H12V5H9V16H5V5H1ZM12,2H16V6H10V5H12Z" Width="11" Height="11" Foreground="White"/></Border></Grid><TextBlock x:Name="AccountNavigationLabel" Grid.Column="1" Text="未登录" VerticalAlignment="Top" Margin="0,4,0,0" TextTrimming="CharacterEllipsis"/><TextBlock x:Name="AccountNavigationPlan" Grid.Column="1" Text="--" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Bottom" Margin="0,0,0,4" TextTrimming="CharacterEllipsis" Visibility="Collapsed"/></Grid>
                         </Button>
                     </StackPanel>
                 </Grid>

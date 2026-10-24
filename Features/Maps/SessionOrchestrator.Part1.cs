@@ -15,6 +15,12 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
     private async Task EndMatchAsync(bool saveAutomaticMapCache)
     {
         await _matchLifecycleGate.WaitAsync();
+        try { await EndMatchCoreAsync(saveAutomaticMapCache); }
+        finally { _matchLifecycleGate.Release(); }
+    }
+
+    private async Task EndMatchCoreAsync(bool saveAutomaticMapCache, bool notify = true)
+    {
         try
         {
             if (_disposed)
@@ -26,15 +32,16 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
                 ?? _pendingAlignmentIdentity?.Map.Id
                 ?? _lastRecognition?.Map.Id;
 
-            if (_matchPluginsActivated)
-                await SetMatchPluginsActivatedCoreAsync(false);
-
             Volatile.Write(ref _matchEnding, 1);
             // Invalidate the match identity first. Any scan/alignment already
             // running may finish native work, but can no longer commit state.
             _matchSession.End();
-            MapDiagnosticModeCapture.EndMatch();
             CancelMatchOperations();
+            await SetMatchPluginsActivatedCoreAsync(false);
+            await StopUsageMeteringAsync();
+            if (!_headless && notify)
+                IDVBuff.Features.Notifications.OverlayNotificationCenter.Warning("已结束对局状态。");
+            MapDiagnosticModeCapture.EndMatch();
             var isSurvey = endingMatch.Mode == MapRunMode.Survey;
             _statusMessage = isSurvey
                 ? "正在结束测绘对局并保存测绘项目……"
@@ -65,7 +72,20 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
             {
                 QueueMapModelTraining();
             }
+            await _recognition.ReleaseMatchResourcesAsync();
             ResetMatchTransientState(resetAutomaticCacheSamples: true);
+            // The released match graphs are garbage, but an idle process makes
+            // almost no allocations, so no Gen2 collection follows to reclaim
+            // and decommit them. Collect once here, at match end only (never at
+            // start, see ResetMatchTransientState), without trimming the working
+            // set: the audit logs the true residency before and after.
+            if (!_headless)
+                await Task.Run(() => IDVBuff.Diagnostics.RealtimePerformanceTracker.AuditLifecycle(
+                    "Match.Ended", triggerGcAudit: true));
+            // Finalized match graphs leave free native heap blocks committed.
+            // Between matches capture leases retire every ~450ms, so the quiet
+            // window never opens on its own; request one return explicitly.
+            IDVBuff.Core.Diagnostics.MemoryJournal.RequestNativeBackingReturn("Match.Ended");
 
             _statusMessage = "对局已结束。";
             _logCollector.Append(
@@ -78,22 +98,39 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
                     ? "本局任务已排空，自动地图缓存已完成确认落盘阶段"
                     : "本局任务已排空，自动地图缓存样本未保存"));
             StateChanged?.Invoke(this, EventArgs.Empty);
-            GC.Collect(2, GCCollectionMode.Optimized, blocking: false);
         }
         finally
         {
             Volatile.Write(ref _matchEnding, 0);
-            _matchLifecycleGate.Release();
         }
     }
 
     private async Task SetMatchPluginsActivatedCoreAsync(bool active)
     {
+        if (active)
+            (_matchUsageAuthorization ?? throw new InvalidOperationException("缺少对局时长授权。")).Demand();
         var handlers = MatchPluginActivationChanged;
         if (handlers is not null)
         {
             foreach (Func<bool, Task> handler in handlers.GetInvocationList())
-                await handler(active);
+            {
+                if (active)
+                    _matchUsageAuthorization!.Demand();
+                try
+                {
+                    var operation = handler(active);
+                    if (active)
+                        await operation.WaitAsync(TimeSpan.FromSeconds(15), _matchUsageAuthorization!.Ended);
+                    else
+                        await operation.WaitAsync(TimeSpan.FromSeconds(5));
+                }
+                catch (Exception exception) when (!active)
+                {
+                    // One plugin cannot prevent authorization revocation or other plugins stopping.
+                    _logCollector.Append(MapLogCategory.Session, MapLogLevel.Error,
+                        $"停止对局插件失败：{exception}");
+                }
+            }
         }
         _matchPluginsActivated = active;
     }

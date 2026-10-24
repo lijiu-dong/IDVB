@@ -11,7 +11,13 @@ public sealed class MapGeometryFingerprint
     public int ReferenceWidth { get; init; }
     public int ReferenceHeight { get; init; }
     public string RecognitionImagePath { get; init; } = string.Empty;
-    public string OverlayImagePath { get; init; } = string.Empty;
+    private string? _overlayImagePath;
+    internal Func<string>? OverlayImagePathFactory { get; init; }
+    public string OverlayImagePath
+    {
+        get => _overlayImagePath ?? OverlayImagePathFactory?.Invoke() ?? string.Empty;
+        init => _overlayImagePath = value;
+    }
 
     /// <summary>
     /// Actual gate icon width in the reference image, measured by template

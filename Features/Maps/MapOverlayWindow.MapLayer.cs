@@ -8,13 +8,24 @@ public sealed partial class MapOverlayWindow
     private bool _mapLayerDirty = true;
     private int _mapLayerPixelWidth;
     private int _mapLayerPixelHeight;
+    private Rectangle _mapLayerSourceRegion;
     private long _mapLayerBitmapBuildCount;
     private long _mapLayerTransformMoveCount;
+
+    public bool IsMapContentVisible(Guid mapId, string floorKey) =>
+        !_disposed && _map is not null && _mapNativeWindow.IsVisible
+        && _showMainContent && _showMapContent && _mapOpacity > 0
+        && _mapId == mapId && string.Equals(_mapFloorKey, floorKey, StringComparison.OrdinalIgnoreCase);
 
     public bool IsCaptureExclusionEnabled => _nativeWindow.IsCaptureExclusionEnabled
         && (_map is null || _mapNativeWindow.IsCaptureExclusionEnabled);
     internal long MapLayerBitmapBuildCount => Interlocked.Read(ref _mapLayerBitmapBuildCount);
     internal long MapLayerTransformMoveCount => Interlocked.Read(ref _mapLayerTransformMoveCount);
+
+    private bool HasRetainedMapLayer(int width, int height) =>
+        _mapLayerPixelWidth == width && _mapLayerPixelHeight == height
+        && !_mapLayerSourceRegion.IsEmpty
+        && _mapNativeWindow.HasRetainedLayer(_mapLayerSourceRegion.Width, _mapLayerSourceRegion.Height);
 
     public void SetMapContentVisible(bool visible)
     {
@@ -66,34 +77,46 @@ public sealed partial class MapOverlayWindow
 
         var width = MapOverlayRealtimeTransformPlanner.RoundToPixel(map.Width);
         var height = MapOverlayRealtimeTransformPlanner.RoundToPixel(map.Height);
+        var visible = MapOverlayRealtimeTransformPlanner.VisibleRasterRegion(placement.Bounds, placement.ClipBounds);
+        if (visible.IsEmpty) { _mapNativeWindow.Hide(); return; }
+        var retained = HasRetainedMapLayer(width, height);
         if (_mapLayerDirty
-            || !_mapNativeWindow.HasRetainedLayer(width, height)
-            || _mapLayerPixelWidth != width
-            || _mapLayerPixelHeight != height)
+            || !retained || !_mapLayerSourceRegion.Contains(visible))
         {
-            using var bitmap = MapOverlayBitmapRenderer.RenderMapLayer(
-                map with { RouteLineThickness = _routeLineThickness },
+            var sourceRegion = retained && _mapLayerSourceRegion.Contains(visible) ? _mapLayerSourceRegion
+                : MapOverlayRealtimeTransformPlanner.RetainedRasterRegion(visible, width, height);
+            // A map close drops only this window's binding; the renderer cache
+            // keeps the baked window. Reuse it whenever it still covers `visible`.
+            MapOverlayBitmapRenderer.WithMapLayerCovering(
+                map with { RouteLineThickness = _routeLineThickness, RouteOpacity = _routeOpacity },
                 dpi,
                 _showGateMarkers && map.SupportsVectorRoutes,
                 false,
                 _showTextAnnotations && map.SupportsVectorRoutes,
                 _showBoxAnnotations && map.SupportsVectorRoutes,
                 _showLineAnnotations && map.SupportsVectorRoutes,
-                _mapOpacity);
-            _mapNativeWindow.Present(
-                bitmap,
-                placement.Bounds,
-                placement.ClipBounds,
-                _nativeWindow.Handle);
+                _mapOpacity,
+                visible,
+                sourceRegion,
+                (bitmap, usedRegion) =>
+                {
+                    sourceRegion = usedRegion;
+                    _mapNativeWindow.Present(
+                        bitmap,
+                        MapOverlayRealtimeTransformPlanner.RasterPlacement(placement.Bounds, usedRegion),
+                        placement.ClipBounds,
+                        _nativeWindow.Handle);
+                });
             _mapLayerDirty = false;
             _mapLayerPixelWidth = width;
             _mapLayerPixelHeight = height;
+            _mapLayerSourceRegion = sourceRegion;
             Interlocked.Increment(ref _mapLayerBitmapBuildCount);
             return;
         }
 
         _mapNativeWindow.MoveRetainedLayer(
-            placement.Bounds,
+            MapOverlayRealtimeTransformPlanner.RasterPlacement(placement.Bounds, _mapLayerSourceRegion),
             placement.ClipBounds,
             _nativeWindow.Handle);
         Interlocked.Increment(ref _mapLayerTransformMoveCount);
@@ -112,7 +135,7 @@ public sealed partial class MapOverlayWindow
 
         var width = MapOverlayRealtimeTransformPlanner.RoundToPixel(_map.Width);
         var height = MapOverlayRealtimeTransformPlanner.RoundToPixel(_map.Height);
-        if (_mapLayerDirty || !_mapNativeWindow.HasRetainedLayer(width, height))
+        if (_mapLayerDirty || !HasRetainedMapLayer(width, height))
         {
             PresentMapLayerOnly();
             return;
@@ -125,8 +148,12 @@ public sealed partial class MapOverlayWindow
             return;
         }
 
+        var visible = MapOverlayRealtimeTransformPlanner.VisibleRasterRegion(placement.Bounds, placement.ClipBounds);
+        if (visible.IsEmpty) { _mapNativeWindow.Hide(); return; }
+        if (!_mapLayerSourceRegion.Contains(visible)) { PresentMapLayerOnly(); return; }
+
         _mapNativeWindow.MoveRetainedLayer(
-            placement.Bounds,
+            MapOverlayRealtimeTransformPlanner.RasterPlacement(placement.Bounds, _mapLayerSourceRegion),
             placement.ClipBounds,
             _nativeWindow.Handle);
         Interlocked.Increment(ref _mapLayerTransformMoveCount);

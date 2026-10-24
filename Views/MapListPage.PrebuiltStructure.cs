@@ -11,10 +11,23 @@ public sealed partial class MapListPage
 {
     private void AttachClassEditMenu(Button button)
     {
+        if (button.Flyout is MenuFlyout existing && existing.Items.Count == 8)
+        {
+            UpdateClassEditMenuState(existing);
+            return;
+        }
         var menu = new MenuFlyout();
         var properties = new MenuFlyoutItem { Text = "地图类属性" };
         properties.Click += async (_, _) => await ShowClassPropertiesDialogAsync();
-        var generate = new MenuFlyoutItem { Text = "预生成线图算法" };
+        var exportOverview = new MenuFlyoutItem { Text = "导出全览图" };
+        exportOverview.Click += async (_, _) => await ExportClassOverviewAsync();
+        var hasFixedOutline = _loadedMaps.Any(map => map.IsCoCreationTemplate
+            && string.Equals(map.Class, _selectedClass, StringComparison.OrdinalIgnoreCase));
+        var generate = new MenuFlyoutItem
+        {
+            Text = hasFixedOutline ? "模板二值轮廓（固定）" : "预生成线图算法",
+            IsEnabled = !hasFixedOutline
+        };
         generate.Click += async (_, _) => await PickAndGeneratePrebuiltStructureAsync();
         var preview = new MenuFlyoutItem
         {
@@ -23,10 +36,37 @@ public sealed partial class MapListPage
         };
         preview.Click += (_, _) => ShowPrebuiltStructurePreview();
         menu.Items.Add(properties);
+        var copy = new MenuFlyoutItem { Text = "复制" };
+        copy.Click += async (_, _) => await CopyCurrentClassAsync();
+        menu.Items.Add(copy);
+        var appearance = new MenuFlyoutItem
+        {
+            Text = "自定义配色",
+            IsEnabled = _loadedMaps.Any(map => map.Class == _selectedClass)
+                && _loadedMaps.Where(map => map.Class == _selectedClass).All(map => map.IsCoCreationTemplate)
+        };
+        appearance.Click += async (_, _) => await ShowClassAppearanceAsync();
+        menu.Items.Add(appearance);
+        var quickRoute = new MenuFlyoutItem { Text = "快速路线规划" };
+        quickRoute.Click += async (_, _) => await ShowClassRoutePlanningAsync();
+        menu.Items.Add(quickRoute);
+        menu.Items.Add(exportOverview);
         menu.Items.Add(new MenuFlyoutSeparator());
         menu.Items.Add(generate);
         menu.Items.Add(preview);
         button.Flyout = menu;
+    }
+
+    private void UpdateClassEditMenuState(MenuFlyout menu)
+    {
+        var hasFixedOutline = _loadedMaps.Any(map => map.IsCoCreationTemplate
+            && string.Equals(map.Class, _selectedClass, StringComparison.OrdinalIgnoreCase));
+        var generate = (MenuFlyoutItem)menu.Items[6];
+        generate.Text = hasFixedOutline ? "模板二值轮廓（固定）" : "预生成线图算法";
+        generate.IsEnabled = !hasFixedOutline;
+        ((MenuFlyoutItem)menu.Items[7]).IsEnabled = CurrentClassHasCompletePrebuiltStructureLines();
+        ((MenuFlyoutItem)menu.Items[2]).IsEnabled = _loadedMaps.Any(map => map.Class == _selectedClass)
+            && _loadedMaps.Where(map => map.Class == _selectedClass).All(map => map.IsCoCreationTemplate);
     }
 
     private bool CurrentClassHasCompletePrebuiltStructureLines()
@@ -67,77 +107,36 @@ public sealed partial class MapListPage
     private async Task GeneratePrebuiltStructureAsync(string path)
     {
         using var cancellation = new CancellationTokenSource();
-        var label = new TextBlock
-        {
-            Text = "正在验证 IDVA 算法包…",
-            TextWrapping = TextWrapping.Wrap
-        };
-        var detail = new TextBlock
-        {
-            Text = "0 / 0",
-            Foreground = FluentTheme.Brush("TextFillColorSecondaryBrush")
-        };
-        var bar = new ProgressBar
-        {
-            Minimum = 0,
-            Maximum = 1,
-            Value = 0,
-            IsIndeterminate = false,
-            HorizontalAlignment = HorizontalAlignment.Stretch
-        };
-        var content = new StackPanel { Spacing = 12, MinWidth = 420 };
-        content.Children.Add(label);
-        content.Children.Add(bar);
-        content.Children.Add(detail);
-        var dialog = new ContentDialog
-        {
-            XamlRoot = XamlRoot,
-            Title = "生成预制线图",
-            Content = content,
-            CloseButtonText = "取消"
-        };
-        dialog.CloseButtonClick += (_, _) => cancellation.Cancel();
-        _ = dialog.ShowAsync();
         SetClassEditBusy(true);
         try
         {
-            var progress = new Progress<PrebuiltStructureBatchProgress>(value =>
+            var result = await RunMapOperationAsync("正在验证轮廓算法……", async () =>
             {
-                bar.Maximum = Math.Max(1d, value.TotalWork);
-                bar.Value = Math.Clamp(value.CompletedWork, 0d, bar.Maximum);
-                label.Text = $"{value.MapName} · {value.FloorName}\n{DisplayStage(value.StageName)}";
-                detail.Text = $"楼层 {value.CompletedFloors} / {value.TotalFloors} · {bar.Value / bar.Maximum:P0}";
-            });
-            var result = await _repository.GeneratePrebuiltStructureLinesAsync(
-                _selectedClass,
-                path,
-                progress,
-                cancellation.Token);
-            dialog.Hide();
-            if (!App.IsSafeMode)
-                await App.Session.RefreshMapCacheAsync();
-            await ShowListAsync();
-            await ShowMessageAsync(
-                "预制线图已生成",
+                PrebuiltStructureBatchResult generated;
+                using (MapOperationProgress.Range(0, .9))
+                {
+                    generated = await _repository.GeneratePrebuiltStructureLinesAsync(
+                        _selectedClass, path, cancellationToken: cancellation.Token);
+                }
+                MapOperationProgress.Report(.9, "正在刷新地图……");
+                if (!App.IsSafeMode) await MapOperationProgress.RunAsync(.9, 1, () => App.Session.RefreshMapCacheAsync());
+                await ShowListAsync();
+                return generated;
+            }, cancellation);
+            await ShowMessageAsync("预制线图已生成",
                 $"已使用“{result.AlgorithmDisplayName}”处理 {result.MapCount} 张地图、{result.FloorCount} 个楼层。\n算法：{result.AlgorithmId}");
             ShowPrebuiltStructurePreview();
         }
         catch (OperationCanceledException)
         {
-            dialog.Hide();
             await ShowMessageAsync("已取消", "没有登记未完成的预制线图。");
         }
         catch (Exception exception)
         {
-            dialog.Hide();
             await ShowMessageAsync("预制线图生成失败", exception.Message);
         }
-        finally
-        {
-            SetClassEditBusy(false);
-        }
+        finally { SetClassEditBusy(false); }
     }
-
     private void ShowPrebuiltStructurePreview()
     {
         var maps = _loadedMaps
@@ -213,6 +212,13 @@ public sealed partial class MapListPage
         foreach (var floor in MapFloorRules.GetOrderedFloors(map))
         {
             var asset = floor.PrebuiltStructureLine!;
+            var image = new Image
+            {
+                Stretch = Stretch.Uniform, MaxHeight = 620,
+                HorizontalAlignment = HorizontalAlignment.Center
+            };
+            MemoryImageBinding.Attach(image, new Uri(_repository.GetPrebuiltStructureLinePath(map, floor.Key)),
+                0, "UI.MapList.StructurePreview");
             content.Children.Add(new TextBlock
             {
                 Text = $"{floor.DisplayName} · {asset.Width} × {asset.Height} · {asset.AlgorithmId}",
@@ -223,13 +229,7 @@ public sealed partial class MapListPage
                 Background = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 18, 18, 18)),
                 CornerRadius = new CornerRadius(8),
                 Padding = new Thickness(12),
-                Child = new Image
-                {
-                    Source = new BitmapImage(new Uri(_repository.GetPrebuiltStructureLinePath(map, floor.Key))),
-                    Stretch = Stretch.Uniform,
-                    MaxHeight = 620,
-                    HorizontalAlignment = HorizontalAlignment.Center
-                }
+                Child = image
             });
         }
         return new ScrollViewer
@@ -240,19 +240,5 @@ public sealed partial class MapListPage
         };
     }
 
-    private static string DisplayStage(string stage) => stage switch
-    {
-        "color_classification" => "颜色分类",
-        "class_conflict_resolution" => "类别消歧",
-        "morph_open" => "形态学开运算",
-        "remove_small_components" => "过滤小连通域",
-        "morph_close" => "形态学闭运算",
-        "fill_holes" => "填充孔洞",
-        "directional_bridge" => "定向桥接",
-        "fill_small_holes" => "修复小孔洞",
-        "contours" or "room_contours" or "corridor_contours" => "提取轮廓",
-        "draw_edges" => "绘制结构线",
-        "已完成" => "已完成",
-        _ => stage
-    };
+
 }

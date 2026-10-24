@@ -20,17 +20,25 @@ public sealed partial class CapturedGameFrame : IDisposable
     private string _defaultLiveStructureGenerationFingerprint = string.Empty;
     private double _defaultLiveStructureExtractionMilliseconds;
     private bool _disposed;
+    private readonly PixelStorage _pixels;
 
     public CapturedGameFrame(
         Mat image,
         MapScreenRect clientBounds,
         MapScreenRect viewportBounds,
         IntPtr windowHandle)
+        : this(image, clientBounds, viewportBounds, windowHandle, pixelLifetime: null)
+    {
+    }
+
+    internal CapturedGameFrame(Mat image, MapScreenRect clientBounds,
+        MapScreenRect viewportBounds, IntPtr windowHandle, IDisposable? pixelLifetime)
     {
         Image = image;
         ClientBounds = clientBounds;
         ViewportBounds = viewportBounds;
         WindowHandle = windowHandle;
+        _pixels = new PixelStorage(image, pixelLifetime);
     }
 
     public string? DetectedFloorKey { get; init; }
@@ -158,6 +166,8 @@ public sealed partial class CapturedGameFrame : IDisposable
             _disposed = true;
             _vpsg3Observation?.Dispose();
             _vpsg3Observation = null;
+            _automaticIdentityObservation?.Dispose();
+            _automaticIdentityObservation = null;
             _nativeObservedStructure?.Dispose();
             _nativeObservedStructure = null;
             _defaultLiveStructureFeatures?.Dispose();
@@ -166,7 +176,7 @@ public sealed partial class CapturedGameFrame : IDisposable
             _defaultLiveStructureGenerationFingerprint = string.Empty;
             _ownedComputationImage?.Dispose();
             _ownedComputationImage = null;
-            Image.Dispose();
+            _pixels.Release();
         }
     }
 }

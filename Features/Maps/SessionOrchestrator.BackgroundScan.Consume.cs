@@ -92,6 +92,7 @@ public sealed partial class SessionOrchestrator
                 using (trace.StartTopLevel("cleanup"))
                 {
                     if (restoreOverlay
+                        && !cancellationToken.IsCancellationRequested
                         && IsCurrentMatchOperation(operationMatch)
                         && _gameMapToggleState.IsCurrent(toggle)
                         && !_overlay.IsVisible)
@@ -122,6 +123,8 @@ public sealed partial class SessionOrchestrator
         MapMatchSnapshot operationMatch,
         CancellationToken cancellationToken)
     {
+        // The scan gate protects acquisition; this scope survives field clearing during consumption.
+        using var pendingResult = _pendingBackgroundScan.Rent();
         // ── 候选确认：仅歧义 / 强制候选场景需要玩家从候选列表选择 ──
         RuntimeMapRecognition? locked = null;
         RuntimeMapRecognition? verifiedAlignment = null;
@@ -187,7 +190,9 @@ public sealed partial class SessionOrchestrator
                     _pendingBackgroundChoicesAreDisplayReady,
                     _pendingBackgroundChoicePreviews,
                     _pendingBackgroundLivePreview,
-                    _pendingBackgroundLearningResult);
+                    _pendingBackgroundLearningResult,
+                    requiresExplicitSelection: true,
+                    continuingMapOpenOwner: cancellationToken);
             }
             finally
             {
@@ -235,7 +240,8 @@ public sealed partial class SessionOrchestrator
         // KEEP-1.0 兜底（prior=0）后消费对齐会走双门路径而失败。
         // 确定性单候选路径 seed 已由扫描产出，无需重建。
         if (_pendingBackgroundSeed is null
-            && _pendingBackgroundScan is { } pendingScan
+            && locked.Result.Source != MapRecognitionSource.UserConfirmed
+            && pendingResult is { } pendingScan
             && candidateFrame is not null)
         {
             var selectedCandidate = pendingScan.Candidates
@@ -300,6 +306,9 @@ public sealed partial class SessionOrchestrator
                     validatedStructureScaleSeed is not null,
                 ["hasSideEntranceSeed"] = sideEntranceSeed is not null
             });
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!IsCurrentMatchOperation(operationMatch) || !_gameMapToggleState.IsCurrent(toggle))
+            return;
         _pendingAlignmentIdentity = locked;
         _currentFloorKey = targetFloorKey;
         _mapLease.Bind(_matchSession.Snapshot, locked.Map.Id);

@@ -31,16 +31,30 @@ namespace IDVBuff
             if (shutdownComplete)
                 return;
 
+            SaveMainWindowPlacement();
             args.Cancel = true;
             if (!explicitExitRequested && MainProgramPreferences.Load().MinimizeToTray)
             {
                 HideMainWindow();
                 return;
             }
+            await ShutdownApplicationAsync("system-close");
+        }
+
+        private async Task ShutdownApplicationAsync(string trigger)
+        {
+            if (shutdownComplete)
+                return;
             if (shutdownInProgress)
                 return;
 
             shutdownInProgress = true;
+            StopAccountSessionMonitor();
+            _accessLifetime.Cancel();
+            Features.Accounts.AccountSession.Changed -= VersionAccessAccountChanged;
+            Program.SuspendNativeBackingReturns();
+            RecordShutdownStage("app-shutdown-start", trigger);
+            StopStartupPresentation();
             var closingWindow = window;
 
             // 立即隐藏主窗口与系统托盘图标，从用户视觉上瞬间关闭（< 10ms），绝无空白卡顿或“未响应”
@@ -73,11 +87,23 @@ namespace IDVBuff
 
             try
             {
+                await DrainRuntimeStartupAsync();
+                // Discard an unconsumed handoff after its producer has drained.
+                // Dropping App's reference is distinct from natural GC collection.
+                TakeMapListStartupData();
                 // Detach the active page tree first while window is already hidden.
                 if (closingWindow is not null)
                 {
+                    try
+                    {
+                        if (closingWindow.Content is Microsoft.UI.Xaml.Controls.Frame { Content: Views.MainPage main })
+                            main.RetireWindowContents();
+                    }
+                    catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"Main window graphics retirement failed: {ex}"); }
                     try { closingWindow.Content = null; }
                     catch { }
+                    if (_mainFrame is { } mainFrame) mainFrame.Content = null;
+                    _mainFrame = null;
                 }
 
                 try { RealtimePerformanceOverlay.Instance?.Dispose(); }
@@ -176,6 +202,7 @@ namespace IDVBuff
 
                 shutdownComplete = true;
                 shutdownInProgress = false;
+                RecordShutdownStage("app-shutdown-cleanup-finished", trigger);
                 try
                 {
                     if (closingWindow is not null)
@@ -202,10 +229,18 @@ namespace IDVBuff
             _mainWindowCaptureProtection = null;
             if (sender is Window closedWindow)
             {
+                try
+                {
+                    if (closedWindow.Content is Microsoft.UI.Xaml.Controls.Frame { Content: Views.MainPage main })
+                        main.RetireWindowContents();
+                }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"Closed window graphics retirement failed: {ex}"); }
                 closedWindow.AppWindow.Closing -= AppWindow_Closing;
                 closedWindow.AppWindow.Changed -= AppWindow_Changed;
                 closedWindow.Closed -= Window_Closed;
                 closedWindow.Content = null;
+                if (_mainFrame is { } mainFrame) mainFrame.Content = null;
+                _mainFrame = null;
             }
             window = null;
             CompleteApplicationExit();
@@ -213,10 +248,14 @@ namespace IDVBuff
 
         private void CompleteApplicationExit()
         {
-            if (applicationExitRequested)
+            if (Interlocked.Exchange(ref _exitStarted, 1) != 0)
                 return;
 
             applicationExitRequested = true;
+            StopAccountSessionMonitor();
+            Features.Accounts.DesktopSecurityRuntimeHost.Stop();
+            StartLoginReturnProcess();
+            try { Program.StopMemoryDiagnostics(); } catch { }
             try { _trayIcon?.Dispose(); } catch { }
             _trayIcon = null;
             GuiInstanceCoordinator.ActivationRequested -= GuiInstance_ActivationRequested;
@@ -244,7 +283,11 @@ namespace IDVBuff
 
         private void AppWindow_Changed(AppWindow sender, AppWindowChangedEventArgs args)
         {
-            if (args.DidPresenterChange
+            if (mainWindowHasBeenShown && !shutdownInProgress
+                && (args.DidPositionChange || args.DidSizeChange || args.DidPresenterChange)
+                && sender.Presenter is OverlappedPresenter { State: not OverlappedPresenterState.Minimized })
+                CaptureMainWindowPlacement();
+            if (!_startupPresentationPending && args.DidPresenterChange
                 && sender.Presenter is OverlappedPresenter { State: OverlappedPresenterState.Minimized }
                 && MainProgramPreferences.Load().MinimizeToTray)
                 HideMainWindow();
@@ -259,58 +302,18 @@ namespace IDVBuff
             var currentWindow = window;
             if (currentWindow is null)
                 return;
-            var hWnd = WindowNative.GetWindowHandle(currentWindow);
+            SetMainWindowCloaked(false);
+            MainWindowPresentation.Show(currentWindow, bringToForeground, _lastMainWindowPlacement);
             if (!mainWindowHasBeenShown)
             {
-                SetMainWindowCloaked(false);
-                ShowWindow(hWnd, bringToForeground ? 5 : 4);
                 mainWindowHasBeenShown = true;
-                if (currentWindow.AppWindow.Presenter is OverlappedPresenter initialPresenter)
-                    initialPresenter.Maximize();
-                if (bringToForeground)
-                {
-                    currentWindow.Activate();
-                    BringWindowToForeground(hWnd);
-                }
-                return;
-            }
-            SetMainWindowCloaked(false);
-            ShowWindow(hWnd, bringToForeground ? 5 : 4);
-            if (currentWindow.AppWindow.Presenter is OverlappedPresenter presenter)
-            {
-                if (presenter.State == OverlappedPresenterState.Minimized)
-                    presenter.Restore();
-            }
-            if (bringToForeground)
-            {
-                currentWindow.Activate();
-                BringWindowToForeground(hWnd);
-            }
-        }
-
-        private void BringWindowToForeground(IntPtr hWnd)
-        {
-            if (hWnd == IntPtr.Zero) return;
-            var foregroundHwnd = GetForegroundWindow();
-            if (foregroundHwnd == hWnd) return;
-
-            var foregroundThreadId = foregroundHwnd != IntPtr.Zero ? GetWindowThreadProcessId(foregroundHwnd, out _) : 0;
-            var currentThreadId = GetCurrentThreadId();
-            if (foregroundThreadId != 0 && foregroundThreadId != currentThreadId)
-            {
-                AttachThreadInput(currentThreadId, foregroundThreadId, true);
-                try { BringWindowToTop(hWnd); SetForegroundWindow(hWnd); }
-                finally { AttachThreadInput(currentThreadId, foregroundThreadId, false); }
-            }
-            else
-            {
-                BringWindowToTop(hWnd);
-                SetForegroundWindow(hWnd);
+                CaptureMainWindowPlacement();
             }
         }
 
         private void HideMainWindow()
         {
+            SaveMainWindowPlacement();
             if (window is { } currentWindow)
                 ShowWindow(WindowNative.GetWindowHandle(currentWindow), 0);
         }
@@ -331,123 +334,30 @@ namespace IDVBuff
         private void RequestApplicationExit()
         {
             explicitExitRequested = true;
-            window?.Close();
+            SaveMainWindowPlacement();
+            // Window.Close destroys the HWND directly and does not route through
+            // AppWindow.Closing. Enter the same cleanup path before destroying it.
+            _ = ShutdownApplicationAsync("explicit-exit");
+        }
+
+        private static void RecordShutdownStage(string stage, string trigger)
+        {
+            try { IDVBuff.Core.Diagnostics.MemoryJournal.Current?.Record(stage, new { trigger }, durable: true); }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"Shutdown diagnostic failed: {ex}"); }
+        }
+
+        internal static void ExitForMemoryFailure()
+        {
+            if (_currentApp is not { } app) return;
+            try { app._serviceProvider?.GetService<SessionOrchestrator>()?.StopForMemoryFailure(); }
+            finally
+            {
+                app.RequestApplicationExit();
+            }
         }
 
         [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr windowHandle, int command);
-        [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
-        [DllImport("user32.dll")] private static extern bool BringWindowToTop(IntPtr hWnd);
-        [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
-        [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
-        [DllImport("user32.dll")] private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
-        [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
         [DllImport("dwmapi.dll")] private static extern int DwmSetWindowAttribute(IntPtr windowHandle, int attribute, ref int attributeValue, int attributeSize);
-
-        private async Task ShowUpdatedSuccessfullyAsync()
-        {
-            UpdateLifecycleState.WasRestartedAfterUpdate = false;
-            if (window?.Content is not FrameworkElement root)
-                return;
-            await new ContentDialog
-            {
-                XamlRoot = root.XamlRoot,
-                Title = "更新完成",
-                Content = $"Identity Vision Bridge 已更新到 {BuildVersionInfo.BuildVersion}。",
-                CloseButtonText = "知道了"
-            }.ShowAsync();
-        }
-
-        private async Task ShowQuickStartAsync(Features.Maps.SessionOrchestrator session)
-        {
-            var stateStore = new QuickStartStateStore();
-            if (!stateStore.ShouldShow)
-                return;
-
-            FrameworkElement? root = null;
-            for (var attempt = 0; attempt < 10; attempt++)
-            {
-                root = window?.Content as FrameworkElement;
-                if (root?.XamlRoot is not null)
-                    break;
-                await Task.Delay(100);
-            }
-
-            var choice = await QuickStartDialog.ShowAsync(root?.XamlRoot);
-            if (choice is null)
-                return;
-
-            if (choice == QuickStartChoice.UseRecommendedSettings)
-            {
-                try
-                {
-                    await ApplyQuickStartSelectionAsync(session);
-                    if (_mainFrame?.Content is MainPage mainPage)
-                        await mainPage.ShowRecommendedConfigurationGuideAsync();
-                }
-                catch (Exception exception)
-                {
-                    WriteStartupTrace("Unable to apply quick-start recommended settings.", exception);
-                    return;
-                }
-            }
-
-            try
-            {
-                stateStore.MarkCompleted();
-            }
-            catch (Exception exception)
-            {
-                // A marker failure must not prevent the application from starting.
-                WriteStartupTrace("Unable to persist quick-start completion.", exception);
-            }
-        }
-
-        private void Runtime_ElevationRequiredDetected(object? sender, EventArgs e)
-        {
-            // The integrity check runs during SessionOrchestrator initialization.
-            // Defer the mandatory dialog until the rest of OnLaunched has completed.
-            startupElevationRequired = true;
-            WriteStartupTrace("Startup requires administrator privileges.");
-        }
-
-        private async Task ShowStartupElevationRequiredAsync()
-        {
-            var currentWindow = window;
-            try
-            {
-                if (currentWindow is null)
-                    return;
-
-                FrameworkElement? root = null;
-                for (var attempt = 0; attempt < 10; attempt++)
-                {
-                    root = currentWindow.Content as FrameworkElement;
-                    if (root?.XamlRoot is not null)
-                        break;
-                    await Task.Delay(150);
-                }
-
-                if (root?.XamlRoot is not null)
-                {
-                    await new ContentDialog
-                    {
-                        XamlRoot = root.XamlRoot,
-                        Title = "需要管理员权限",
-                        Content = "Identity Vision Bridge 必须以管理员权限运行，请退出后重新以管理员权限打开。",
-                        CloseButtonText = "退出",
-                        DefaultButton = ContentDialogButton.Close
-                    }.ShowAsync();
-                }
-            }
-            catch (Exception exception)
-            {
-                WriteStartupTrace("Unable to show the administrator privilege prompt.", exception);
-            }
-            finally
-            {
-                RequestApplicationExit();
-            }
-        }
 
         private static void TrySetWindowIcon(Window targetWindow)
         {

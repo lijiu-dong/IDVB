@@ -13,6 +13,7 @@
     <AssemblyName>IDVB.RealCLI</AssemblyName>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+    <DefineConstants>$(DefineConstants);IDVB_HEADLESS</DefineConstants>
     <WindowsPackageType>None</WindowsPackageType>
     <!-- 与主项目 IDVBuff.csproj 一致：自包含打包 WindowsAppSDK 运行时，
          使 RealCLI 可独立运行，无需机器上单独安装 Windows App Runtime。 -->
@@ -26,6 +27,9 @@
        确保走与主应用完全相同的编译产物，同时保持主程序与 RealCLI 构建互不干扰。 -->
   <ItemGroup>
     <ProjectReference Include="..\Core\IDVBuff.Core.csproj" />
+    <ProjectReference Include="..\IDVBuff.Appearance\IDVBuff.Appearance.csproj" />
+    <ProjectReference Include="..\Services\IDVBuff.Services.csproj" />
+    <ProjectReference Include="..\IDVB.ScanRaster\IDVB.ScanRaster.csproj" />
     <ProjectReference Include="..\Infrastructure\IDVBuff.Infrastructure.csproj" />
     <ProjectReference Include="..\Pipeline\IDVBuff.Pipeline.csproj" />
     <ProjectReference Include="..\Survey\Domain\IDVBuff.Survey.Domain.csproj" />
@@ -47,14 +51,23 @@
   <!-- 链接主项目源码：Features 全部（纯 Win32 窗口，无 XAML）+ 根目录必要文件 -->
   <ItemGroup>
     <Compile Include="..\AppDataPaths.cs" Link="Production\AppDataPaths.cs" />
+    <Compile Include="..\Features\Accounts\AccountSession.cs" />
+    <Compile Include="..\Features\Accounts\EntitlementRedemption.cs" />
+    <Compile Include="..\Features\Accounts\CoCreationPublicationClient.cs" />
+    <Compile Include="..\Lifecycle\AutomaticUpdateLauncher.cs" />
+    <Compile Include="..\Features\Accounts\VersionAccessClient.cs" Link="Production\VersionAccessClient.cs" />
+    <Compile Include="..\Features\Accounts\VersionAccessProof.cs" Link="Production\VersionAccessProof.cs" />
+    <Compile Include="..\Lifecycle\UsageNotice.cs" Link="Production\Lifecycle\UsageNotice.cs" />
     <Compile Include="..\Lifecycle\MainProgramPreferences.cs" Link="Production\Lifecycle\MainProgramPreferences.cs" />
     <Compile Include="..\ServiceCollectionExtensions.cs" Link="Production\ServiceCollectionExtensions.cs" />
     <Compile Include="..\Cli\RealCliCandidateSelector.cs" Link="Production\Cli\RealCliCandidateSelector.cs" />
     <Compile Include="..\Diagnostics\OutputLog.cs" Link="Production\Diagnostics\OutputLog.cs" />
+    <Compile Include="..\Diagnostics\OutputLog.Context.cs" Link="Production\Diagnostics\OutputLog.Context.cs" />
     <Compile Include="..\Diagnostics\RealtimePerformanceTracker.cs" Link="Production\Diagnostics\RealtimePerformanceTracker.cs" />
     <Compile Include="..\Diagnostics\StartupTimeline.cs" Link="Production\Diagnostics\StartupTimeline.cs" />
     <Compile Include="..\Features\QuickStart\QuickStartRecommendedSettings.cs" Link="Production\Features\QuickStart\QuickStartRecommendedSettings.cs" />
     <Compile Include="..\Features\Maps\**\*.cs" Link="Production\Features\Maps\%(RecursiveDir)%(Filename)%(Extension)" />
+    <Compile Remove="..\Features\Maps\MapControlPanelWindow*.cs" />
     <!-- ServiceCollectionExtensions registers the screenshot capability even
          in headless mode; link only its dependency instead of pulling the
          WinUI-facing plugin pages into the real replay host. -->
@@ -80,5 +93,18 @@
   </ItemGroup>
   <ItemGroup>
     <Content Include="..\Assets\FloorIndicators\**\*" Link="Assets\FloorIndicators\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\Assets\Algorithms\*.idva" Link="Assets\Algorithms\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+  <Target Name="GenerateCliProductIdentity" BeforeTargets="CoreCompile">
+    <XmlPeek XmlInputPath="$(MSBuildProjectDirectory)\..\IDVBuff.csproj"
+             Query="/Project/PropertyGroup/IDVBProductVersion/text()">
+      <Output TaskParameter="Result" PropertyName="_CliProductVersion" />
+    </XmlPeek>
+    <Error Condition="'$(_CliProductVersion)' == ''" Text="The desktop product version is required for CLI access checks." />
+    <WriteLinesToFile File="$(IntermediateOutputPath)CliProductVersion.g.cs" Overwrite="true" WriteOnlyWhenDifferent="true"
+                      Lines="namespace IDVBuff { internal static partial class BuildVersionInfo { public const string ProductVersion = &quot;$(_CliProductVersion)&quot;%3B } }" />
+    <ItemGroup>
+      <Compile Include="$(IntermediateOutputPath)CliProductVersion.g.cs" />
+    </ItemGroup>
+  </Target>
 </Project>

@@ -12,11 +12,10 @@ namespace IDVBuff.Views;
 /// <summary>Product, licensing, privacy, and attribution information.</summary>
 public sealed partial class SettingsPage : Page
 {
-    private static Brush PrimaryTextBrush => FluentTheme.Brush("TextFillColorPrimaryBrush");
-    private static Brush SecondaryTextBrush => FluentTheme.Brush("TextFillColorSecondaryBrush");
-    private static Brush CardBorderBrush => FluentTheme.Brush("CardStrokeColorDefaultBrush");
-    private static Brush AccentBrush => FluentTheme.Brush("AccentFillColorDefaultBrush");
-    private static Brush AccentContainerBrush => FluentTheme.Brush("AccentFillColorTertiaryBrush");
+    private Brush PrimaryTextBrush => FluentTheme.Brush(this, "TextFillColorPrimaryBrush");
+    private Brush SecondaryTextBrush => FluentTheme.Brush(this, "TextFillColorSecondaryBrush");
+    private Brush CardBorderBrush => FluentTheme.Brush(this, "CardStrokeColorDefaultBrush");
+    private Brush AccentContainerBrush => FluentTheme.Brush(this, "AccentFillColorTertiaryBrush");
 
     public SettingsPage() => Content = CreateContent();
 
@@ -52,23 +51,27 @@ public sealed partial class SettingsPage : Page
 
         root.Children.Add(CreateSectionHeading(
             "许可与使用边界",
-            "IDVB 源代码公开，允许个人学习、研究和非商业使用；它包含用途限制，因此不属于 OSI 定义的开源软件。"));
+            "源码事项适用《非商业源码许可 2.0》，官方软件、账号、联网服务及赞助档位适用《使用条款 2.0》；IDVB 包含用途限制，不属于 OSI 定义的开源软件。"));
 
         var specifications = new StackPanel { Spacing = 12 };
         specifications.Children.Add(CreateSpecificationCard(
             "源码公开 · 禁止商用",
             "非商业许可",
-            "可以查看、学习和为非商业目的修改；不得销售、收费分发、商业集成或用于营利服务。",
+            "仅限个人学习、学术研究及其他非商业用途；自行编译或取得赞助档位不代表获得受控功能或商业使用授权。",
             Symbol.Document,
-            "Identity Vision Bridge 非商业源码许可",
+            "Identity Vision Bridge 非商业源码许可 2.0",
             "允许的行为\n\n"
             + "• 为个人学习、研究和非商业用途使用、复制及修改源代码\n"
-            + "• 在保留版权、许可文本、作者署名并标明修改的前提下，非商业分发源代码或修改版本\n\n"
+            + "• 免费分发时须完整保留许可、版权和来源；修改版本须显著标明“非官方修改版”，继续适用本许可并保留第三方声明\n"
+            + "• 修改版本不得使用作者签名、发布者身份、更新渠道、官方服务地址或以 IDVB 品牌作为产品名称及主要标识\n\n"
             + "禁止的行为\n\n"
             + "• 出售、出租、收费分发，或用于广告、订阅、代练、付费服务及其他直接或间接营利活动\n"
             + "• 移除或伪造作者、版权、许可及来源信息\n"
+            + "• 修改或绕过账号鉴权、赞助档位、使用计量等授权校验，自行解锁受控功能\n"
             + "• 将项目名称、图标或作者身份用于暗示官方认可\n\n"
-            + "任何商业授权均须事先取得权利人的书面许可。完整条款以随软件和源码提供的 LICENSE 为准。"));
+            + "源码公开不授权非公开组件、密钥、官方服务及受控资源；访问控制限制同样适用于非商业使用。赞助或账号档位不构成商业授权。\n\n"
+            + "提交贡献须有权提交，并按完整许可向作者授予可再许可、可用于商业用途的权利。违反许可条件时，授权自动终止。\n\n"
+            + "任何商业授权均须事先取得作者书面许可。完整条款请通过页面底部入口阅读。"));
         specifications.Children.Add(CreateSpecificationCard(
             "禁止违法、侵权与破解",
             "用途限制",
@@ -85,18 +88,19 @@ public sealed partial class SettingsPage : Page
         specifications.Children.Add(CreateSpecificationCard(
             "隐私与本地数据",
             "本地处理 · 自愿贡献",
-            "识别默认在本机完成；只有用户开启“帮助我们改进模型”后，IDVB 才会每天最多上传一次脱敏训练包。",
+            "画面识别默认在本机完成；账号、联网服务、反馈及自愿模型贡献按各自功能说明和隐私政策处理相关数据。",
             Symbol.Permissions,
             "隐私与数据说明",
             "IDVB 会在功能开启时读取用户指定进程的窗口画面，用于本机地图识别与叠加显示。\n\n"
             + "• 设置、导入地图、识别缓存和日志存放在本机应用数据目录\n"
             + "• 常规识别不会把游戏截图写入磁盘\n"
-            + "• 日志收集由用户控制，不会自动上传\n"
+            + "• 反馈或诊断资料由用户主动提交；账号、鉴权及联网功能会按功能需要处理相关数据\n"
             + "• “帮助我们改进模型”默认关闭；开启后会同时启用持续学习与研究算法数据采集\n"
             + "• 训练包只包含与地图识别、对齐和模型训练相关的脱敏样本及必要标签，不包含无关屏幕内容、个人文件、账号信息或普通日志\n"
             + "• 客户端每天最多尝试上传一次；上传前会校验包结构、文件哈希、样本引用和脱敏图像范围\n"
-            + "• 可随时在“主设置 - 隐私”关闭；IDVB 目前不提供账号系统、通用遥测或云同步\n\n"
+            + "• 可随时在“主设置 - 隐私”关闭模型贡献；个人信息处理以官网公布的隐私政策为准\n\n"
             + $"本地数据目录：{AppDataPaths.RootDirectory}\n卸载程序可让用户选择是否保留这些数据。分享日志或 IDVM 前请自行检查并移除敏感或无权传播的内容。"));
+        specifications.Children.Add(CreateThirdPartyCard());
         specifications.Children.Add(CreateSpecificationCard(
             "第三方与免责声明",
             "非官方项目",
@@ -105,24 +109,38 @@ public sealed partial class SettingsPage : Page
             "第三方声明与免责声明",
             "Identity Vision Bridge 是独立的非官方社区项目，与任何游戏及其开发、发行或运营方不存在隶属、合作、赞助或认可关系。相关名称、商标、游戏画面和素材归各自权利人所有。\n\n"
             + "Microsoft Windows App SDK、WebView2、OpenCvSharp 等第三方组件适用各自的许可证，本项目许可不会改变这些条款。\n\n"
-            + "本软件按“现状”提供，不承诺无错误、持续可用或适合特定目的。使用者应自行遵守法律、游戏用户协议和平台规则，并自行承担使用、修改或分发产生的风险。"));
+            + "IDVB 主程序及官方组件通过系统标准接口获取窗口画面、绘制独立叠加窗口和处理快捷键及用户启用的模拟输入；不修改游戏文件、不读取或修改游戏进程内存、不向游戏进程注入代码或文件，也不拦截或篡改游戏网络通信。该说明不适用于第三方插件或非官方版本。\n\n"
+            + "本软件按“现状”和“可用”状态提供，不承诺无错误、持续可用或适合特定目的。游戏或平台可能作出不同认定；使用者应自行遵守相关规则并承担账号处罚、数据及虚拟财产损失等风险。免责与责任限制以完整条款及适用法律为准。"));
+        specifications.Children.Add(CreateSpecificationCard(
+            "账号、赞助与服务规则",
+            "使用条款 2.0",
+            "账号和档位仅限本人使用；赞助不授予商业使用权。违规可能导致权益终止、凭证撤销或账号停用。",
+            Symbol.Contact,
+            "账号、赞助与服务规则摘要",
+            "• 账号、赞助档位及权益不得出售、转让、出借或共享；未满十四周岁不得注册账号或使用联网服务\n"
+            + "• 档位金额、内容和有效期以赞助时的说明为准；无权益的自愿赞助不产生服务义务\n"
+            + "• 除法律强制规定或档位说明另有约定外，赞助不予退还；主要权益因运营方原因无法继续提供时，按剩余有效期折算处理\n"
+            + "• 违规可导致限制功能、终止权益、撤销凭证或停用账号；可通过 team@idvb.dev 申诉\n"
+            + "• 功能、服务及条款可能调整；重大变更按条款提示，并在法律要求时重新取得同意\n\n"
+            + "以上仅为摘要，具体权利义务、用户内容授权、责任限制及争议解决规则请阅读完整《使用条款》。"));
         root.Children.Add(specifications);
 
         root.Children.Add(new Border
         {
             Margin = new Thickness(0, 4, 0, 0),
             Padding = new Thickness(16, 13, 16, 13),
-            Background = FluentTheme.Brush("SystemFillColorCautionBackgroundBrush"),
+            Background = FluentTheme.Brush(this, "SystemFillColorCautionBackgroundBrush"),
             CornerRadius = new CornerRadius(8),
             Child = new TextBlock
             {
-                Text = "许可摘要只为方便阅读，不替代完整 LICENSE。若摘要与完整条款不一致，以 LICENSE 为准；商业使用请先取得作者书面授权。",
+                Text = "以上仅为阅读摘要。源码事项以完整《软件许可》为准；官方服务和受控功能事项以完整《使用条款》为准。商业使用须事先取得作者书面授权。",
                 FontSize = 13,
                 Foreground = PrimaryTextBrush,
                 TextWrapping = TextWrapping.Wrap
             }
         });
 
+        root.Children.Add(CreateLegalReadingLinks());
         root.Children.Add(new TextBlock
         {
             Text = $"© 2026 XGFL。Identity Vision Bridge（IDVB）· Identity Vision Model（.idvm）",
@@ -136,7 +154,7 @@ public sealed partial class SettingsPage : Page
         return root;
     }
 
-    private static Border CreateHero()
+    private Border CreateHero()
     {
         var identity = new StackPanel { Spacing = 6 };
         identity.Children.Add(new TextBlock
@@ -162,6 +180,9 @@ public sealed partial class SettingsPage : Page
         });
 
         var grid = new Grid();
+        var brandImage = new Image { Stretch = Stretch.Uniform };
+        MemoryImageBinding.AttachOwned(this, brandImage,
+            new Uri("ms-appx:///Assets/Icons/IDVB_icon_square_master.png"), "UI.Settings.BrandArtwork");
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         grid.Children.Add(new Border
@@ -170,12 +191,7 @@ public sealed partial class SettingsPage : Page
             Height = 64,
             CornerRadius = new CornerRadius(14),
             Background = AccentContainerBrush,
-            Child = new Image
-            {
-                Source = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(
-                    new Uri("ms-appx:///Assets/Icons/IDVB_icon_square_master.png")),
-                Stretch = Stretch.Uniform
-            }
+            Child = brandImage
         });
         Grid.SetColumn(identity, 1);
         identity.Margin = new Thickness(18, 0, 0, 0);
@@ -184,7 +200,7 @@ public sealed partial class SettingsPage : Page
         return new Border
         {
             Padding = new Thickness(22),
-            Background = FluentTheme.CardBrush(),
+            Background = FluentTheme.CardBrush(this),
             BorderBrush = CardBorderBrush,
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(8),
@@ -192,7 +208,7 @@ public sealed partial class SettingsPage : Page
         };
     }
 
-    private static StackPanel CreateSectionHeading(string title, string description)
+    private StackPanel CreateSectionHeading(string title, string description)
     {
         var panel = new StackPanel { Spacing = 6 };
         panel.Children.Add(new TextBlock
@@ -249,12 +265,9 @@ public sealed partial class SettingsPage : Page
             Content = enablePreview ? "加入预览计划" : "退出预览计划",
             HorizontalAlignment = HorizontalAlignment.Stretch,
             HorizontalContentAlignment = HorizontalAlignment.Center,
-            MinWidth = 180,
-            Foreground = new SolidColorBrush(Colors.White),
-            Background = enablePreview
-                ? AccentBrush
-                : new SolidColorBrush(Colors.Firebrick)
+            MinWidth = 180
         };
+        if (enablePreview) tipAction.Style = (Style)Application.Current.Resources["AccentButtonStyle"];
         var flyoutContent = new StackPanel
         {
             Spacing = 10,
@@ -299,7 +312,7 @@ public sealed partial class SettingsPage : Page
                     Title = "无法保存更新通道",
                     Content = exception.Message,
                     CloseButtonText = "知道了"
-                }.ShowAsync();
+                }.ShowThemedAsync();
             }
         };
 
@@ -319,7 +332,7 @@ public sealed partial class SettingsPage : Page
         return new Border
         {
             Padding = new Thickness(18),
-            Background = FluentTheme.CardBrush(),
+            Background = FluentTheme.CardBrush(this),
             BorderBrush = CardBorderBrush,
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(8),
@@ -359,7 +372,7 @@ public sealed partial class SettingsPage : Page
             Title = "更新程序不可用",
             Content = "当前运行的是开发输出，或安装内容不完整。请使用正式安装版本中的更新功能。",
             CloseButtonText = "知道了"
-        }.ShowAsync();
+        }.ShowThemedAsync();
     }
 
     private Button CreateSpecificationCard(
@@ -369,6 +382,18 @@ public sealed partial class SettingsPage : Page
         Symbol icon,
         string dialogTitle,
         string dialogContent)
+    {
+        var button = CreateSpecificationCard(title, state, description, icon, SpecificationCard_Click);
+        button.Tag = (dialogTitle, dialogContent);
+        return button;
+    }
+
+    private Button CreateSpecificationCard(
+        string title,
+        string state,
+        string description,
+        Symbol icon,
+        RoutedEventHandler click)
     {
         var text = new StackPanel { Spacing = 4 };
         text.Children.Add(new TextBlock
@@ -399,7 +424,7 @@ public sealed partial class SettingsPage : Page
             VerticalAlignment = VerticalAlignment.Top,
             Child = new SymbolIcon(icon)
             {
-                Foreground = FluentTheme.Brush("TextOnAccentFillColorPrimaryBrush")
+                Foreground = FluentTheme.Brush(this, "TextOnAccentFillColorPrimaryBrush")
             }
         });
         Grid.SetColumn(text, 1);
@@ -409,7 +434,7 @@ public sealed partial class SettingsPage : Page
         {
             MinHeight = 32,
             Padding = new Thickness(12, 5, 12, 5),
-            Background = FluentTheme.Brush("SubtleFillColorSecondaryBrush"),
+            Background = FluentTheme.Brush(this, "SubtleFillColorSecondaryBrush"),
             BorderBrush = CardBorderBrush,
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(4),
@@ -430,14 +455,13 @@ public sealed partial class SettingsPage : Page
             HorizontalAlignment = HorizontalAlignment.Stretch,
             HorizontalContentAlignment = HorizontalAlignment.Stretch,
             Padding = new Thickness(18, 16, 18, 16),
-            Background = FluentTheme.CardBrush(),
+            Background = FluentTheme.CardBrush(this),
             BorderBrush = CardBorderBrush,
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(8),
-            Content = grid,
-            Tag = (dialogTitle, dialogContent)
+            Content = grid
         };
-        button.Click += SpecificationCard_Click;
+        button.Click += click;
         return button;
     }
 

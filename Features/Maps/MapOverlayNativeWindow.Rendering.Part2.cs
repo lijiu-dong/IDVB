@@ -15,6 +15,9 @@ internal sealed partial class MapOverlayNativeWindow
     private IntPtr _cachedOldBitmap = IntPtr.Zero;
     private int _cachedDIBWidth;
     private int _cachedDIBHeight;
+    private IDisposable? _cachedDibOwnership;
+    private SharedDib? _borrowedDib;
+    private IDisposable? _borrowedDibLease;
 
     internal bool HasRetainedLayer(int width, int height) =>
         _cachedMemoryDc != IntPtr.Zero
@@ -23,7 +26,7 @@ internal sealed partial class MapOverlayNativeWindow
 
     private void EnsureCachedBuffer(int width, int height)
     {
-        if (_cachedMemoryDc != IntPtr.Zero && _cachedDIBWidth == width && _cachedDIBHeight == height)
+        if (_borrowedDib is null && _cachedMemoryDc != IntPtr.Zero && _cachedDIBWidth == width && _cachedDIBHeight == height)
             return;
 
         CleanupCachedBuffer();
@@ -48,6 +51,8 @@ internal sealed partial class MapOverlayNativeWindow
                 biCompression = 0 // BI_RGB
             };
 
+            var request = IDVBuff.Core.Diagnostics.MemoryJournal.Request("Overlay.NativeDib",
+                checked((long)width * height * 4), "gdi32.dll");
             _cachedDIBSection = CreateDIBSection(
                 _cachedMemoryDc,
                 ref bmi,
@@ -58,6 +63,9 @@ internal sealed partial class MapOverlayNativeWindow
 
             if (_cachedDIBSection == IntPtr.Zero || _cachedBitsPtr == IntPtr.Zero)
                 throw NativeFailure("Unable to create the cached overlay DIBSection.");
+
+            _cachedDibOwnership = IDVBuff.Core.Diagnostics.MemoryJournal.Own("Overlay.NativeDib",
+                checked((long)width * height * 4), "gdi32.dll", request);
 
             _cachedOldBitmap = SelectObject(_cachedMemoryDc, _cachedDIBSection);
             _cachedDIBWidth = width;
@@ -79,7 +87,9 @@ internal sealed partial class MapOverlayNativeWindow
         }
         if (_cachedDIBSection != IntPtr.Zero)
         {
-            DeleteObject(_cachedDIBSection);
+            if (_borrowedDib is null) DeleteObject(_cachedDIBSection);
+            _cachedDibOwnership?.Dispose();
+            _cachedDibOwnership = null;
             _cachedDIBSection = IntPtr.Zero;
         }
         if (_cachedMemoryDc != IntPtr.Zero)
@@ -87,6 +97,9 @@ internal sealed partial class MapOverlayNativeWindow
             DeleteDC(_cachedMemoryDc);
             _cachedMemoryDc = IntPtr.Zero;
         }
+        _borrowedDibLease?.Dispose();
+        _borrowedDibLease = null;
+        _borrowedDib = null;
         if (_cachedScreenDc != IntPtr.Zero)
         {
             ReleaseDC(IntPtr.Zero, _cachedScreenDc);
@@ -117,7 +130,7 @@ internal sealed partial class MapOverlayNativeWindow
 
         Debug.WriteLine($"[Overlay] 开始创建窗口 - Handle: {(_handle == IntPtr.Zero ? "NULL" : _handle.ToInt64().ToString("X"))}, x: {x}, y: {y}, w: {width}, h: {height}");
 
-        ShowWindow(_handle, SwShowNoActivate);
+        // SetWindowPos performs both visibility and placement without activation.
         SetLastError(0);
         if (!SetWindowPos(
                 _handle,
@@ -133,11 +146,14 @@ internal sealed partial class MapOverlayNativeWindow
             throw NativeFailure("Unable to place the overlay above the game window.");
         }
         IsVisible = true;
-        Debug.WriteLine($"[Overlay] ShowWindow + SetWindowPos 成功，窗口已置顶！");
+        Debug.WriteLine($"[Overlay] SetWindowPos 成功，窗口已无激活置顶！");
 
-        EnsureCachedBuffer(width, height);
+        var borrowed = TryBindSharedMapLayer(bitmap, width, height);
+        if (!borrowed) EnsureCachedBuffer(width, height);
 
         // 极速内存拷贝：将 32bppPArgb 像素直接拷贝到常驻 DIBSection，彻底规避 16MB 的频繁申请与 GDI+ 转换
+        if (!borrowed)
+        {
         var nativeCopy = MapOperationTraceAmbient.StartChild(
             "final_native_copy",
             MapOperationWaitKind.Compute);
@@ -164,6 +180,7 @@ internal sealed partial class MapOverlayNativeWindow
         {
             bitmap.UnlockBits(bmpData);
             nativeCopy.Complete();
+        }
         }
 
         var destination = new NativePoint(x, y);

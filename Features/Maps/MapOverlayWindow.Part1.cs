@@ -103,6 +103,15 @@ public sealed partial class MapOverlayWindow : IDisposable
             Present();
     }
 
+    public void SetRouteOpacity(double opacity)
+    {
+        _routeOpacity = double.IsFinite(opacity) ? (float)Math.Clamp(opacity, 0d, 1d) : 1f;
+        InvalidateMapLayer();
+        InvalidateLockedBackground();
+        if (IsVisible)
+            Present();
+    }
+
     public void SetShowGateMarkers(bool show)
     {
         _showGateMarkers = show;

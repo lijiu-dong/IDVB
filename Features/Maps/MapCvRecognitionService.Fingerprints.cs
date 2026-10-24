@@ -17,6 +17,7 @@ public sealed partial class MapCvRecognitionService
 
     private MapGeometryFingerprint? TryCreateFingerprint(MapRecord map)
     {
+        using var memory = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("Recognition.BuildMapFingerprint", map.Id.ToString());
         map.NormalizeRecognition();
         var floorKey = MapScanFloorRules.ResolveScanFloorKey(map);
         var profile = MapFloorRules.GetFloorProfile(map, floorKey)
@@ -41,52 +42,8 @@ public sealed partial class MapCvRecognitionService
             profile.RecognitionPixelHeight);
         var recognitionImagePath = _repository.GetFloorRecognitionPath(map, floorKey);
 
-        // Measure actual gate icon size in the reference image so that
-        // EstimateAxisScale uses comparable objects on both sides of the
-        // ratio (screen-side: template-matched tight box; reference-side:
-        // template-matched tight box) instead of comparing a tight box to
-        // a user-drawn loose anchor rectangle.
-        double iconWidth = 0d;
-        double iconHeight = 0d;
-        try
-        {
-            using var reference = Cv2.ImRead(recognitionImagePath, ImreadModes.Unchanged);
-            if (!reference.Empty())
-            {
-                var mainCenter = new Point2d(
-                    mainRefBounds.CenterX,
-                    mainRefBounds.CenterY);
-                var sideCenter = new Point2d(
-                    sideRefBounds.CenterX,
-                    sideRefBounds.CenterY);
-                var mainSize = GateTemplateDetector.EstimateReferenceGateIconSize(
-                    reference,
-                    mainCenter);
-                var sideSize = GateTemplateDetector.EstimateReferenceGateIconSize(
-                    reference,
-                    sideCenter);
-                if (mainSize is { } mainSz && sideSize is { } sideSz)
-                {
-                    // Average the two measurements — they should be very close.
-                    iconWidth = (mainSz.Width + sideSz.Width) / 2d;
-                    iconHeight = (mainSz.Height + sideSz.Height) / 2d;
-                }
-                else if (mainSize is { } mSz)
-                {
-                    iconWidth = mSz.Width;
-                    iconHeight = mSz.Height;
-                }
-                else if (sideSize is { } sSz)
-                {
-                    iconWidth = sSz.Width;
-                    iconHeight = sSz.Height;
-                }
-            }
-        }
-        catch
-        {
-            // Reference image missing or corrupt — fall back to anchor bounds.
-        }
+        var (iconWidth, iconHeight) = GetReferenceGateIconSize(map, floorKey, recognitionImagePath, mainRefBounds, sideRefBounds);
+        var repository = _repository;
 
         return new MapGeometryFingerprint
         {
@@ -99,7 +56,7 @@ public sealed partial class MapCvRecognitionService
             ReferenceWidth = profile.RecognitionPixelWidth,
             ReferenceHeight = profile.RecognitionPixelHeight,
             RecognitionImagePath = recognitionImagePath,
-            OverlayImagePath = _repository.GetFloorOverlayPath(map, floorKey),
+            OverlayImagePathFactory = () => repository.GetFloorOverlayPath(map, floorKey),
             ReferenceGateIconWidth = iconWidth,
             ReferenceGateIconHeight = iconHeight
         };
@@ -110,7 +67,7 @@ public sealed partial class MapCvRecognitionService
     /// <summary>
     /// 使用侧门特征缓存对捕获帧执行模板匹配，返回 top-<paramref name="topK"/> 候选。
     /// </summary>
-    public IReadOnlyList<SideEntranceScanCandidate> RunSideEntranceScan(
+    public SideEntranceScanCandidates RunSideEntranceScan(
         Mat capturedFrame,
         int topK = 5,
         string? mapClass = null,
@@ -118,48 +75,50 @@ public sealed partial class MapCvRecognitionService
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (capturedFrame.Empty() || _sideEntranceFeatureCache.Count == 0)
-            return [];
+            return new([]);
 
-        var candidates = BuildSideEntranceScanInputs(mapClass, selectedMapId);
+        using var candidates = BuildSideEntranceScanInputs(mapClass, selectedMapId);
         using var matchImage = GateTemplateDetector.CreateMatchImage(capturedFrame);
         var gateResult = _gateDetector.Detect(
             matchImage,
             new MapScreenRect(0, 0, capturedFrame.Width, capturedFrame.Height),
             capturedFrame.Width,
             GateTemplateRules.FallbackPairThreshold);
-        return _sideEntrancePipeline.RunScan(
+        var result = _sideEntrancePipeline.RunScan(
             capturedFrame,
             candidates,
             detectedGates: gateResult,
             topK: topK,
             viewportBounds: new MapScreenRect(0, 0, capturedFrame.Width, capturedFrame.Height));
+        return SideEntranceScanCandidates.Create(result, candidates);
     }
 
-    private List<(MapRecord map, string floorKey, Mat template)>
-        BuildSideEntranceScanInputs(string? mapClass, Guid? selectedMapId = null)
+    private ScanIndexInputBatch BuildSideEntranceScanInputs(string? mapClass, Guid? selectedMapId = null)
     {
-        var candidates = new List<(MapRecord map, string floorKey, Mat template)>(
-            _sideEntranceFeatureCache.Count);
-        foreach (var ((mapId, floorKey), template) in _sideEntranceFeatureCache)
+        var maps = _maps;
+        var selected = new Dictionary<(Guid, string), MapRecord>();
+        var snapshot = _sideEntranceFeatureCache.Rent(key =>
         {
-            var map = _maps.FirstOrDefault(item => item.Id == mapId);
-            if (map is null)
-                continue;
-
+            var (mapId, floorKey) = key;
+            var map = maps.FirstOrDefault(item => item.Id == mapId);
+            if (map is null) return false;
             var scanFloorKey = MapScanFloorRules.ResolveScanFloorKey(map);
             if ((selectedMapId is { } requiredMapId && map.Id != requiredMapId)
                 || (!string.IsNullOrWhiteSpace(mapClass)
-                    && !string.Equals(map.Class, mapClass,
-                        StringComparison.OrdinalIgnoreCase))
-                || !string.Equals(floorKey, scanFloorKey,
-                    StringComparison.OrdinalIgnoreCase)
-                || !MapScanFloorRules.HasRequiredScanMarkers(map, floorKey))
-            {
-                continue;
-            }
-            candidates.Add((map, floorKey, template));
+                    && !string.Equals(map.Class, mapClass, StringComparison.OrdinalIgnoreCase))
+                || !string.Equals(floorKey, scanFloorKey, StringComparison.OrdinalIgnoreCase)
+                || !MapScanFloorRules.HasRequiredScanMarkers(map, floorKey)) return false;
+            selected.Add(key, map);
+            return true;
+        });
+        try
+        {
+            var inputs = new ScanIndexInputBatch(snapshot, snapshot.Entries.Count);
+            foreach (var (key, template) in snapshot.Entries)
+                inputs.Add((selected[key], key.Item2, template));
+            return inputs;
         }
-        return candidates;
+        catch { snapshot.Dispose(); throw; }
     }
 
     /// <summary>
@@ -177,6 +136,9 @@ public sealed partial class MapCvRecognitionService
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(frame);
+
+        if (ScanExecutionContext.Current is { Policy.Mode: ScanPerformanceMode.DeepScan } deepScan)
+            return RunDeepScan(frame, mapClass, deepScan, progress);
 
         tuning = MapCvRecognitionHelpers.NormalizedCopy(tuning);
         progress?.Invoke(0d);
@@ -234,7 +196,7 @@ public sealed partial class MapCvRecognitionService
         using var repositoryRead = MapOperationTraceAmbient.StartChild(
             "side_map_repository_read",
             MapOperationWaitKind.Io);
-        var inputs = BuildSideEntranceScanInputs(mapClass);
+        using var inputs = BuildSideEntranceScanInputs(mapClass);
         repositoryRead.Complete();
         var eligibleMapCount = _maps.Count(map =>
             (string.IsNullOrWhiteSpace(mapClass)
@@ -246,6 +208,7 @@ public sealed partial class MapCvRecognitionService
             Math.Max(topK, inputs.Count),
             frame.ViewportBounds,
             progress: value => progress?.Invoke(0.12d + value * 0.88d));
+        ScanExecutionContext.Current?.RecordRetrievalCoverage(eligibleMapCount, inputs.Count);
         return new SideEntranceScanResult
         {
             GateDetection = gateResult,
@@ -253,11 +216,14 @@ public sealed partial class MapCvRecognitionService
             EligibleMapCount = eligibleMapCount,
             ReadyMapCount = inputs.Count,
             RejectedCandidateCount = Math.Max(0, inputs.Count - candidates.Count),
-            FailureReason = candidates.Count == 0
+            FailureReason = inputs.Count != eligibleMapCount
+                ? $"地图目录数据尚未就绪（就绪 {inputs.Count}/{eligibleMapCount}）；请检查扫描楼层标记与结构特征。"
+                : candidates.Count == 0
                 ? inputs.Count == 0
                     ? $"当前地图类别没有可用的侧门特征（就绪 {inputs.Count}/{eligibleMapCount}）。"
                     : "检测到侧门，但没有地图通过最低证据门槛。"
-                : string.Empty
+                : string.Empty,
+            ReaderLifetime = inputs.TakeLifetime()
         };
     }
 
@@ -431,9 +397,11 @@ public sealed partial class MapCvRecognitionService
         {
             if (_floorPrewarmTasks.TryGetValue(key, out var existing)) return existing;
             var ct = _matchCts.Token;
-            var task = Task.Run(() =>
+            var task = Task.Run(async () =>
             {
                 using var perfScope = RealtimePerformanceTracker.TrackScope("WarmFloorStructure", $"map={map.Id:N}|floor={floorKey}");
+                if (ct.IsCancellationRequested) return;
+                await PrepareSelectedMapFloorsAsync(map, identitySelection: false, cancellationToken: ct).ConfigureAwait(false);
                 if (ct.IsCancellationRequested) return;
                 if (_structureCache.TryRentResident(
                         map.Id, map.UpdatedAt, floorKey, tuning.Generation, profile) is { } resident)
@@ -442,43 +410,33 @@ public sealed partial class MapCvRecognitionService
                     return;
                 }
                 if (ct.IsCancellationRequested) return;
-                var path = GetAlignmentReferencePath(map, floorKey, tuning);
-                using var image = Cv2.ImRead(path, ImreadModes.Unchanged);
+                using var image = ReadAlignmentReference(map, floorKey, tuning);
                 if (image.Empty() || ct.IsCancellationRequested) return;
-                using var prepared = _structureCache.GetOrCreate(
+                using var preparedFloorLease = profile == MapStructurePreprocessingProfile.PrebuiltStructureLine
+                    && TryGetVpsg3FloorLease(map, floorKey, out var floorLease) ? floorLease : null;
+                using var prepared = _structureCache.RentOrCreate(
                     map.Id, map.UpdatedAt, image, floorProfile.WholeImageIgnoreRegions,
-                    floorKey, tuning.Generation, profile);
+                    floorKey, tuning.Generation, profile,
+                    residentSemanticIndex: preparedFloorLease?.Floor.SemanticIndex);
             }, ct);
             _floorPrewarmTasks[key] = task;
-            _ = task.ContinueWith(_ =>
+            _allFloorPrewarmTasks.Add(task);
+            _ = task.ContinueWith(completed =>
             {
-                lock (_floorPrewarmGate) _floorPrewarmTasks.Remove(key);
+                lock (_floorPrewarmGate)
+                {
+                    _allFloorPrewarmTasks.Remove(completed);
+                    // An earlier match's completion must not erase a newer
+                    // prewarm registered under the same map/floor key.
+                    if (_floorPrewarmTasks.TryGetValue(key, out var current)
+                        && ReferenceEquals(current, completed))
+                        _floorPrewarmTasks.Remove(key);
+                }
             }, TaskScheduler.Default);
             return task;
         }
     }
 
-    public void Dispose()
-    {
-        if (_disposed)
-            return;
-        _disposed = true;
-        lock (_floorPrewarmGate)
-        {
-            _matchCts.Cancel();
-            _matchCts.Dispose();
-            _floorPrewarmTasks.Clear();
-        }
-        _gateDetector.Dispose();
-        _structureCache.Dispose();
-        MapStructurePreprocessor.ClearReferenceCache();
-        DisposeVpsg3();
-        _auxiliaryTemplateCache.Dispose();
-        _cacheGate.Dispose();
-        foreach (var mat in _sideEntranceFeatureCache.Values)
-            mat.Dispose();
-        _sideEntranceFeatureCache = [];
-    }
 }
 /*
  * 文件职责：MapCvRecognitionService.Fingerprints。
@@ -487,3 +445,4 @@ public sealed partial class MapCvRecognitionService
  * 数据流：输入通常来自截图、识别结果、会话状态、配置或持久化缓存；输出应继续交给识别、对齐、渲染、日志或发布流程使用。调用方应遵守类型契约，并注意空值、超时、置信度和取消状态。
  * 维护约束：这里只补充说明，不改变业务逻辑。涉及楼层尺度时必须保持楼层之间完全独立；涉及 UI、窗口句柄或系统资源时应遵守生命周期与释放约定；调整算法时应同步检查相关规则、诊断和测试。
  */
+

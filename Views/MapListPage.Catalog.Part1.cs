@@ -19,25 +19,6 @@ namespace IDVBuff.Views;
 public sealed partial class MapListPage : UserControl
 {
 
-    private static Button CreateSecondaryButton(string text)
-    {
-        var button = new Button
-        {
-            Content = text,
-            Background = FluentTheme.Brush("ControlFillColorDefaultBrush"),
-            Foreground = FluentTheme.Brush("TextFillColorPrimaryBrush"),
-            BorderBrush = FluentTheme.Brush("ControlStrokeColorDefaultBrush"),
-            BorderThickness = new Thickness(1),
-            FontSize = 13,
-            MinWidth = 98,
-            MinHeight = 38,
-            Padding = new Thickness(16, 6, 16, 6),
-            CornerRadius = new CornerRadius(7)
-        };
-        AttachHoverFeedback(button);
-        return button;
-    }
-
     private static BitmapImage CreateBitmap(string path, int? decodePixelWidth = null) => new()
     {
         CreateOptions = BitmapCreateOptions.None,
@@ -198,23 +179,25 @@ public sealed partial class MapListPage : UserControl
             dialog.IsPrimaryButtonEnabled = !string.IsNullOrWhiteSpace(textBox.Text) && !string.Equals(textBox.Text, currentClass, StringComparison.OrdinalIgnoreCase);
         };
 
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+        if (await dialog.ShowThemedAsync(this) != ContentDialogResult.Primary)
             return;
 
         var newName = textBox.Text.Trim();
         if (string.Equals(newName, currentClass, StringComparison.OrdinalIgnoreCase))
             return;
 
-        await RenameClassAsync(currentClass, newName);
+        await RunMapOperationAsync("正在重命名地图类……", () => RenameClassAsync(currentClass, newName));
         _selectedClass = newName;
         await ShowListAsync();
     }
 
     private async Task RenameClassAsync(string oldName, string newName)
     {
-        await _repository.RenameClassAsync(oldName, newName);
+        MapOperationProgress.Report(.1, "正在重命名地图类……");
+        await Task.Run(() => _repository.RenameClassAsync(oldName, newName));
+        MapOperationProgress.Report(.9, "正在刷新地图……");
         if (!App.IsSafeMode)
-            await App.Session.RefreshMapCacheAsync();
+            await MapOperationProgress.RunAsync(.9, 1, () => App.Session.RefreshMapCacheAsync());
     }
 
     private async Task ReorderCurrentClassAsync()
@@ -228,12 +211,17 @@ public sealed partial class MapListPage : UserControl
             CloseButtonText = "取消"
         };
 
-        if (await confirm.ShowAsync() != ContentDialogResult.Primary)
+        if (await confirm.ShowThemedAsync(this) != ContentDialogResult.Primary)
             return;
 
-        await _repository.ReorderClassAsync(_selectedClass);
-        if (!App.IsSafeMode)
-            await App.Session.RefreshMapCacheAsync();
-        await ShowListAsync();
+        await RunMapOperationAsync("正在重新排序……", async () =>
+        {
+            MapOperationProgress.Report(.1, "正在重新排序……");
+            await Task.Run(() => _repository.ReorderClassAsync(_selectedClass));
+            MapOperationProgress.Report(.9, "正在刷新地图……");
+            if (!App.IsSafeMode)
+                await MapOperationProgress.RunAsync(.9, 1, () => App.Session.RefreshMapCacheAsync());
+            await ShowListAsync();
+        });
     }
 }

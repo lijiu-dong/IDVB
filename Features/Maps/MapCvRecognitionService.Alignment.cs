@@ -24,12 +24,16 @@ public sealed partial class MapCvRecognitionService
         double nativeScaleChangeRatio = MapSessionRules.NativeScaleChangeRatio,
         string? mapClass = null)
     {
-        using var identityConstraint = structureTuning?.Mode == MapStructureRegistrationMode.ScanVerification
-            && ScanExecutionContext.Current is { Frame: { } observation } scan
-            && ReferenceEquals(observation.Source, frame.Image)
-            && _sideEntranceFeatureCache.TryGetValue((selectedMapId, session.FloorKey), out var line)
-                ? scan.ConstrainAlignment(ScanStructureIndex.Get(line), frame.ViewportBounds) : null;
         var selectedMap = TryGetMap(selectedMapId);
+        var scan = ScanExecutionContext.Current;
+        using var identitySnapshot = structureTuning?.Mode == MapStructureRegistrationMode.ScanVerification
+            && selectedMap is not null && scan is { Frame: { } observation }
+            && ReferenceEquals(observation.Source, frame.Image)
+                ? _sideEntranceFeatureCache.Rent(key => key == (selectedMapId, session.FloorKey)) : null;
+        using var identityConstraint = identitySnapshot is not null
+            && identitySnapshot.Entries.TryGetValue((selectedMapId, session.FloorKey), out var line)
+                ? scan!.ConstrainAlignment(line.WithScanAnchor(selectedMap!, session.FloorKey),
+                    frame.ViewportBounds) : null;
         if (selectedMap is not null
             && MapFloorRules.GetFloorProfile(selectedMap, session.FloorKey)
                 is not null
@@ -377,7 +381,7 @@ public sealed partial class MapCvRecognitionService
             return failure!;
         }
 
-        var margin = MapCvRecognitionHelpers.GeometryMargin(ranked);
+        var margin = MapCvRecognitionHelpers.GeometryMargin(ranked, ScanVariantGroups);
         var choices = MapCvRecognitionBuilders.BuildChoices(
             ranked, alignmentMode, tuning, margin,
             MapRecognitionSource.ManualGateSelection);

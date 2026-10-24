@@ -8,6 +8,7 @@
     <RootNamespace>IDVBuff.UpdateCore</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
+    <ProjectReference Include="..\Core\IDVBuff.Core.csproj" />
     <!-- Keep the SDK version identical to the vpk CLI version used by release/Invoke-IDVBRelease.ps1. -->
     <PackageReference Include="Velopack" Version="1.2.0" />
   </ItemGroup>

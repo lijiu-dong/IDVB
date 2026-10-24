@@ -116,7 +116,7 @@ public sealed partial class EmphasisGuide : IDisposable
         var consecutiveFailedChecks = 0;
         var checkMessage = new TextBlock
         {
-            Foreground = FluentTheme.Brush("SystemFillColorCriticalBrush"),
+            Foreground = FluentTheme.Brush(_host, "SystemFillColorCriticalBrush"),
             TextWrapping = TextWrapping.Wrap,
             Visibility = Visibility.Collapsed
         };
@@ -134,8 +134,8 @@ public sealed partial class EmphasisGuide : IDisposable
             CornerRadius = new CornerRadius(8),
             // These managed brushes are updated by FluentTheme when the shell
             // changes ActualTheme, including while an onboarding step is open.
-            Background = FluentTheme.CardBrush(),
-            BorderBrush = FluentTheme.Brush("CardStrokeColorDefaultBrush"),
+            Background = FluentTheme.CardBrush(_host),
+            BorderBrush = FluentTheme.Brush(_host, "CardStrokeColorDefaultBrush"),
             BorderThickness = new Thickness(1),
             Child = new Grid
             {
@@ -191,6 +191,7 @@ public sealed partial class EmphasisGuide : IDisposable
             try
             {
                 var result = await step.CheckAsync(cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
                 if (result.IsPassed)
                 {
                     consecutiveFailedChecks = 0;
@@ -206,7 +207,7 @@ public sealed partial class EmphasisGuide : IDisposable
                 if (consecutiveFailedChecks >= FailedChecksBeforeSkipPrompt)
                 {
                     consecutiveFailedChecks = 0;
-                    if (await ConfirmSkipAfterFailedChecksAsync(step, checkMessage.Text))
+                    if (await ConfirmSkipAfterFailedChecksAsync(step, checkMessage.Text, cancellationToken))
                     {
                         completion.TrySetResult();
                         return;
@@ -243,7 +244,7 @@ public sealed partial class EmphasisGuide : IDisposable
         return seconds > 0 ? $"{action}（{seconds}秒）" : action;
     }
 
-    private static TextBlock CreateDescriptionBlock(EmphasisGuideStep step)
+    private TextBlock CreateDescriptionBlock(EmphasisGuideStep step)
     {
         var description = new TextBlock { TextWrapping = TextWrapping.Wrap };
         var segments = step.DescriptionSegmentsFactory?.Invoke();
@@ -257,7 +258,7 @@ public sealed partial class EmphasisGuide : IDisposable
         {
             var run = new Run { Text = segment.Text };
             if (segment.UseAccent)
-                run.Foreground = FluentTheme.Brush("AccentFillColorDefaultBrush");
+                run.Foreground = FluentTheme.Brush(_host, "AccentTextFillColorPrimaryBrush");
             description.Inlines.Add(run);
         }
         return description;
@@ -281,7 +282,7 @@ public sealed partial class EmphasisGuide : IDisposable
             {
                 Text = "点击图片放大查看。",
                 FontSize = 12,
-                Foreground = FluentTheme.Brush("TextFillColorSecondaryBrush")
+                Foreground = FluentTheme.Brush(_host, "TextFillColorSecondaryBrush")
             });
         }
         if (!string.IsNullOrWhiteSpace(step.TutorialVideoUri))
@@ -346,7 +347,7 @@ public sealed partial class EmphasisGuide : IDisposable
                 Padding = new Thickness(0),
                 Content = thumbnail,
                 BorderThickness = new Thickness(1),
-                BorderBrush = FluentTheme.Brush("CardStrokeColorDefaultBrush")
+                BorderBrush = FluentTheme.Brush(_host, "CardStrokeColorDefaultBrush")
             };
             button.Click += (_, _) => ShowPreview(imageUri);
             images.Children.Add(button);

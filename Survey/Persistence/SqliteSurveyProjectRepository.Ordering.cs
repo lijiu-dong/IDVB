@@ -25,7 +25,7 @@ public sealed partial class SqliteSurveyProjectRepository
             cancellationToken).ConfigureAwait(false);
         EnsureRevision(request.ProjectId, request.ExpectedRevision, revision);
 
-        var query = connection.CreateCommand();
+        using var query = connection.CreateCommand();
         query.Transaction = sqlite;
         query.CommandText = """
             SELECT layer_id FROM layers
@@ -44,7 +44,7 @@ public sealed partial class SqliteSurveyProjectRepository
 
         for (var index = 0; index < request.OrderedLayerIds.Count; index++)
         {
-            var update = connection.CreateCommand();
+            using var update = connection.CreateCommand();
             update.Transaction = sqlite;
             update.CommandText = """
                 UPDATE layers SET z_order = $order

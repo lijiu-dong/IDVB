@@ -62,6 +62,7 @@ internal static class StartupTimeline
     private static long origin = Stopwatch.GetTimestamp();
     private static long previous = origin;
     private static StreamWriter? writer;
+    private static IDisposable? cacheProtection;
     private static readonly ManualResetEventSlim SamplingStopped = new(false);
     private static int _samplingStarted;
 
@@ -105,6 +106,8 @@ internal static class StartupTimeline
         {
             writer?.Dispose();
             writer = null;
+            cacheProtection?.Dispose();
+            cacheProtection = null;
         }
     }
 
@@ -116,16 +119,16 @@ internal static class StartupTimeline
             try
             {
                 // Avoid triggering legacy-data migration before it can be timed.
-                var directory = Path.Combine(Environment.GetFolderPath(
-                    Environment.SpecialFolder.LocalApplicationData), AppDataPaths.ProductDirectoryName, "Logs");
+                var directory = Path.Combine(AppDataPaths.RootBeforeLegacyMigration, "Logs");
                 Directory.CreateDirectory(directory);
                 var path = Path.Combine(directory,
                     $"startup-{mainUtc:yyyyMMdd-HHmmss-fff}-{Environment.ProcessId}.log");
+                cacheProtection = AppDataPaths.ProtectCachePath(path);
                 writer = new StreamWriter(new FileStream(path, FileMode.CreateNew,
                     FileAccess.Write, FileShare.ReadWrite), new UTF8Encoding(false)) { AutoFlush = true };
                 AppDomain.CurrentDomain.ProcessExit += (_, _) =>
                 {
-                    lock (Gate) { writer?.Dispose(); writer = null; }
+                    Shutdown();
                 };
                 Write(FormattableString.Invariant($"Managed Main entered at {mainUtc:O}; mainToVelopackCompleteMs={Stopwatch.GetElapsedTime(mainEntered, lifecycleCompleted).TotalMilliseconds:F1}; loggingSetupMs={Stopwatch.GetElapsedTime(lifecycleCompleted).TotalMilliseconds:F1}. Main timestamp captured before Velopack; logging starts after lifecycle hooks."));
                 using var process = Process.GetCurrentProcess();
@@ -134,6 +137,11 @@ internal static class StartupTimeline
             }
             catch
             {
+                if (writer is null)
+                {
+                    cacheProtection?.Dispose();
+                    cacheProtection = null;
+                }
                 // Diagnostics must not prevent launch, including unavailable process metadata.
             }
         }

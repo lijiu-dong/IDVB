@@ -5,37 +5,36 @@ namespace IDVBuff.Features.Maps;
 
 public sealed partial class MapGlobalInputService
 {
-    private void DispatchPluginMouseInput(
-        MapMouseButton button,
-        long timestamp,
-        bool isDown)
+    private readonly Dictionary<(string PluginId, string BindingKey), MapKeyboardChordLatch> _pluginChordLatches = new();
+
+    private void CollectPluginKeyboardEdges(uint key, bool isDown,
+        ref List<(string PluginId, string BindingKey, MapInputBinding Binding, bool IsDown)>? matches)
     {
-        List<(string PluginId, string BindingKey)> matches;
-        lock (_keyboardStateLock)
+        foreach (var (pluginId, bindings) in _pluginBindings)
+        foreach (var (bindingKey, binding) in bindings)
         {
-            matches = [];
-            foreach (var (pluginId, bindings) in _pluginBindings)
+            if (binding.Kind == MapInputBindingKind.Mouse)
             {
-                foreach (var (bindingKey, binding) in bindings)
-                {
-                    if (binding.Kind == MapInputBindingKind.Mouse
-                        && binding.MouseButton == button)
-                    {
-                        matches.Add((pluginId, bindingKey));
-                    }
-                }
+                if (TryMouseVirtualKey(binding.MouseButton, out var mouseKey) && mouseKey == key)
+                    (matches ??= []).Add((pluginId, bindingKey, binding, isDown));
+                continue;
             }
-        }
-        foreach (var match in matches)
-        {
-            DispatchPluginInput(new PluginInputInvokedEventArgs(
-                match.PluginId,
-                match.BindingKey,
-                timestamp,
-                isDown));
+            if (binding.Kind != MapInputBindingKind.Keyboard) continue;
+            if (!binding.NormalizedCompanionVirtualKeys().Any())
+            {
+                if (binding.VirtualKey == key && (!isDown || IsKeyboardBindingActive(binding)))
+                    (matches ??= []).Add((pluginId, bindingKey, binding, isDown));
+                continue;
+            }
+            if (key != binding.VirtualKey && !binding.NormalizedCompanionVirtualKeys().Contains(key)
+                && key is not (0x10 or 0x11 or 0x12 or 0xA0 or 0xA1 or 0xA2 or 0xA3 or 0xA4 or 0xA5 or 0x5B or 0x5C)) continue;
+            var id = (pluginId, bindingKey);
+            if (!_pluginChordLatches.TryGetValue(id, out var latch))
+                _pluginChordLatches[id] = latch = new MapKeyboardChordLatch();
+            var edge = latch.Observe(binding, candidate => candidate == key ? isDown : IsKeyDown(candidate));
+            if (edge is { } pressed) (matches ??= []).Add((pluginId, bindingKey, binding, pressed));
         }
     }
-
     public void ApplyPluginBinding(
         string pluginId,
         string bindingKey,
@@ -55,6 +54,7 @@ public sealed partial class MapGlobalInputService
                 _pluginBindings[pluginId] = bindings;
             }
             bindings[bindingKey] = binding.Clone();
+            _keyboardPollKeysDirty = true;
         }
         RestartMonitoring();
     }
@@ -64,7 +64,10 @@ public sealed partial class MapGlobalInputService
         if (string.IsNullOrWhiteSpace(pluginId))
             return;
         lock (_keyboardStateLock)
+        {
             _pluginBindings.Remove(pluginId);
+            _keyboardPollKeysDirty = true;
+        }
         if (HasAnyBinding())
             RestartMonitoring();
         else
@@ -189,13 +192,20 @@ public sealed partial class MapGlobalInputService
             : MapMouseButton.XButton1;
     }
 
-    private static bool IsMouseButtonDown(MapMouseButton button) => button switch
+    internal static bool TryMouseVirtualKey(MapMouseButton button, out uint virtualKey)
     {
-        MapMouseButton.Left => IsKeyDown(1),
-        MapMouseButton.Right => IsKeyDown(2),
-        MapMouseButton.Middle => IsKeyDown(4),
-        MapMouseButton.XButton1 => IsKeyDown(5),
-        MapMouseButton.XButton2 => IsKeyDown(6),
-        _ => false
-    };
+        virtualKey = button switch
+        {
+            MapMouseButton.Left => 1,
+            MapMouseButton.Right => 2,
+            MapMouseButton.Middle => 4,
+            MapMouseButton.XButton1 => 5,
+            MapMouseButton.XButton2 => 6,
+            _ => 0
+        };
+        return virtualKey != 0;
+    }
+
+    private static bool IsMouseButtonDown(MapMouseButton button) =>
+        TryMouseVirtualKey(button, out var virtualKey) && IsKeyDown(virtualKey);
 }

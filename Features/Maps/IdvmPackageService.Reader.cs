@@ -26,15 +26,17 @@ public sealed partial class IdvmPackageService
             throw new InvalidDataException("IDVM 包的 ZIP 条目过多。");
         long total = 0;
         var paths = new HashSet<string>(StringComparer.Ordinal);
+        var extracted = 0;
         foreach (var entry in archive.Entries)
         {
+            MapOperationProgress.Report((double)extracted++ / Math.Max(1, archive.Entries.Count), "正在解包地图……");
             cancellationToken.ThrowIfCancellationRequested();
             if (entry.FullName.EndsWith("/", StringComparison.Ordinal))
                 continue;
             ValidateLogicalPath(entry.FullName);
             if (!paths.Add(entry.FullName))
                 throw new InvalidDataException($"ZIP 包含重复路径：{entry.FullName}");
-            if (entry.Length > MaxSingleFileBytes || entry.Length < 0)
+            if (entry.Length > (entry.FullName == SolidPayloadPath ? MaxExpandedBytes : MaxSingleFileBytes) || entry.Length < 0)
                 throw new InvalidDataException($"ZIP 条目过大：{entry.FullName}");
             total = checked(total + entry.Length);
             if (total > MaxExpandedBytes)
@@ -46,7 +48,8 @@ public sealed partial class IdvmPackageService
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
             await using var input = entry.Open();
             await using var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-            await CopyStreamLimitedAsync(input, output, entry.Length, cancellationToken);
+            await CopyStreamLimitedAsync(input, output, entry.Length, cancellationToken,
+                entry.FullName == SolidPayloadPath ? MaxExpandedBytes : MaxSingleFileBytes);
         }
     }
 
@@ -67,104 +70,12 @@ public sealed partial class IdvmPackageService
             var logical = ToLogicalPath(source, file);
             ValidateLogicalPath(logical);
             var length = new FileInfo(file).Length;
-            if (length > MaxSingleFileBytes)
+            if (length > (logical == SolidPayloadPath ? MaxExpandedBytes : MaxSingleFileBytes))
                 throw new InvalidDataException($"文件过大：{logical}");
             total = checked(total + length);
             if (total > MaxExpandedBytes)
                 throw new InvalidDataException("IDVM 目录总大小超过 512 MiB。");
             await CopyFileAsync(file, ToPhysicalPath(destination, logical), cancellationToken);
-        }
-    }
-
-    private static ParsedHeader ParseHeader(byte[] bytes)
-    {
-        var major = BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(4, 2));
-        var minor = BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(6, 2));
-        if (!bytes.AsSpan(0, 4).SequenceEqual("IDVM"u8)
-            || major != 1
-            || minor is not (0 or 1 or 2 or 3 or 4)
-            || BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(8, 2)) != HeaderSize
-            || BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(10, 2)) != 0
-            || bytes.AsSpan(68, 12).IndexOfAnyExcept((byte)0) >= 0)
-        {
-            throw new InvalidDataException("IDVM header 的 magic、版本、flags 或保留字段无效。");
-        }
-        return new ParsedHeader(
-            major,
-            minor,
-            ReadRfc4122Guid(bytes.AsSpan(12, 16)),
-            BinaryPrimitives.ReadInt64LittleEndian(bytes.AsSpan(28, 8)),
-            bytes.AsSpan(36, 32).ToArray());
-    }
-
-    private static Guid ReadRfc4122Guid(ReadOnlySpan<byte> source)
-    {
-        var hex = Convert.ToHexString(source);
-        return Guid.ParseExact(hex, "N");
-    }
-
-    private static async Task CopyFileAsync(string source, string destination, CancellationToken cancellationToken)
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-        await using var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read);
-        await using var output = new FileStream(destination, FileMode.Create, FileAccess.Write, FileShare.None);
-        await input.CopyToAsync(output, cancellationToken);
-    }
-
-    private static async Task CopyStreamLimitedAsync(
-        Stream input,
-        Stream output,
-        long expectedLength,
-        CancellationToken cancellationToken)
-    {
-        var buffer = new byte[81920];
-        long written = 0;
-        while (true)
-        {
-            var read = await input.ReadAsync(buffer, cancellationToken);
-            if (read == 0)
-                break;
-            written += read;
-            if (written > expectedLength || written > MaxSingleFileBytes)
-                throw new InvalidDataException("ZIP 条目实际展开大小超过声明值。");
-            await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
-        }
-        if (written != expectedLength)
-            throw new InvalidDataException("ZIP 条目实际大小与声明值不一致。");
-    }
-
-    private static async Task<byte[]> ReadLimitedBytesAsync(
-        string path,
-        long maximum,
-        CancellationToken cancellationToken)
-    {
-        var info = new FileInfo(path);
-        if (info.Length > maximum)
-            throw new InvalidDataException($"JSON 文件超过 {maximum} 字节限制：{Path.GetFileName(path)}");
-        return await File.ReadAllBytesAsync(path, cancellationToken);
-    }
-
-    private static async Task<T> ReadJsonAsync<T>(string path, CancellationToken cancellationToken)
-    {
-        if (!File.Exists(path))
-            throw new InvalidDataException($"IDVM 包缺少 {Path.GetFileName(path)}。");
-        return Deserialize<T>(
-            await ReadLimitedBytesAsync(path, MaxJsonBytes, cancellationToken),
-            Path.GetFileName(path));
-    }
-
-    private static T Deserialize<T>(byte[] bytes, string name)
-    {
-        try
-        {
-            using (var document = JsonDocument.Parse(bytes, new JsonDocumentOptions { MaxDepth = 64 }))
-                ValidateJsonShape(document.RootElement, name);
-            return JsonSerializer.Deserialize<T>(bytes, JsonOptions)
-                ?? throw new InvalidDataException($"{name} 不能为空。");
-        }
-        catch (JsonException exception)
-        {
-            throw new InvalidDataException($"{name} 不是有效的 IDVM JSON。", exception);
         }
     }
 
@@ -179,7 +90,7 @@ public sealed partial class IdvmPackageService
             item => new MapClassProperties
             {
                 RemoveBackground = item.Properties?.RemoveBackground is true,
-                ContainsVectorRoutes = manifest.FormatVersion == "1.4"
+                ContainsVectorRoutes = manifest.FormatVersion is "1.4" or "1.5" or "1.6"
                     ? item.Properties?.ContainsVectorRoutes is true
                     : null,
                 ScanFloorKey = MapScanFloorRules.NormalizeFloorIdentity(
@@ -188,8 +99,10 @@ public sealed partial class IdvmPackageService
         foreach (var item in manifest.Classes)
             draftsByClass[item.ClassId] = [];
 
+        var parsedMaps = 0;
         foreach (var map in manifest.Maps)
         {
+            MapOperationProgress.Report((double)parsedMaps++ / manifest.Maps.Count, "正在解析地图……");
             cancellationToken.ThrowIfCancellationRequested();
             var dataRoot = Path.Combine(root, map.Root.Replace('/', Path.DirectorySeparatorChar), "data");
             var metadata = await ReadJsonAsync<MetadataDto>(Path.Combine(dataRoot, "metadata.json"), cancellationToken);
@@ -200,8 +113,8 @@ public sealed partial class IdvmPackageService
                 metadata,
                 gatesDocument,
                 anchorsDocument,
-                manifest.FormatVersion is "1.2" or "1.3" or "1.4",
-                manifest.FormatVersion is "1.3" or "1.4");
+                manifest.FormatVersion is "1.2" or "1.3" or "1.4" or "1.5" or "1.6",
+                manifest.FormatVersion is "1.3" or "1.4" or "1.5" or "1.6");
 
             var floorDefinitions = new List<FloorDefinition>();
             var floorPaths = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -214,8 +127,8 @@ public sealed partial class IdvmPackageService
             {
                 var floor = metadata.Floors[index];
                 var imagePath = ToPhysicalPath(root, floor.Image);
-                using var image = Cv2.ImRead(imagePath, ImreadModes.Unchanged);
-                if (image.Empty() || image.Width != floor.ImageWidth || image.Height != floor.ImageHeight)
+                var image = MapImageFileValidation.ValidateImageFile(imagePath, cancellationToken);
+                if (image.Width != floor.ImageWidth || image.Height != floor.ImageHeight)
                     throw new InvalidDataException($"地图“{map.Name}”楼层 {floor.Key} 的图片尺寸不一致。");
                 var recognitionSize = GetRecognitionSize(floor, image.Width, image.Height);
                 var anchorFloor = anchorsDocument.Floors[floor.Key];
@@ -337,6 +250,8 @@ public sealed partial class IdvmPackageService
                 SourceProjectId = metadata.Map.SourceProjectId,
                 SourceProjectRevision = metadata.Map.SourceProjectRevision,
                 SourceVisualSha256 = metadata.Map.SourceVisualSha256,
+                IsCoCreationTemplate = metadata.Map.IsCoCreationTemplate,
+                AppearancePalette = metadata.Map.AppearancePalette?.Normalize(),
                 SourceStructureSha256 = metadata.Map.SourceStructureSha256,
                 Floors = floorDefinitions,
                 FloorPaths = floorPaths,
@@ -363,9 +278,14 @@ public sealed partial class IdvmPackageService
                 PrebuiltStructureLinePaths = prebuiltStructureLinePaths,
                 PrebuiltStructureAlgorithmPath = prebuiltStructureAlgorithmPath
             };
+            if (await ReadNavigationAsync(root, manifest, map, metadata, cancellationToken) is { } navigationLoader)
+                draft.DeferNavigation(navigationLoader);
             draftsByClass[map.ClassId].Add(draft);
         }
 
+        var hasNavigation = draftsByClass.Values.SelectMany(drafts => drafts).Any(draft => draft.HasNavigation);
+        if (hasNavigation != manifest.Capabilities.NavigationTopology)
+            throw new InvalidDataException("IDVM 导航能力与地图数据不一致。");
         return manifest.Classes.Select(item => new MapImportClassDraft(
             item.Name.Trim(),
             draftsByClass[item.ClassId],
@@ -464,6 +384,7 @@ public sealed partial class IdvmPackageService
             "text" => MapAnnotationType.Text,
             "outline" => MapAnnotationType.Outline,
             "line" => MapAnnotationType.Line,
+            "route" => MapAnnotationType.Route,
             _ => default
         },
         ColorIndex = annotation.ColorIndex,
@@ -471,7 +392,10 @@ public sealed partial class IdvmPackageService
         Bounds = ToModel(annotation.Bounds),
         Start = ToModel(annotation.Start),
         End = ToModel(annotation.End),
+        Points = annotation.Points?.Select(point => ToModel(point)!).ToList() ?? [],
         Text = annotation.Text,
+        RoutePlanId = annotation.RoutePlanId,
+        IsMarker = annotation.IsMarker,
         FontFamily = annotation.FontFamily,
         FontSize = annotation.FontSize,
         IsBold = annotation.IsBold,

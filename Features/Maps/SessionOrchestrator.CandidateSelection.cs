@@ -22,10 +22,29 @@ public sealed partial class SessionOrchestrator
         bool nativeChoicesPrepared = false,
         IReadOnlyList<Microsoft.UI.Xaml.Media.ImageSource?>? preloadedChoicePreviews = null,
         MapManualCandidateWindow.CandidateLivePreviewAssets? preloadedLivePreview = null,
-        MapLearningScoreResult? precomputedLearningResult = null)
+        MapLearningScoreResult? precomputedLearningResult = null,
+        bool requiresExplicitSelection = false,
+        CancellationToken continuingMapOpenOwner = default)
     {
         var selectionExecution = ScanExecutionContext.Current;
-        Action? onPresented = selectionExecution is null ? null : () => FinishScanExecution(selectionExecution);
+        // Background consumption runs after the scan's ambient scope ends.
+        // Carry its unresolved status explicitly instead of treating it as a
+        // fresh opportunity for model/headless top-one selection.
+        requiresExplicitSelection |= selectionExecution is not null;
+        var selectionRequest = ScanRequestDiagnostics.Current;
+        if (selectionExecution is not null)
+        {
+            // The automatic decision is over. Preview decoding, model ranking and
+            // waiting for the chooser are manual-selection work, not scan compute.
+            // Keep the scope for cancellation/generation checks and the explicit
+            // selection guard above; completing it must never auto-pick a result.
+            LogScanCheckpoint("candidate-preparation", capturedRequest: selectionRequest);
+            FinishScanExecution(selectionExecution);
+        }
+        Action? onPresented = selectionExecution is null ? null : () =>
+        {
+            LogScanCheckpoint("candidate-presented", capturedRequest: selectionRequest);
+        };
         var scopedCandidates = candidates
             .Where(candidate => string.Equals(
                 candidate.Recognition.Map.Class,
@@ -43,7 +62,8 @@ public sealed partial class SessionOrchestrator
             return new CandidateSelectionResolution(null, false);
         // An unresolved automatic scan has already failed the shared identity decision.
         // Headless presentation must not turn its first geometrically plausible choice into a lock.
-        if (_headless && _activeCandidateSelector is null && ScanExecutionContext.Current is not null)
+        if (_activeCandidateSelector is { AutomaticOnly: true }
+            || (_headless && _activeCandidateSelector is null && requiresExplicitSelection))
         {
             _lastCandidateChoices = orderedCandidates;
             _statusMessage = "地图身份未确定；已保留候选，等待明确选择。";
@@ -91,7 +111,7 @@ public sealed partial class SessionOrchestrator
             return new CandidateSelectionResolution(null, false);
         _lastCandidateChoices = orderedCandidates;
         RememberMapLearningContext(frame, orderedCandidates, mapClass);
-        if (CanAcceptModelTopOne(learningResult, orderedCandidates))
+        if (!requiresExplicitSelection && CanAcceptModelTopOne(learningResult, orderedCandidates))
         {
             var recognition = MapCvRecognitionService.ConfirmChoice(
                 orderedCandidates[0]);
@@ -102,7 +122,8 @@ public sealed partial class SessionOrchestrator
             var identityLock = LockSelectedMapIdentity(
                 recognition,
                 frame,
-                userConfirmed: false);
+                userConfirmed: false,
+                continuingMapOpenOwner);
             return new CandidateSelectionResolution(identityLock, false, recognition);
         }
         if (_activeCandidateSelector is not null)
@@ -111,7 +132,8 @@ public sealed partial class SessionOrchestrator
                 frame,
                 orderedCandidates,
                 reason,
-                cancellationToken);
+                cancellationToken,
+                continuingMapOpenOwner);
         }
 
         if (_headless)
@@ -141,7 +163,8 @@ public sealed partial class SessionOrchestrator
             var identityLock = LockSelectedMapIdentity(
                 recognition,
                 frame,
-                userConfirmed: false);
+                userConfirmed: false,
+                continuingMapOpenOwner);
             return new CandidateSelectionResolution(identityLock, false, recognition);
         }
 
@@ -225,7 +248,8 @@ public sealed partial class SessionOrchestrator
             var identityLock = LockSelectedMapIdentity(
                 recognition,
                 frame,
-                userConfirmed: true);
+                userConfirmed: true,
+                continuingMapOpenOwner);
             _logCollector.Append(
                 MapLogCategory.Session,
                 MapLogLevel.Info,
@@ -279,7 +303,7 @@ public sealed partial class SessionOrchestrator
             IReadOnlyList<MapRecognitionChoice> orderedCandidates,
             string mapClass)
     {
-        var maps = await _mapRepository.GetMapsAsync();
+        var maps = (await _mapRepository.GetClassCatalogSnapshotAsync(mapClass)).Maps;
         return MapCandidatePresentationRules.AppendCatalogMaps(
             orderedCandidates,
             maps,
@@ -291,7 +315,8 @@ public sealed partial class SessionOrchestrator
         CapturedGameFrame frame,
         IReadOnlyList<MapRecognitionChoice> candidates,
         string reason,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        CancellationToken continuingMapOpenOwner)
     {
         var selector = _activeCandidateSelector;
         if (selector is null)
@@ -327,7 +352,8 @@ public sealed partial class SessionOrchestrator
         var identityLock = LockSelectedMapIdentity(
             recognition,
             frame,
-            userConfirmed: true);
+            userConfirmed: true,
+            continuingMapOpenOwner);
         _logCollector.Append(
             MapLogCategory.Session,
             MapLogLevel.Info,
@@ -360,19 +386,29 @@ public sealed partial class SessionOrchestrator
             return false;
         }
 
-        var second = choices.Skip(1)
-            .Select(choice => choice.ModelProbability)
-            .FirstOrDefault(value => value.HasValue);
+        var scoredChoices = choices.Where(choice => choice.ModelProbability.HasValue).ToArray();
+        var second = ScanIdentityVerifier.FirstCompetingMap(scoredChoices,
+            choice => choice.Recognition.Map.Id, _recognition.ScanVariantGroups)?.ModelProbability;
         return !second.HasValue || top - second.Value >= 0.15d;
     }
 
     private RuntimeMapRecognition LockSelectedMapIdentity(
         RuntimeMapRecognition selected,
         CapturedGameFrame frame,
-        bool userConfirmed)
+        bool userConfirmed,
+        CancellationToken continuingMapOpenOwner = default)
+        => LockSelectedMapIdentity(selected, frame.ClientBounds, frame.WindowHandle, userConfirmed,
+            continuingMapOpenOwner);
+
+    private RuntimeMapRecognition LockSelectedMapIdentity(
+        RuntimeMapRecognition selected,
+        MapScreenRect clientBounds,
+        IntPtr windowHandle,
+        bool userConfirmed,
+        CancellationToken continuingMapOpenOwner = default)
     {
+        InvalidateActiveMapOpenOperation("candidate-identity-committed", continuingMapOpenOwner);
         CancelMapObservation(clearPreview: true);
-        InvalidateActiveMapOpenOperation("candidate-identity-committed");
         _recentConfirmedFloorPreference = null;
         _recentConfirmedFloorMapId = Guid.Empty;
         var floorKey = selected.Result.Floor;
@@ -406,13 +442,15 @@ public sealed partial class SessionOrchestrator
             floorKey,
             identityLock.Result.IdentityConfidence);
         _currentFloorKey = floorKey;
-        _lastGameBounds = frame.ClientBounds;
-        _lastGameWindowHandle = frame.WindowHandle;
+        _lastGameBounds = clientBounds;
+        _lastGameWindowHandle = windowHandle;
         _statusMessage =
             $"已锁定所选地图：{identityLock.Map.DisplayName} · "
             + $"{floorKey.ToUpperInvariant()}；正在首次对齐……";
         RefreshMiniMapForCurrentFloor();
         StateChanged?.Invoke(this, EventArgs.Empty);
+
+        QueueSelectedMapResourcePreparation(identityLock.Map.Id); QueueVariantIdentityNotification(identityLock.Map.Id, userConfirmed);
 
         _logCollector.Append(
             MapLogCategory.Session,
@@ -437,3 +475,4 @@ public sealed partial class SessionOrchestrator
  * 数据流：输入通常来自截图、识别结果、会话状态、配置或持久化缓存；输出应继续交给识别、对齐、渲染、日志或发布流程使用。调用方应遵守类型契约，并注意空值、超时、置信度和取消状态。
  * 维护约束：这里只补充说明，不改变业务逻辑。涉及楼层尺度时必须保持楼层之间完全独立；涉及 UI、窗口句柄或系统资源时应遵守生命周期与释放约定；调整算法时应同步检查相关规则、诊断和测试。
  */
+

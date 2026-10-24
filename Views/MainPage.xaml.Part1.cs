@@ -74,6 +74,8 @@ public sealed partial class MainPage : Page
                     ? taggedEntry.ExpansionVisibility
                     : Visibility.Visible;
         }
+        if (ReferenceEquals(button, AccountNavigationButton) && IDVBuff.Features.Accounts.AccountSession.Identity is null)
+            AccountNavigationPlan.Visibility = Visibility.Collapsed;
     }
 
     private NavigationEntry? GetVisibleNavigationEntry(NavigationEntry? entry)
@@ -145,14 +147,26 @@ public sealed partial class MainPage : Page
         TimeSpan? duration)
     {
         if (TryGetNavigationRow(target) is not FrameworkElement container
-            || container.Visibility != Visibility.Visible)
+            || container.Visibility != Visibility.Visible
+            || VisualTreeHelper.GetParent(container) is not UIElement parent)
         {
             return false;
         }
 
-        var targetPoint = container.TransformToVisual(NavigationSurface)
-            .TransformPoint(new Windows.Foundation.Point(0, 0));
+        // Click feedback scales the row around its center. Transforming the row's
+        // origin includes that transient scale, so LayoutUpdated sees a moving
+        // destination and snaps (cancels) the selection transition. Use the row's
+        // arranged offset in its parent's coordinate space instead; the parent's
+        // transform still accounts for scrolling and moving footer/child hosts.
+        var arrangedOffset = container.ActualOffset;
+        var targetPoint = parent.TransformToVisual(NavigationSurface)
+            .TransformPoint(new Windows.Foundation.Point(arrangedOffset.X, arrangedOffset.Y));
         var targetTranslationY = (float)(targetPoint.Y - indicator.Margin.Top);
+        // LayoutUpdated can also be raised by unrelated page content. Do not
+        // restart a row-to-row transition when its destination has not moved.
+        if (indicator.Translation.Y == targetTranslationY)
+            return true;
+
         indicator.TranslationTransition = duration is { } transitionDuration
             ? new Vector3Transition { Duration = transitionDuration }
             : null;
@@ -161,6 +175,42 @@ public sealed partial class MainPage : Page
             targetTranslationY,
             indicator.Translation.Z);
         return true;
+    }
+
+    private void NavigationSurface_LayoutUpdated(object sender, object e)
+    {
+        if (_navigationResizeAnimationActive)
+            return;
+
+        var animate = _navigationLayoutRefreshPending;
+        _navigationLayoutRefreshPending = false;
+        var selectionTarget = GetVisibleNavigationEntry(_selectedNavigationEntry);
+        if (selectionTarget is not null
+            && TryAnimateNavigationIndicator(
+                NavigationSelectionIndicator,
+                selectionTarget,
+                animate && _selectionIndicatorPositioned
+                    ? NavigationSelectionDuration : null))
+        {
+            _selectionIndicatorPositioned = true;
+            _pendingSelectionTarget = null;
+        }
+
+        // Footer rows move when the window is resized/maximized/restored.
+        // Follow their arranged coordinates without waiting for a navigation
+        // request, and snap layout corrections instead of trailing the window.
+        if (_hoveredNavigationEntry is { } hovered
+            && IsNavigationEntryVisible(hovered))
+        {
+            TryAnimateNavigationIndicator(
+                NavigationHoverIndicator,
+                hovered,
+                animate ? NavigationHoverEnterDuration : null);
+        }
+        else if (_hoveredNavigationEntry is not null)
+        {
+            HideNavigationHoverIndicator();
+        }
     }
 
     private FrameworkElement? TryGetNavigationRow(NavigationEntry entry)
@@ -182,10 +232,44 @@ public sealed partial class MainPage : Page
         NavigationHoverIndicator.Opacity = targetOpacity;
     }
 
+    private long _navigationRevision;
+    private string? _displayedModuleId;
+    private string? _pendingModuleId;
+    private Task? _pendingNavigationTask;
+
     private async void NavigateTo(string moduleId, NavigationEntry? navigationEntry = null)
+        => await NavigateToAsync(moduleId, navigationEntry);
+
+    private async Task NavigateToAsync(string moduleId, NavigationEntry? navigationEntry = null, string? initialMapClass = null)
     {
-        DisconnectDisplayPreviewSource();
-        DisconnectScanVisuals();
+        if (initialMapClass is null)
+        {
+            if (_pendingModuleId == moduleId && _pendingNavigationTask is { } pending)
+            {
+                await pending;
+                return;
+            }
+            if (_pendingNavigationTask is null && _displayedModuleId == moduleId)
+                return;
+        }
+        _pendingModuleId = moduleId;
+        var task = NavigateToCoreAsync(moduleId, navigationEntry, initialMapClass);
+        _pendingNavigationTask = task;
+        try { await task; }
+        finally
+        {
+            if (ReferenceEquals(_pendingNavigationTask, task))
+            {
+                _pendingNavigationTask = null;
+                _pendingModuleId = null;
+            }
+        }
+    }
+
+    private async Task NavigateToCoreAsync(string moduleId, NavigationEntry? navigationEntry, string? initialMapClass)
+    {
+        using var memory = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("UI.Navigate", moduleId);
+        var revision = ++_navigationRevision;
         SetNavigationCompact(_navigationCompactPreference);
 
         if (navigationEntry is not null)
@@ -199,25 +283,45 @@ public sealed partial class MainPage : Page
                 QueueInitialNavigationIndicatorPosition(visibleSelectionTarget);
         }
 
-        if (!App.IsServicesReady && moduleId != "home" && moduleId != "help" && moduleId != "main-settings" && moduleId != "account")
-        {
-            var loadingRing = new ProgressRing { IsActive = true, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
-            ModuleContentHost.Content = loadingRing;
-            await App.ServicesReadyTask;
-            if (navigationEntry is not null && _selectedNavigationEntry != navigationEntry)
-                return;
-        }
-
         var animateMainContent = true;
         try
         {
-            var view = App.IsSafeMode && IsSafeModeRestrictedModule(moduleId)
+            var servicesReady = ModuleNavigationRules.GetRequiredServicesReadyTask(
+                moduleId, App.IsSafeMode, App.IsServicesReady, App.ServicesReadyTask);
+            if (!servicesReady.IsCompletedSuccessfully)
+            {
+                ReplaceModuleContent(new ProgressRing
+                {
+                    IsActive = true,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center
+                });
+                await servicesReady;
+                if (revision != _navigationRevision)
+                    return;
+            }
+
+            var view = App.IsSafeMode && ModuleNavigationRules.IsSafeModeRestrictedModule(moduleId)
                 ? CreateSafeModeRestrictedView(moduleId)
                 : _catalog.GetRequired(moduleId).CreateView();
-            ModuleContentHost.Content = view;
+            if (view is MapListPage pendingMaps && initialMapClass is not null)
+                pendingMaps.SelectInitialClass(initialMapClass);
+            // Prepare persisted state before attaching controls to the live visual tree.
+            // Keep the current page visible while I/O completes.
+            if (view is HomePage pendingHome)
+                await PrepareHomeForNavigationAsync(pendingHome);
+            if (view is TagsAndTemplatesPage pendingTags)
+                await pendingTags.PrepareAsync();
+            if (revision != _navigationRevision)
+                return;
+            DisconnectDisplayPreviewSource();
+            DisconnectScanVisuals();
+            if (view is HomePage preparedHome)
+                ConnectScanVisuals(preparedHome);
+            ReplaceModuleContent(view);
+            _displayedModuleId = moduleId;
             ConfigureMainContentScrolling(view);
-            if (view is HomePage homePage)
-                ConnectScanVisuals(homePage);
+            ConnectSponsorshipNavigation(view);
             if (view is HelpPage helpPage)
             {
                 helpPage.ActivateGuideRequested += HelpPage_ActivateGuideRequested;
@@ -228,17 +332,17 @@ public sealed partial class MainPage : Page
             // Keep the main content entrance motion consistent across all modules.
             animateMainContent = true;
             if (view is MapListPage mapListPage)
-            {
-                mapListPage.ParentScrollViewer = MainContentHost;
-                mapListPage.NavigationCompactStateChanged = SetEditorNavigationCompact;
-            }
+                ConnectMapListNavigation(mapListPage);
         }
         catch (Exception exception)
         {
+            if (revision != _navigationRevision)
+                return;
             System.Diagnostics.Debug.WriteLine(
                 $"Module '{moduleId}' failed to create its view: {exception}");
             TryLogModuleFailure(moduleId, exception);
-            ModuleContentHost.Content = CreateModuleFailureView(moduleId, exception);
+            ReplaceModuleContent(CreateModuleFailureView(moduleId, exception));
+            _displayedModuleId = null;
         }
         try
         {
@@ -253,6 +357,13 @@ public sealed partial class MainPage : Page
                 $"Module '{moduleId}' enter animation failed: {exception}");
             TryLogModuleFailure(moduleId, exception, "enter-animation");
         }
+    }
+
+    private void ReplaceModuleContent(object view)
+    {
+        if (ModuleContentHost.Content is FrameworkElement previous && !ReferenceEquals(previous, view))
+            RetireModuleImages(previous);
+        ModuleContentHost.Content = view;
     }
 
     private async void HelpPage_ActivateGuideRequested(object? sender, EventArgs e)
@@ -286,8 +397,7 @@ public sealed partial class MainPage : Page
 
     private async Task ShowSafeModeTutorialAsync()
     {
-        NavigateTo("map-list");
-        await Task.Yield();
+        await NavigateToAsync("map-list");
         if (ModuleContentHost.XamlRoot is not { } xamlRoot)
             return;
 
@@ -298,15 +408,12 @@ public sealed partial class MainPage : Page
             Content = "安全模式下，IDVB 不会加载自动识别、自动对齐、游戏内显示层或插件。请在地图列表中导入或选择地图；打开后，地图会以普通窗口展示。\n\n如需完整的新手教程，请先在“主设置 - 安全模式”中关闭安全模式，并以管理员权限重新启动 IDVB。",
             CloseButtonText = "知道了",
             DefaultButton = ContentDialogButton.Close
-        }.ShowAsync();
+        }.ShowThemedAsync();
     }
-
-    private static bool IsSafeModeRestrictedModule(string moduleId) => moduleId is
-        "map-status" or "plugins";
 
     private static FrameworkElement CreateSafeModeRestrictedView(string moduleId)
     {
-        if (moduleId == "map-status")
+        if (string.Equals(moduleId, "map-status", StringComparison.OrdinalIgnoreCase))
             return new SafeModeMapStatusPage();
 
         return new StackPanel

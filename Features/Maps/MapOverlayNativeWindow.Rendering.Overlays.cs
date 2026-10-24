@@ -45,7 +45,7 @@ internal static partial class MapOverlayBitmapRenderer
             // 玩家标记贴图是静态资产，从共享缓存取，避免每帧重复加载。
             lock (ImageCacheLock)
             {
-                var marker = GetOrLoadMapImage(player.ImagePath);
+                var marker = GetOrLoadPlayerImage(player.ImagePath);
                 graphics.DrawImage(
                     marker,
                     new RectangleF(
@@ -83,19 +83,20 @@ internal static partial class MapOverlayBitmapRenderer
         var ta = showTextAnnotationsOnMiniMap;
         var ba = showBoxAnnotationsOnMiniMap;
         var la = showLineAnnotationsOnMiniMap;
-        var key = $"{Path.GetFullPath(miniMap.ImagePath)}|dpi={dpiScale:F2}|op={miniMapOpacity:F2}|gm={gm}|aa={aa}|ta={ta}|ba={ba}|la={la}|fl={showFloorOnMiniMap}|flbl={miniMap.FloorLabel}|anc={miniMap.Anchors.Count}|lw={miniMap.RouteLineThickness}|ann={System.Text.Json.JsonSerializer.Serialize(miniMap.Annotations)}";
+        var key = $"{Path.GetFullPath(miniMap.ImagePath)}|dpi={dpiScale:F2}|op={miniMapOpacity:F2}|gm={gm}|aa={aa}|ta={ta}|ba={ba}|la={la}|fl={showFloorOnMiniMap}|flbl={miniMap.FloorLabel}|anc={miniMap.Anchors.Count}|lw={miniMap.RouteLineThickness}|ro={miniMap.RouteOpacity:R}|ann={System.Text.Json.JsonSerializer.Serialize(miniMap.Annotations)}";
 
         lock (ImageCacheLock)
         {
+            EnsureImageCacheSourceVersionCore(miniMap.ImagePath);
             if (MiniMapLayerCache.TryGetValue(key, out var cached))
             {
                 if (cached.Width == width && cached.Height == height)
                     return cached.Bitmap;
-                cached.Bitmap.Dispose();
+                DisposeCachedBitmap(cached.Bitmap);
                 MiniMapLayerCache.Remove(key);
             }
 
-            var layerBitmap = new Bitmap(width, height, PixelFormat.Format32bppPArgb);
+            var layerBitmap = CreateCachedBitmap(width, height, "Overlay.BakedMiniMapLayer");
             layerBitmap.SetResolution(dpiScale * DefaultDpi, dpiScale * DefaultDpi);
 
             using (var g = Graphics.FromImage(layerBitmap))
@@ -128,15 +129,18 @@ internal static partial class MapOverlayBitmapRenderer
                     Height = height
                 };
 
-                if (gm || aa)
+                DrawRouteContent(g, effectiveMiniMap, dpiScale, routeGraphics =>
                 {
-                    DrawMiniMapAnchors(g, effectiveMiniMap, dpiScale, gm, aa);
-                }
+                    if (gm || aa)
+                    {
+                        DrawMiniMapAnchors(routeGraphics, effectiveMiniMap, dpiScale, gm, aa);
+                    }
 
-                if (ta || ba || la)
-                {
-                    DrawAnnotations(g, effectiveMiniMap, dpiScale, ta, ba, la);
-                }
+                    if (ta || ba || la)
+                    {
+                        DrawAnnotations(routeGraphics, effectiveMiniMap, dpiScale, ta, ba, la);
+                    }
+                });
 
                 if (showFloorOnMiniMap)
                 {

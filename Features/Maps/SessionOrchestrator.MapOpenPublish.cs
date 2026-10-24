@@ -26,6 +26,21 @@ public sealed partial class SessionOrchestrator
         MapOpenOperationContext? context = null)
     {
         var trace = ActiveOperationTrace;
+        var previousFloorKey = _currentFloorKey;
+        var previousConfirmedFloor = GetConfirmedFloorPreference(locked.Map.Id);
+        var requiredFloorKey = context?.ManualFloorKey
+            ?? (_settings?.DisableAutoFloor == true
+                ? _currentFloorKey ?? targetFloorKey
+                : frame.DetectedFloorKey);
+        // This is shared by map reopen and background candidate consumption.
+        // Reject conflicting geometry before adaptive evidence, session or
+        // cache writes, even if a caller bypasses recovery adjudication.
+        if (aligned is not null
+            && !TryValidateFloorCommit(aligned, targetFloorKey, requiredFloorKey, context, out failureReason))
+        {
+            aligned = null;
+            repairCacheKey = null;
+        }
         var independentAlignment = string.Equals(
             _lastDiagnostics?.WarmStateMissReason,
             "independent-alignment",
@@ -77,10 +92,12 @@ public sealed partial class SessionOrchestrator
             // 就绪帧上找出的真实对齐，locked 是上次成功对齐。二者位移差就是
             // 「重开图漂移」——决定投影边界掩膜能否复用上次位移的关键证据。
             LogMapOpenOffsetDrift(locked, aligned, targetFloorKey);
-            var adaptiveDecision = await EvaluateAdaptiveInitialAsync(
+            var adaptiveDecision = await EvaluateMapOpenAdaptiveAsync(
                 aligned,
                 frame,
-                _lastDiagnostics);
+                _lastDiagnostics, toggle, operationMatch, context);
+            if (adaptiveDecision is null)
+                return MapOpenAlignmentPublishOutcome.Superseded;
             if (_lastDiagnostics is { } adaptiveDiagnostics
                 && MapAlignmentChannelRegistry.Resolve(
                     aligned.Map,
@@ -144,6 +161,12 @@ public sealed partial class SessionOrchestrator
                             _ => MapLocationMethod.Manual
                         },
                         aligned.Result.LocalizationConfidence);
+                    if (ExternalAlignmentReceipt.Value is { } receipt)
+                    {
+                        receipt.Revision = SessionSnapshot.AlignmentRevision;
+                        receipt.MapId = aligned.Map.Id;
+                        receipt.FloorKey = aligned.Result.Floor;
+                    }
                 }
                 _currentFloorKey = aligned.Result.Floor;
                 _lastRecognition = aligned;
@@ -169,21 +192,8 @@ public sealed partial class SessionOrchestrator
                 _lastGameWindowHandle = frame.WindowHandle;
                 _statusMessage =
                     $"地图已对齐：{aligned.Map.DisplayName} · {aligned.Result.Floor.ToUpperInvariant()}";
-                _logCollector.Append(
-                    MapLogCategory.Session,
-                    MapLogLevel.Info,
-                    $"仅对齐完成 · map={aligned.Map.Id} · floor={aligned.Result.Floor}",
-                    details: new()
-                    {
-                        ["mapId"] = aligned.Map.Id,
-                        ["floor"] = aligned.Result.Floor,
-                        ["identityConfidence"] =
-                            aligned.Result.IdentityConfidence,
-                        ["localizationConfidence"] =
-                            aligned.Result.LocalizationConfidence,
-                        ["candidateMargin"] =
-                            MapFeatureCacheRules.GetCandidateMargin(aligned.Result)
-                    });
+                LogFloorCommitted(aligned, requiredFloorKey, previousFloorKey,
+                    previousConfirmedFloor, context);
             }
             finally
             {

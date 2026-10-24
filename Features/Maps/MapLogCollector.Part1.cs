@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Text;
 using IDVBuff.Core.Diagnostics;
 using IDVBuff.Diagnostics;
 
@@ -10,6 +11,34 @@ namespace IDVBuff.Features.Maps;
 /// </summary>
 public sealed partial class MapLogCollector : IDisposable, IAsyncDisposable
 {
+    private static Dictionary<string, object?>? EnrichDiagnosticDetails(Dictionary<string, object?>? details)
+    {
+        if (MapInputOperationContext.Current is { } input)
+        {
+            details = details is null ? new() : new(details);
+            details.TryAdd("inputOperationId", input.Id);
+        }
+        if (ScanRequestDiagnostics.Current is { } request)
+        {
+            details = details is null ? new() : new(details);
+            if (details.GetValueOrDefault("scanId") is null) details["scanId"] = request.ScanId;
+            if (Equals(details["scanId"], request.ScanId)) details["requestStage"] = request.Stage;
+        }
+        if (ScanExecutionContext.Current is { } scan)
+        {
+            details = details is null ? new() : new(details);
+            if (details.GetValueOrDefault("scanId") is null) details["scanId"] = scan.ScanId;
+            if (!Equals(details["scanId"], scan.ScanId)) return details;
+            details["scanElapsedMs"] = scan.ElapsedMilliseconds;
+            details["scanRemainingMs"] = scan.RemainingMilliseconds;
+            details["scanPhase"] = scan.Phase.ToString();
+            details["scanCancelled"] = scan.CancellationToken.IsCancellationRequested;
+            details["scanSuperseded"] = scan.IsSuperseded;
+        }
+        return details;
+    }
+
+
     public bool DisablePersistence { get; set; }
 
     public void AppendStatus(
@@ -22,6 +51,7 @@ public sealed partial class MapLogCollector : IDisposable, IAsyncDisposable
             : (status.IsFallback || status.IsClientError) ? MapLogLevel.Warning
             : MapLogLevel.Info;
 
+        details = EnrichDiagnosticDetails(details);
         var message = status.ToTraceString();
         WritePlainTextOutput(category, level, message, elapsedMs, details);
         lock (_stateGate)
@@ -52,18 +82,19 @@ public sealed partial class MapLogCollector : IDisposable, IAsyncDisposable
         try
         {
             var outputMessage = message;
-            if (elapsedMs is not null)
+            if (elapsedMs is not null || details?.Count > 0)
             {
-                outputMessage += $" | elapsedMs="
-                    + elapsedMs.Value.ToString("0.###", CultureInfo.InvariantCulture);
-            }
-            if (details is not null)
-            {
-                foreach (var detail in details)
+                // Build the complete entry once. Repeated concatenation copies
+                // every earlier field again for each diagnostic detail.
+                var builder = new StringBuilder(message);
+                if (elapsedMs is not null)
+                    builder.Append(" | elapsedMs=").Append(elapsedMs.Value.ToString("0.###", CultureInfo.InvariantCulture));
+                if (details is not null)
                 {
-                    outputMessage += $" | {detail.Key}="
-                        + FormatDetail(detail.Value);
+                    foreach (var detail in details)
+                        builder.Append(" | ").Append(detail.Key).Append('=').Append(FormatDetail(detail.Value));
                 }
+                outputMessage = builder.ToString();
             }
             OutputLog.Write(level.ToString(), $"MAP/{category}", outputMessage);
         }

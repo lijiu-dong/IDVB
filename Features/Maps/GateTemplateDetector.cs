@@ -10,20 +10,14 @@ namespace IDVBuff.Features.Maps;
 /// </summary>
 public sealed partial class GateTemplateDetector : IDisposable
 {
-    private readonly Mat _gateSource;
+    private readonly Lazy<Mat> _gateBytes;
+    private Mat _gateSource => _gateBytes.Value;
     private readonly IConfigProvider? _configProvider;
     private double? _warmScale;
     private bool _disposed;
     public GateTemplateDetector(string gatePath)
     {
-        using var gate = Cv2.ImRead(gatePath, ImreadModes.Unchanged);
-        if (gate.Empty())
-            throw new InvalidOperationException($"无法读取门图标资源：{gatePath}");
-
-        _gateSource = gate.Clone();
-        using var gateEdges = CreateEdges(_gateSource);
-        if (Cv2.CountNonZero(gateEdges) == 0)
-            throw new InvalidOperationException("门图标资源无法生成有效的边缘模板。");
+        _gateBytes = new Lazy<Mat>(() => LoadGate(gatePath));
     }
 
     /// <summary>
@@ -93,6 +87,7 @@ public sealed partial class GateTemplateDetector : IDisposable
         double physicalPixelsPerImagePixel = 1d)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        IDVBuff.Core.Contracts.Online.RecognitionResources.Demand();
         scoreThreshold = double.IsFinite(scoreThreshold)
             ? Math.Clamp(scoreThreshold, 0d, 1d)
             : GateTemplateRules.MatchThreshold;

@@ -1,8 +1,7 @@
 ﻿namespace IDVBuff;
 
-internal static class BuildVersionInfo
+internal static partial class BuildVersionInfo
 {
-    public const string ProductVersion = "1.4.0";
     public const string BuildVersion = "RealCLI";
-    public const string NumericVersion = "1.4.0.0";
+    public static string NumericVersion => ProductVersion.Split('-')[0] + ".0";
 }

@@ -25,16 +25,21 @@ public sealed partial class MapRuntimeSettings
     public void Normalize()
     {
         RouteLineThickness = Math.Clamp(RouteLineThickness, 0, 3);
+        RouteOpacity = double.IsFinite(RouteOpacity) ? Math.Clamp(RouteOpacity, 0d, 1d) : 1d;
         if (!Enum.IsDefined(ScanPerformanceMode)) ScanPerformanceMode = ScanPerformanceMode.Balanced;
         if (!Enum.IsDefined(ScanUncertainAction)) ScanUncertainAction = ScanUncertainAction.ShowCandidates;
         var previousSchema = SchemaVersion;
         SchemaVersion = CurrentSchemaVersion;
+        // 1.6.6 enables diagnostics once for existing settings; later user choices persist.
+        if (previousSchema < 22)
+            DiagnosticModeEnabled = true;
         // These are deliberately product-owned choices, rather than user
         // preferences. Normalize after every deserialization/save so imported,
         // migrated, and quick-start settings cannot re-enable retired paths.
         FirstScanStrategy = FirstScanStrategy.SideEntrance;
         BackgroundScanEnabled = false;
         SilentScanEnabled = false;
+        ContinuousObservationEnabled = false;
         AllowAutomaticMapCache = false;
         SelectedResolutionPreset = null;
         EnableContinuousAlignment = false;

@@ -1,3 +1,4 @@
+using IDVBuff.Core.Contracts.Online;
 using IDVBuff.Features.Maps;
 using IDVBuff.Features.Accounts;
 using IDVBuff.UpdateCore;
@@ -11,6 +12,8 @@ namespace IDVBuff.Views;
 
 public sealed partial class MapListPage
 {
+    private bool _packagePromptBusy;
+
     private TeachingTip CreatePublishTeachingTip(
         Button importButton,
         Button publishButton)
@@ -18,25 +21,51 @@ public sealed partial class MapListPage
         var exportPackage = CreateTeachingTipChoiceButton("导出地图包");
         var updating = GetOwnedPublication() is not null;
         var publishWebsite = CreateTeachingTipChoiceButton(updating ? "更新到官网" : "发布到官网");
+        var editMetadata = updating ? CreateTeachingTipChoiceButton("修改社区资料") : null;
         var choices = new StackPanel { Spacing = 8 };
         choices.Children.Add(exportPackage);
         choices.Children.Add(publishWebsite);
+        if (editMetadata is not null) choices.Children.Add(editMetadata);
         var tip = CreatePackageActionTeachingTip(
             publishButton,
             updating ? "更新" : "发布",
-            updating ? "请选择导出普通 IDVM 地图包，或更新官网地图包。"
+            updating ? "更新地图内容会上传地图包；只改名称或封面请选择“修改社区资料”。"
                 : "请选择导出普通 IDVM 地图包，或生成官网签名发布目录。",
             choices);
+        var choosing = false;
 
         exportPackage.Click += async (_, _) =>
         {
-            await CloseTeachingTipAsync(tip);
-            await ShowExportIdvmDialogAsync(importButton, publishButton);
+            if (choosing || _packagePromptBusy || _isPackageOperation) return;
+            choosing = true;
+            try
+            {
+                await CloseTeachingTipAsync(tip);
+                await ShowExportIdvmDialogAsync(importButton, publishButton);
+            }
+            finally { choosing = false; }
         };
         publishWebsite.Click += async (_, _) =>
         {
-            await CloseTeachingTipAsync(tip);
-            await ShowWebsitePublishDialogAsync(importButton, publishButton);
+            if (choosing || _packagePromptBusy || _isPackageOperation) return;
+            choosing = true;
+            try
+            {
+                await CloseTeachingTipAsync(tip);
+                await ShowWebsitePublishDialogAsync(importButton, publishButton);
+            }
+            finally { choosing = false; }
+        };
+        if (editMetadata is not null) editMetadata.Click += async (_, _) =>
+        {
+            if (choosing || _packagePromptBusy || _isPackageOperation) return;
+            choosing = true;
+            try
+            {
+                await CloseTeachingTipAsync(tip);
+                await ShowPublicationMetadataDialogAsync(importButton, publishButton);
+            }
+            finally { choosing = false; }
         };
         return tip;
     }
@@ -44,6 +73,18 @@ public sealed partial class MapListPage
     private async Task ShowExportIdvmDialogAsync(
         Button importButton,
         Button publishButton)
+    {
+        if (_packagePromptBusy || _isPackageOperation) return;
+        _packagePromptBusy = true;
+        using var operation = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("UI.Idvm.ExportPrompt", _selectedClass);
+        var request = IDVBuff.Core.Diagnostics.MemoryJournal.Request("UI.Idvm.ExportPrompt", nativeModule: "Microsoft.UI.Xaml.dll");
+        using var ownership = IDVBuff.Core.Diagnostics.MemoryJournal.Own("UI.Idvm.ExportPrompt",
+            nativeModule: "Microsoft.UI.Xaml.dll", requestId: request);
+        try { await ShowExportIdvmDialogCoreAsync(importButton, publishButton); }
+        finally { _packagePromptBusy = false; }
+    }
+
+    private async Task ShowExportIdvmDialogCoreAsync(Button importButton, Button publishButton)
     {
         var currentCount = GetVisibleMaps().Count;
         var totalCount = _loadedMaps.Count;
@@ -56,6 +97,16 @@ public sealed partial class MapListPage
         choices.Children.Add(new TextBlock
         {
             Text = $"全部地图类：{totalCount} 张地图",
+            TextWrapping = TextWrapping.Wrap
+        });
+        var compression = new ComboBox { Header = "地图包格式", HorizontalAlignment = HorizontalAlignment.Stretch };
+        compression.Items.Add(new ComboBoxItem { Content = "最高无损压缩（需新版 Windows 客户端）", Tag = IdvmCompressionMode.Maximum });
+        compression.Items.Add(new ComboBoxItem { Content = "兼容压缩（按原有格式导出）", Tag = IdvmCompressionMode.Compatible });
+        compression.SelectedIndex = 0;
+        choices.Children.Add(compression);
+        choices.Children.Add(new TextBlock
+        {
+            Text = "两种格式均包含完整地图资源。最高压缩导出可能耗时较长，导入需支持 IDVM 1.6。",
             TextWrapping = TextWrapping.Wrap
         });
         var dialog = new ContentDialog
@@ -72,7 +123,7 @@ public sealed partial class MapListPage
                 ? ContentDialogButton.Primary
                 : ContentDialogButton.Secondary
         };
-        var result = await dialog.ShowAsync();
+        var result = await dialog.ShowThemedAsync(this);
         if (result == ContentDialogResult.None)
             return;
         await ExportIdvmAsync(
@@ -80,17 +131,26 @@ public sealed partial class MapListPage
                 ? IdvmExportScope.CurrentClass
                 : IdvmExportScope.AllClasses,
             importButton,
-            publishButton);
+            publishButton,
+            compression.SelectedItem is ComboBoxItem { Tag: IdvmCompressionMode mode } ? mode : IdvmCompressionMode.Maximum);
     }
 
     private async Task ShowWebsitePublishDialogAsync(
         Button importButton,
         Button publishButton)
     {
+        if (_packagePromptBusy || _isPackageOperation) return;
+        _packagePromptBusy = true;
+        try { await ShowWebsitePublishDialogCoreAsync(importButton, publishButton); }
+        finally { _packagePromptBusy = false; }
+    }
+
+    private async Task ShowWebsitePublishDialogCoreAsync(Button importButton, Button publishButton)
+    {
         AccountIdentity identity;
         try
         {
-            identity = await AccountSession.RequirePublishAccessAsync();
+            identity = await _accountService.RequirePublishAccessAsync();
         }
         catch (Exception exception)
         {
@@ -99,9 +159,15 @@ public sealed partial class MapListPage
         }
         var currentCount = GetVisibleMaps().Count;
         var previous = GetOwnedPublication();
+        if (previous?.ClassBindings.Count > 1)
+        {
+            await ShowMessageAsync("无法从单个地图类更新", "这个已发布地图包包含多个地图类。为避免新版移除其他地图类，请勿从当前单个地图类覆盖发布。请将需要独立更新的地图类分别发布。");
+            return;
+        }
         var isUpdate = previous is not null;
         var packageNameText = previous?.PackageName ?? _selectedClass;
         var coverPath = previous?.CoverPath;
+        if (coverPath is not null && _repository.IsGeneratedPublicationCover(coverPath)) coverPath = null;
         var selectedScope = currentCount > 0 ? IdvmExportScope.CurrentClass : IdvmExportScope.AllClasses;
         var validationMessage = string.Empty;
         while (true)
@@ -118,7 +184,7 @@ public sealed partial class MapListPage
             scope.SelectedIndex = selectedScope == IdvmExportScope.CurrentClass ? 0 : 1;
             scope.IsEnabled = !isUpdate;
             var packageName = new TextBox { Header = "地图包名称", Text = packageNameText, MaxLength = 80 };
-            var content = new StackPanel { Spacing = 10, Width = 560 };
+            var content = new StackPanel { Spacing = 10, MaxWidth = 560, HorizontalAlignment = HorizontalAlignment.Stretch };
             content.Children.Add(publisher);
             content.Children.Add(scope);
             content.Children.Add(packageName);
@@ -130,7 +196,8 @@ public sealed partial class MapListPage
                 TextWrapping = TextWrapping.Wrap
             });
             if (!string.IsNullOrEmpty(validationMessage))
-                content.Children.Add(new TextBlock { Text = validationMessage, Foreground = FluentTheme.Brush("SystemFillColorCriticalBrush") });
+                content.Children.Add(new TextBlock { Text = validationMessage, TextWrapping = TextWrapping.Wrap,
+                    Foreground = FluentTheme.Brush(this, "SystemFillColorCriticalBrush") });
             var dialog = new ContentDialog
             {
                 XamlRoot = XamlRoot,
@@ -141,7 +208,7 @@ public sealed partial class MapListPage
                 CloseButtonText = "取消",
                 DefaultButton = ContentDialogButton.Primary
             };
-            var result = await dialog.ShowAsync();
+            var result = await dialog.ShowThemedAsync(this);
             packageNameText = packageName.Text.Trim();
             if (scope.SelectedItem is ComboBoxItem { Tag: IdvmExportScope value }) selectedScope = value;
             if (result == ContentDialogResult.None) return;
@@ -154,13 +221,15 @@ public sealed partial class MapListPage
             if (!string.IsNullOrWhiteSpace(packageNameText)) break;
             validationMessage = "请填写地图包名称。";
         }
-        coverPath = ResolvePublicationCoverPath(coverPath);
+        var usesAutomaticCover = string.IsNullOrWhiteSpace(coverPath);
+        try { coverPath = ResolvePublicationCoverPath(coverPath, selectedScope); }
+        catch (Exception exception) { await ShowMessageAsync("无法读取发布封面", exception.Message); return; }
         await PublishMapsAsync(
             isUpdate ? IdvmExportScope.CurrentClass : selectedScope,
             identity.DisplayName,
             intendedForWebsite: true,
-            packageNameText, coverPath, previous?.Id,
-            previous is null ? null : MapSubscriptionLink.Parse(previous.Link).ContentKey,
+            packageNameText, coverPath, usesAutomaticCover, previous?.Id,
+            null,
             importButton,
             publishButton);
     }
@@ -182,18 +251,11 @@ public sealed partial class MapListPage
         tip.Closed -= Complete;
     }
 
-    private static Button CreateTeachingTipChoiceButton(string text) => new()
-    {
-        Content = text,
-        HorizontalAlignment = HorizontalAlignment.Stretch,
-        HorizontalContentAlignment = HorizontalAlignment.Center,
-        MinWidth = 150
-    };
-
     private async Task ExportIdvmAsync(
         IdvmExportScope scope,
         Button importButton,
-        Button exportButton)
+        Button exportButton,
+        IdvmCompressionMode compressionMode)
     {
         var suggestedName = scope == IdvmExportScope.CurrentClass
             ? $"IDVB-{SanitizeFileName(_selectedClass)}-{DateTime.Now:yyyyMMdd-HHmmss}"
@@ -205,10 +267,11 @@ public sealed partial class MapListPage
         SetPackageOperationState(importButton, exportButton, isBusy: true, "正在导出…");
         try
         {
-            await Task.Run(() => _idvmPackageService.ExportAsync(
+            await RunMapOperationAsync("正在打包地图……", () => Task.Run(() => _idvmPackageService.ExportAsync(
                 scope,
                 scope == IdvmExportScope.CurrentClass ? _selectedClass : null,
-                destination));
+                destination,
+                compressionMode: compressionMode)));
             await ShowMessageAsync("数据包导出完成", $"已保存到：\n{destination}");
         }
         catch (Exception exception)
@@ -227,19 +290,21 @@ public sealed partial class MapListPage
         bool intendedForWebsite,
         string packageName,
         string coverPath,
+        bool usesAutomaticCover,
         Guid? publicationId,
         byte[]? existingContentKey,
         Button importButton,
         Button exportButton)
     {
         var publisherDisplayName = publisherText.Trim();
+        var publishingClass = scope == IdvmExportScope.CurrentClass ? _selectedClass : null;
         var isOfficialPublisher = false;
         var isBuilderPublisher = false;
         if (intendedForWebsite)
         {
             try
             {
-                var identity = await AccountSession.RequirePublishAccessAsync();
+                var identity = await _accountService.RequirePublishAccessAsync();
                 publisherText = identity.PublisherHandle;
                 publisherDisplayName = identity.DisplayName;
                 isOfficialPublisher = identity.IsOfficial;
@@ -269,41 +334,54 @@ public sealed partial class MapListPage
             return;
 
         SetPackageOperationState(importButton, exportButton, isBusy: true, "正在发布…");
+        using var publicationProtection = AppDataPaths.ProtectCachePath(outputDirectory);
+        string? uploadedLink = null;
         try
         {
-            var publication = await _mapPublicationService.PublishAsync(
-                scope,
-                scope == IdvmExportScope.CurrentClass ? _selectedClass : null,
-                outputDirectory,
-                publisherHandle,
-                publisherDisplayName,
-                isOfficialPublisher,
-                isBuilderPublisher,
-                intendedForWebsite,
-                packageName,
-                coverPath,
-                publicationId,
-                existingContentKey);
-            var subscriptionLink = intendedForWebsite
-                ? await AccountSession.UploadPublicationAsync(publication)
-                : publication.SubscriptionLink;
-            if (intendedForWebsite)
+            var subscriptionLink = await RunMapOperationAsync(publicationId is null ? "正在发布地图……" : "正在更新已发布地图……", async () =>
             {
-                var publishedMaps = scope == IdvmExportScope.CurrentClass ? GetVisibleMaps() : _loadedMaps;
-                var link = MapSubscriptionLink.Parse(subscriptionLink);
-                await _repository.MarkPublishedMapsAsSubscriptionAsync(
-                    publishedMaps.Select(map => map.Id).ToArray(), publication.PublicationId,
-                    publication.PublisherDisplayName, link.PublisherKeyId, publication.Version,
-                    publication.IsOfficialPublisher, publication.IsBuilderPublisher);
-                await _mapSubscriptionService.RegisterPublishedAsync(publication, subscriptionLink, publishedMaps);
-                await ShowListAsync();
-            }
+                var publication = await MapOperationProgress.RunAsync(0, .6, () => Task.Run(() => _mapPublicationService.PublishAsync(
+                    scope,
+                    publishingClass,
+                    outputDirectory,
+                    publisherHandle,
+                    publisherDisplayName,
+                    isOfficialPublisher,
+                    isBuilderPublisher,
+                    intendedForWebsite,
+                    packageName,
+                    coverPath,
+                    publicationId,
+                    existingContentKey,
+                    usesAutomaticCover: usesAutomaticCover)));
+                MapOperationProgress.Report(.6, "正在上传地图……");
+                var linkText = intendedForWebsite
+                    ? await MapOperationProgress.RunAsync(.6, .9, () => _communityService.PublishAsync(new(
+                        publication.PublicationId, publication.PublisherHandle, publication.SubscriptionLink,
+                        publication.OutputDirectory, publication.PackagePath, publication.PackageName,
+                        publication.CoverPath), CancellationToken.None))
+                    : publication.SubscriptionLink;
+                if (intendedForWebsite) uploadedLink = linkText;
+                if (intendedForWebsite)
+                {
+                    var publishedMaps = publication.ExportedMaps;
+                    MapOperationProgress.Report(.92, "正在登记发布结果……");
+                    var link = MapSubscriptionLink.Parse(publication.SubscriptionLink);
+                    await _repository.MarkPublishedMapsAsSubscriptionAsync(
+                        publishedMaps.Select(map => map.Id).ToArray(), publication.PublicationId,
+                        publication.PublisherDisplayName, link.PublisherKeyId, publication.Version,
+                        publication.IsOfficialPublisher, publication.IsBuilderPublisher);
+                    await _mapSubscriptionService.RegisterPublishedAsync(publication, linkText, publishedMaps);
+                    await ShowListAsync();
+                }
+                return linkText;
+            });
             var data = new DataPackage();
             data.SetText(subscriptionLink);
             Clipboard.SetContent(data);
             var publisherName = intendedForWebsite
-                ? AccountSession.Identity?.DisplayName ?? publication.PublisherHandle
-                : publication.PublisherHandle;
+                ? _accountService.Identity?.DisplayName ?? publisherHandle
+                : publisherHandle;
             var targetText = intendedForWebsite
                 ? "已发布到 IDVB 官网"
                 : "已生成本地更新订阅";
@@ -313,7 +391,9 @@ public sealed partial class MapListPage
         }
         catch (Exception exception)
         {
-            await ShowMessageAsync("地图发布失败", exception.Message);
+            IDVBuff.Diagnostics.OutputLog.Write("WARN", "MAP/PUBLISH", "Map publication did not complete.", exception);
+            await ShowMessageAsync(uploadedLink is null ? "地图发布失败" : "地图已发布，本地登记未完成",
+                exception.Message + (uploadedLink is null ? string.Empty : $"\n请保留以下订阅链接，勿重复新建发布：\n{uploadedLink}"));
         }
         finally
         {
@@ -329,18 +409,19 @@ public sealed partial class MapListPage
             .Distinct()
             .ToArray();
         if (ids.Length != 1 || ids[0] is not { } id) return null;
-        var identity = AccountSession.Identity;
+        var identity = _accountService.Identity;
         return identity is null ? null : _mapSubscriptionService.GetSubscriptions()
             .SingleOrDefault(record => record.Id == id
-                && string.Equals(record.PublisherHandle, identity.PublisherHandle, StringComparison.OrdinalIgnoreCase));
+                && MapPublicationRules.CanUpdate(maps, record, identity.PublisherHandle));
     }
 
     private string GetWebsiteActionText() => GetOwnedPublication() is null ? "发布" : "更新";
 
-    private string ResolvePublicationCoverPath(string? selectedPath)
+    private string ResolvePublicationCoverPath(string? selectedPath, IdvmExportScope scope)
     {
         if (!string.IsNullOrWhiteSpace(selectedPath) && File.Exists(selectedPath)) return selectedPath;
-        var map = GetVisibleMaps().OrderBy(item => item.SequenceNumber).FirstOrDefault()
+        var map = (scope == IdvmExportScope.CurrentClass ? GetVisibleMaps() : _loadedMaps)
+            .OrderBy(item => item.SequenceNumber).FirstOrDefault()
             ?? throw new InvalidOperationException("当前地图类没有可用于封面的地图。");
         var floor = MapFloorRules.GetOrderedFloors(map).First();
         var preview = _repository.GetFloorThumbnailPath(map, floor.Key);
@@ -350,6 +431,13 @@ public sealed partial class MapListPage
 
     private async Task<string?> PickIdvmDestinationAsync(string suggestedName)
     {
+#if IDVB_DEVELOPMENT_BUILD
+        if (_developmentExportDestination is { } replayDestination)
+        {
+            _developmentExportDestination = null;
+            return ValidateDevelopmentPackagePath(replayDestination, mustExist: false);
+        }
+#endif
         try
         {
             var picker = new FileSavePicker(((App)Application.Current).MainWindow.AppWindow.Id)

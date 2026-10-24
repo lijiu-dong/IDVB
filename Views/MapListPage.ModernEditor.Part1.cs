@@ -1,4 +1,6 @@
 using IDVBuff.Features.Maps;
+using IDVBuff.Appearance;
+using IDVBuff.Presentation.Theming;
 using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -15,6 +17,13 @@ namespace IDVBuff.Views;
 public sealed partial class MapListPage : UserControl
 {
 
+    private static double CalculateModernAnnotationFontSize(MapAnnotation annotation, double pixelWidth, double pixelHeight)
+    {
+        var requested = annotation.FontSize ?? CalculateFittingFontSize(annotation.Text ?? string.Empty, pixelWidth, pixelHeight);
+        var fitting = CalculateFittingFontSize(annotation.Text ?? string.Empty, pixelWidth, pixelHeight);
+        return Math.Min(requested, fitting);
+    }
+
     private void ShowModernTextProperties(Button placementTarget)
     {
         var defaults = _editorPreferenceState.TextDefaults;
@@ -24,10 +33,10 @@ public sealed partial class MapListPage : UserControl
             Text = "文字属性",
             FontSize = 16,
             FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-            Foreground = new SolidColorBrush(EditorText)
+            Foreground = EditorText
         });
 
-        panel.Children.Add(new TextBlock { Text = "字号", Foreground = new SolidColorBrush(EditorMuted) });
+        panel.Children.Add(new TextBlock { Text = "字号", Foreground = EditorMuted });
         var sizes = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
         foreach (var (label, size) in new[] { ("小", 12d), ("中", 16d), ("大", 20d), ("特大", 24d) })
         {
@@ -37,8 +46,9 @@ public sealed partial class MapListPage : UserControl
                 Content = label,
                 IsChecked = Math.Abs(defaults.FontSize - size) < .001d,
                 MinWidth = 54,
-                Foreground = new SolidColorBrush(EditorText)
+                Foreground = EditorText
             };
+            BindModernToggleTheme(button);
             button.Click += async (_, _) =>
             {
                 defaults.FontSize = selectedSize;
@@ -48,7 +58,7 @@ public sealed partial class MapListPage : UserControl
         }
         panel.Children.Add(sizes);
 
-        panel.Children.Add(new TextBlock { Text = "字体", Foreground = new SolidColorBrush(EditorMuted) });
+        panel.Children.Add(new TextBlock { Text = "字体", Foreground = EditorMuted });
         var installedFonts = GetModernInstalledFontFamilies();
         var fontPicker = new AutoSuggestBox
         {
@@ -91,7 +101,7 @@ public sealed partial class MapListPage : UserControl
         {
             Header = label,
             IsOn = getValue(),
-            Foreground = new SolidColorBrush(EditorText)
+            Foreground = EditorText
         };
         toggle.Toggled += async (_, _) =>
         {
@@ -110,7 +120,7 @@ public sealed partial class MapListPage : UserControl
             Text = "直线属性",
             FontSize = 16,
             FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-            Foreground = new SolidColorBrush(EditorText)
+            Foreground = EditorText
         });
         var mode = new ComboBox
         {
@@ -129,14 +139,14 @@ public sealed partial class MapListPage : UserControl
         {
             Header = "轴向约束",
             IsOn = defaults.AxisConstraintEnabled,
-            Foreground = new SolidColorBrush(EditorText)
+            Foreground = EditorText
         };
         var diagonal = new ToggleSwitch
         {
             Header = "允许 45°",
             IsOn = defaults.AllowDiagonalConstraint,
             IsEnabled = defaults.AxisConstraintEnabled,
-            Foreground = new SolidColorBrush(EditorText)
+            Foreground = EditorText
         };
         axis.Toggled += async (_, _) =>
         {
@@ -178,7 +188,9 @@ public sealed partial class MapListPage : UserControl
     {
         MapEditorTool.Select => "选择并调整画布元素。",
         MapEditorTool.Text => "拖出文字区域。",
+        MapEditorTool.Marker => "点击放置标记图案；再次点击标记工具可更换图案。",
         MapEditorTool.Line => "拖动创建一条有方向的直线。",
+        MapEditorTool.AutomaticRoute => "点击阶段起点和终点；靠近已有端点或虚线预览通路时自动吸附，Esc 取消起点。",
         MapEditorTool.Rectangle => "拖动创建无填充矩形。",
         MapEditorTool.Crop => "拖出当前楼层的识别区域。",
         MapEditorTool.FreeCrop => "按住鼠标自由框选任意形状的识别区域。",
@@ -190,14 +202,13 @@ public sealed partial class MapListPage : UserControl
 
     private void RefreshModernToolVisuals()
     {
+        _modernToolState.AutomaticRouteAvailable = CanUseModernAutomaticRoute();
         foreach (var (tool, button) in _editorToolButtons)
         {
             var isSelected = tool == _modernToolState.ActiveTool;
-            button.Background = new SolidColorBrush(isSelected ? Color.FromArgb(255, 20, 91, 166) : Color.FromArgb(0, 0, 0, 0));
-            button.BorderBrush = new SolidColorBrush(isSelected ? Color.FromArgb(255, 49, 156, 255) : Color.FromArgb(0, 0, 0, 0));
+            ThemeButton.Apply(button, isSelected ? ThemeButtonRole.Accent : ThemeButtonRole.Standard);
             button.BorderThickness = new Thickness(isSelected ? 1 : 0);
-            if (tool == MapEditorTool.Gate)
-                button.IsEnabled = true;
+            button.IsEnabled = _modernToolState.CanUse(tool);
         }
     }
 
@@ -205,6 +216,10 @@ public sealed partial class MapListPage : UserControl
     {
         if (_draft is null || !_draft.Floors.Any(floor => string.Equals(floor.Key, floorKey, StringComparison.OrdinalIgnoreCase)))
             return;
+        using var floorOperation = IDVBuff.Core.Diagnostics.MemoryJournal.BeginOperation("Editor.Floor", $"{_draft.Id}/{floorKey}");
+        RecordModernEditorMemory("floor-begin");
+        var viewRevision = ++_modernViewRevision;
+        ResetModernAutomaticRoute();
         CancelModernInteraction(restoreGeometry: true);
         EndModernContinuousLine();
         _modernToolState.Reset();
@@ -221,12 +236,12 @@ public sealed partial class MapListPage : UserControl
             foreach (var button in FindDescendants<Button>(_modernEditorHeader).Where(button => button.Tag is string))
             {
                 var selected = string.Equals(button.Tag as string, floorKey, StringComparison.OrdinalIgnoreCase);
-                button.Background = new SolidColorBrush(selected ? AccentBlue : EditorPanel);
-                button.BorderBrush = new SolidColorBrush(selected ? Color.FromArgb(255, 73, 169, 255) : EditorBorder);
+                ThemeButton.Apply(button, selected ? ThemeButtonRole.Accent : ThemeButtonRole.Standard);
             }
         }
 
-        var imagePath = GetActiveFloorImagePath();
+        var imagePath = _draft.AppearancePalette is null ? GetActiveFloorImagePath()
+            : _repository.GetDraftAppearanceImagePath(_draft, _activeFloorKey);
         if (string.IsNullOrWhiteSpace(imagePath))
         {
             UpdateModernFloorResolution(0, 0);
@@ -234,51 +249,48 @@ public sealed partial class MapListPage : UserControl
         }
         if (!_modernFloorBitmaps.TryGetValue(floorKey, out var entry))
         {
-            using var imageInfo = System.Drawing.Image.FromFile(imagePath);
-            var sourceWidth = imageInfo.Width;
-            var sourceHeight = imageInfo.Height;
-            var bitmap = new BitmapImage
-            {
-                CreateOptions = BitmapCreateOptions.IgnoreImageCache,
-                DecodePixelWidth = Math.Min(
-                    sourceWidth,
-                    ModernEditorDecodePixelWidth),
-                UriSource = new Uri(imagePath)
-            };
-            RoutedEventHandler opened = (_, _) => ApplyModernFloorBitmap(
-                bitmap,
-                sourceWidth,
-                sourceHeight,
-                fitWhenLoaded);
-            bitmap.ImageOpened += opened;
-            entry = new ModernFloorBitmap(
-                bitmap,
-                sourceWidth,
-                sourceHeight,
-                opened);
+            ReleaseModernFloorBitmaps(floorKey);
+            var (sourceWidth, sourceHeight) = MapImageDimensions.Read(imagePath);
+            RecordModernEditorMemory("metadata-read", imagePath);
+            var resource = $"ModernEditor.Floor/{_draft.Id}/{floorKey}/{imagePath}";
+            var request = IDVBuff.Core.Diagnostics.MemoryJournal.Request(resource, nativeModule: "Microsoft.UI.Xaml.dll");
+            entry = new ModernFloorBitmap(sourceWidth, sourceHeight);
+            IDVBuff.Core.Diagnostics.MemoryJournal.TrackResource(entry.Source, resource, null, "Microsoft.UI.Xaml.dll", request);
+            IDVBuff.Core.Diagnostics.MemoryJournal.ObserveManagedObject(entry.Source, resource);
             _modernFloorBitmaps[floorKey] = entry;
+            _ = LoadModernFloorBitmapAsync(entry, imagePath, floorKey, fitWhenLoaded, viewRevision);
         }
-        _modernBitmap = entry.Bitmap;
+        _modernBitmap = entry;
         if (_modernImage is not null)
         {
-            _modernImage.Source = _modernBitmap;
+            _modernImage.Source = entry.Source;
             _modernImage.Visibility = IsModernItemVisible("image", "image") ? Visibility.Visible : Visibility.Collapsed;
         }
         SetModernStatus($"正在编辑 {GetModernFloorDisplayName(floorKey)}。", false);
         UpdateModernFloorResolution(entry.SourceWidth, entry.SourceHeight);
         RefreshModernLayerList();
+        // Annotation state belongs to the selected floor, independently of the
+        // asynchronous image decode. Cached equal-size floors may not emit a
+        // new ImageOpened event before the viewport reports itself settled.
+        if (_modernScene is not null && _modernCanvas is not null)
+        {
+            _modernScene.Width = _modernCanvas.Width = entry.SourceWidth;
+            _modernScene.Height = _modernCanvas.Height = entry.SourceHeight;
+            RenderModernEditor();
+        }
         ApplyModernFloorBitmap(
             _modernBitmap,
             entry.SourceWidth,
             entry.SourceHeight,
-            fitWhenLoaded);
+            fitWhenLoaded, viewRevision);
+        RecordModernEditorMemory("floor-bound", imagePath);
     }
 
     private void ApplyModernFloorBitmap(
-        BitmapImage bitmap,
+        ModernFloorBitmap bitmap,
         int sourceWidth,
         int sourceHeight,
-        bool fitWhenLoaded)
+        bool fitWhenLoaded, long viewRevision)
     {
         if (!ReferenceEquals(_modernBitmap, bitmap)
             || _modernScene is null
@@ -293,9 +305,12 @@ public sealed partial class MapListPage : UserControl
         _modernScene.Height = sourceHeight;
         _modernCanvas.Width = sourceWidth;
         _modernCanvas.Height = sourceHeight;
-        RenderModernEditor();
+        // Floor metadata establishes the annotation canvas synchronously in
+        // SwitchModernFloor. Decoding only supplies the background pixels;
+        // rebuilding the same annotations here creates another native scene
+        // without changing any geometry. Zoom fitting owns stroke updates.
         if (fitWhenLoaded)
-            DispatcherQueue.TryEnqueue(FitModernCanvas);
+            QueueAutomaticModernCanvasFit(viewRevision);
     }
 
     private string GetModernFloorDisplayName(string floorKey) =>

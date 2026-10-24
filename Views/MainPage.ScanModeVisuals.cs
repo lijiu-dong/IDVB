@@ -3,6 +3,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
 using Windows.UI;
 using Windows.UI.ViewManagement;
+using IDVBuff.Presentation.Theming;
 
 namespace IDVBuff.Views;
 
@@ -12,7 +13,6 @@ public sealed partial class MainPage
         TimeSpan.FromMilliseconds(460);
 
     private readonly UISettings _scanVisualUiSettings = new();
-    private readonly SolidColorBrush _feedbackAccentBrush = new();
     private HomePage? _scanVisualHomePage;
     private Color _scanAccentCurrent = ScanModeSelector.GetAccentColor(
         Features.Maps.ScanPerformanceMode.Balanced);
@@ -25,8 +25,7 @@ public sealed partial class MainPage
     {
         _scanAccentStart = _scanAccentCurrent;
         _scanAccentTarget = _scanAccentCurrent;
-        _feedbackAccentBrush.Color = _scanAccentCurrent;
-        FeedbackButton.Background = _feedbackAccentBrush;
+        ThemeService.SetScanModeAccent(_scanAccentCurrent);
         Unloaded += (_, _) => StopScanAccentAnimation();
     }
 
@@ -36,6 +35,45 @@ public sealed partial class MainPage
         _scanVisualHomePage = homePage;
         homePage.ScanModeVisualChanged += HomePage_ScanModeVisualChanged;
         StartScanAccentTransition(homePage.CurrentScanModeAccent, animate: false);
+    }
+
+    private async Task PrepareHomeForNavigationAsync(HomePage home)
+    {
+        if (_bloomTextureCache.IsDisposed) _bloomTextureCache = new();
+        home.UseBloomTextureCache(_bloomTextureCache);
+        await home.PrepareAsync();
+    }
+
+    internal void RetireAmbientGraphics()
+    {
+        ++_navigationRevision;
+        StopScanAccentAnimation();
+        if (ModuleContentHost.Content is HomePage home) home.RetireAmbientResources();
+        DisconnectScanVisuals();
+        _bloomTextureCache.Dispose();
+    }
+
+    internal void RetireWindowContents()
+    {
+        RetireAmbientGraphics();
+        // Hidden windows can end before WinUI dispatches Unloaded. Retire the
+        // cached dialog here as well, while shutdown still owns the page tree.
+        _feedbackDialog?.Hide();
+        ReleaseFeedbackDialog();
+        var view = ModuleContentHost.Content as FrameworkElement;
+        if (view is not null) RetireModuleImages(view);
+        ModuleContentHost.Content = null;
+        _displayedModuleId = null;
+        // End the real mount before releasing its ledger ownership. Weak
+        // collection and native allocator frees remain separate observations.
+        if (view is not null) IDVBuff.Core.Diagnostics.MemoryJournal.ReleaseResource(view);
+    }
+
+    private static void RetireModuleImages(FrameworkElement view)
+    {
+        MemoryImageBinding.ReleaseOwned(view);
+        if (view is MapListPage maps) maps.RetireImageConsumers();
+        if (view is SponsorshipPage sponsor) sponsor.Retire();
     }
 
     private void DisconnectScanVisuals()
@@ -50,6 +88,11 @@ public sealed partial class MainPage
 
     private void StartScanAccentTransition(Color target, bool animate)
     {
+        // One palette refresh starts transitions on the shared brushes. Intermediate
+        // ambient frames never resolve a palette or notify all theme owners again.
+        ThemeService.SetScanModeAccent(target, animate && _scanVisualUiSettings.AnimationsEnabled);
+        if (animate && _scanAccentAnimationRunning && _scanAccentTarget.Equals(target))
+            return;
         var now = Stopwatch.GetTimestamp();
         if (_scanAccentAnimationRunning)
             UpdateScanAccentFrame(now);
@@ -98,7 +141,6 @@ public sealed partial class MainPage
 
     private void ApplyScanAccent(Color color)
     {
-        _feedbackAccentBrush.Color = color;
         _scanVisualHomePage?.SetAmbientAccent(color);
     }
 

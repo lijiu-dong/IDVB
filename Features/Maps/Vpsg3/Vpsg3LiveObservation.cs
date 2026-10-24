@@ -33,10 +33,17 @@ public readonly record struct Vpsg3SparseSamplingDiagnostics(
 /// </summary>
 public sealed class Vpsg3LiveObservation : IDisposable
 {
+    internal const double AutomaticPoseTolerancePixels = 3d;
+    private Mat? _visibleInterior;
+    private Mat? _automaticWallEvidence;
+    internal Mat? VisibleInterior => _visibleInterior;
+    internal Mat? AutomaticWallEvidence => _automaticWallEvidence;
     private Mat? _observedEdges;
     private Mat? _validMask;
     private Mat? _proposalEdges;
-    /// <summary>Strong semantic contours for scale proposals; all observed edges still participate in final distance verification.</summary>
+    public Mat? SemanticLabels { get; }
+    /// <summary>Strong semantic contours for scale proposals and local identity contradictions.
+    /// All observed edges, including weak recovery, still participate in global distance verification.</summary>
     public Mat ProposalEdges => _proposalEdges ?? ObservedEdges;
     private int _disposed;
 
@@ -53,8 +60,18 @@ public sealed class Vpsg3LiveObservation : IDisposable
 
     public int Width { get; }
     public int Height { get; }
-    public int EdgePixelCount { get; }
-    public int ValidStructurePixelCount { get; }
+    public int EdgePixelCount { get; private set; }
+    public int ValidStructurePixelCount { get; private set; }
+
+    // Construction-time exclusions change owned pixels before publication. Keep
+    // that ownership instead of cloning four complete rasters just to recount.
+    internal void RefreshPixelMetrics(int edgeCount, int validCount)
+    {
+        if (_sparseEdgePoints is not null || _semanticSamples is not null)
+            throw new InvalidOperationException("Cannot modify published observation metrics.");
+        EdgePixelCount = edgeCount;
+        ValidStructurePixelCount = validCount;
+    }
 
     /// <summary>Coordinate frame of ObservedEdges and ValidMask (strictly LocalViewport).</summary>
     public Vpsg3CoordinateSpace CoordinateSpace { get; } = Vpsg3CoordinateSpace.LocalViewport;
@@ -62,9 +79,22 @@ public sealed class Vpsg3LiveObservation : IDisposable
     /// <summary>Screen viewport bounding rectangle where this observation was captured from.</summary>
     public MapScreenRect ViewportBounds { get; }
 
-    private Point[]? _sparseEdgePoints;
+    private IReadOnlyList<Point>? _sparseEdgePoints;
     private readonly int _maxSparsePoints;
     private readonly object _sparseLock = new();
+    private SemanticStructureSamples? _semanticSamples;
+
+    internal SemanticStructureSamples SemanticSamples
+    {
+        get
+        {
+            lock (_sparseLock)
+            {
+                ObjectDisposedException.ThrowIf(IsDisposed, this);
+                return _semanticSamples ??= SemanticStructureSamples.Create(SemanticLabels, ValidMask);
+            }
+        }
+    }
 
     /// <summary>
     /// Pre-sampled sparse edge points in LocalViewport coordinates for O(1) bit-test verification.
@@ -82,7 +112,8 @@ public sealed class Vpsg3LiveObservation : IDisposable
             {
                 if (_sparseEdgePoints is null)
                 {
-                    _sparseEdgePoints = SampleSparseEdgePointsFast(ProposalEdges, Cv2.CountNonZero(ProposalEdges), _maxSparsePoints);
+                    var points = SampleSparseEdgePointsFast(ProposalEdges, Cv2.CountNonZero(ProposalEdges), _maxSparsePoints);
+                    _sparseEdgePoints = SemanticLabels is null ? points : new Vpsg3SemanticPoints(points, SemanticLabels);
                 }
                 return _sparseEdgePoints;
             }
@@ -131,18 +162,23 @@ public sealed class Vpsg3LiveObservation : IDisposable
         int maxSparsePoints = 150,
         Point[]? sparseEdgePoints = null,
         double extractionMilliseconds = 0,
-        Mat? proposalEdges = null)
+        Mat? proposalEdges = null, Mat? semanticLabels = null,
+        Mat? visibleInterior = null, Mat? automaticWallEvidence = null)
     {
         _observedEdges = observedEdges ?? throw new ArgumentNullException(nameof(observedEdges));
         _validMask = validMask ?? throw new ArgumentNullException(nameof(validMask));
         _proposalEdges = proposalEdges;
+        SemanticLabels = semanticLabels;
+        _visibleInterior = visibleInterior;
+        _automaticWallEvidence = automaticWallEvidence;
         Width = width;
         Height = height;
         EdgePixelCount = edgePixelCount;
         ValidStructurePixelCount = validStructurePixelCount;
         ViewportBounds = viewportBounds;
         _maxSparsePoints = maxSparsePoints;
-        _sparseEdgePoints = sparseEdgePoints;
+        _sparseEdgePoints = sparseEdgePoints is null ? null : semanticLabels is null
+            ? sparseEdgePoints : new Vpsg3SemanticPoints(sparseEdgePoints, semanticLabels);
         ExtractionMilliseconds = extractionMilliseconds;
     }
 
@@ -175,12 +211,17 @@ public sealed class Vpsg3LiveObservation : IDisposable
     {
         if (Interlocked.Exchange(ref _disposed, 1) == 0)
         {
+            SemanticLabels?.Dispose();
             _observedEdges?.Dispose();
             _observedEdges = null;
             _validMask?.Dispose();
             _validMask = null;
             _proposalEdges?.Dispose();
             _proposalEdges = null;
+            _visibleInterior?.Dispose();
+            _visibleInterior = null;
+            _automaticWallEvidence?.Dispose();
+            _automaticWallEvidence = null;
         }
     }
 }

@@ -29,7 +29,8 @@ public sealed partial class IdvaStructureLineEngine
 {
     // Persisted separately from the IDVA package hash: execution semantics can change
     // without changing a user-supplied algorithm package.
-    public const int CurrentRevision = 1;
+    // 2: hole filling keeps holes that are mostly explicit source void.
+    public const int CurrentRevision = 2;
     private const int MaximumPackageBytes = 1024 * 1024;
     private const int MaximumStages = 64;
     private static readonly HashSet<string> SupportedStages =
@@ -131,7 +132,7 @@ public sealed partial class IdvaStructureLineEngine
         return new PrebuiltStructureLineResult(
             edges.Width,
             edges.Height,
-            Cv2.CountNonZero(edges));
+            CountEdgePixels(edges));
     }
 
     public Mat Execute(
@@ -240,7 +241,8 @@ public sealed partial class IdvaStructureLineEngine
                 break;
             case "fill_holes":
                 RequireString(stage, "mode", "all_enclosed");
-                ReplaceMasks(state, FillAllHoles(state.Room), FillAllHoles(state.Corridor));
+                ReplaceMasks(state, FillAllHoles(state.Room, state.SourceVoid),
+                    FillAllHoles(state.Corridor, state.SourceVoid));
                 break;
             case "directional_bridge":
                 state.ProtectSourceBackground();
@@ -252,8 +254,8 @@ public sealed partial class IdvaStructureLineEngine
                 break;
             case "fill_small_holes":
                 ReplaceMasks(state,
-                    FillSmallHoles(state.Room, ReadBoundedInt(stage, "room_max_hole_area", 1, int.MaxValue)),
-                    FillSmallHoles(state.Corridor, ReadBoundedInt(stage, "corridor_max_hole_area", 1, int.MaxValue)));
+                    FillSmallHoles(state.Room, ReadBoundedInt(stage, "room_max_hole_area", 1, int.MaxValue), state.SourceVoid),
+                    FillSmallHoles(state.Corridor, ReadBoundedInt(stage, "corridor_max_hole_area", 1, int.MaxValue), state.SourceVoid));
                 break;
             case "contours":
                 state.RoomRetrieval = ReadRetrieval(stage);
@@ -303,6 +305,21 @@ public sealed partial class IdvaStructureLineEngine
                 {
                     state.CombineEdges(lineWidth);
                 }
+                else if (drawMode == "SOURCE_SEMANTIC_MASK")
+                {
+                    using var cool = InRange(state.Bgr, ReadTriplet(parameters, "outline_bgr_lo"), ReadTriplet(parameters, "outline_bgr_hi"));
+                    using var warm = InRange(state.Bgr, [0, 140, 255], [0, 140, 255]);
+                    cool.SetTo(SemanticStructureContours.Warm, warm);
+                    state.ReplaceEdges(SemanticStructureContours.Encode(cool));
+                }
+                else if (drawMode == "SOURCE_COLOR_MASK")
+                {
+                    // Copy the rendered outline pixels; contour tracing would
+                    // create two new borders around an already drawn line.
+                    state.ReplaceEdges(InRange(state.Bgr,
+                        ReadTriplet(parameters, "outline_bgr_lo"),
+                        ReadTriplet(parameters, "outline_bgr_hi")));
+                }
                 else if (drawMode is "SOURCE_EDGE_GATED" or "CANNY_BOUNDARY_GATED")
                 {
                     DrawSourceEdgeGated(state, parameters, stage, lineWidth);
@@ -313,6 +330,12 @@ public sealed partial class IdvaStructureLineEngine
                 }
                 break;
         }
+    }
+
+    private static int CountEdgePixels(Mat edges)
+    {
+        using var geometry = SemanticStructureContours.Geometry(edges);
+        return Cv2.CountNonZero(geometry);
     }
 
     private static void ValidateRuntime(JsonElement root)
@@ -341,7 +364,8 @@ public sealed partial class IdvaStructureLineEngine
         RequireString(input, "type", "raster-image");
         RequireString(input, "color_order", "BGR");
         var output = RequireObject(root, "output");
-        RequireString(output, "type", "binary-edge-map");
+        if (RequireNonEmptyString(output, "type") is not ("binary-edge-map" or "semantic-edge-map"))
+            throw new InvalidDataException("不支持的线图输出类型。");
         if (ReadBoundedInt(output, "background", 0, 255) != 0
             || ReadBoundedInt(output, "edge", 0, 255) != 255)
             throw new InvalidDataException("线图输出必须使用 0 作为背景、255 作为结构边。");

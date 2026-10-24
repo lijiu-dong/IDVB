@@ -38,22 +38,27 @@ public sealed partial class MapCvRecognitionService : IDisposable
             mapClass,
             SelectedAlignmentRoute.Default);
 
-    private static MapGeometryFingerprint RebindFingerprint(
+    private MapGeometryFingerprint RebindFingerprint(
         MapGeometryFingerprint source,
-        MapRecord map) => new()
+        MapRecord map)
     {
-        Map = map,
-        FloorKey = source.FloorKey,
-        MainPoint = source.MainPoint,
-        SidePoint = source.SidePoint,
-        MainReferenceBounds = source.MainReferenceBounds,
-        SideReferenceBounds = source.SideReferenceBounds,
-        ReferenceWidth = source.ReferenceWidth,
-        ReferenceHeight = source.ReferenceHeight,
-        RecognitionImagePath = source.RecognitionImagePath,
-        OverlayImagePath = source.OverlayImagePath,
-        ReferenceGateIconWidth = source.ReferenceGateIconWidth,
-        ReferenceGateIconHeight = source.ReferenceGateIconHeight
-    };
+        var floor = source.FloorKey;
+        var repository = _repository;
+        return new()
+        {
+            Map = map,
+            FloorKey = source.FloorKey,
+            MainPoint = source.MainPoint,
+            SidePoint = source.SidePoint,
+            MainReferenceBounds = source.MainReferenceBounds,
+            SideReferenceBounds = source.SideReferenceBounds,
+            ReferenceWidth = source.ReferenceWidth,
+            ReferenceHeight = source.ReferenceHeight,
+            RecognitionImagePath = source.RecognitionImagePath,
+            OverlayImagePathFactory = () => repository.GetFloorOverlayPath(map, floor),
+            ReferenceGateIconWidth = source.ReferenceGateIconWidth,
+            ReferenceGateIconHeight = source.ReferenceGateIconHeight
+        };
+    }
 
 }

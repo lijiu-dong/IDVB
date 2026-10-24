@@ -41,6 +41,9 @@ public sealed partial class MapGlobalInputService : IDisposable
         new(InputInjectionMarkers.HostGeneratedInput);
     private const int KeyboardPollIntervalMilliseconds = 15;
     private const uint CapsLockVirtualKey = 0x14;
+    // The game closes its own map on Escape. This fixed key may only close the
+    // runtime map state; opening stays exclusive to the game-map binding.
+    internal const uint EscapeVirtualKey = 0x1B;
 
     private readonly DispatcherQueue _dispatcher;
     private readonly LowLevelKeyboardProc _keyboardProc;
@@ -83,6 +86,7 @@ public sealed partial class MapGlobalInputService : IDisposable
     public event EventHandler<MapInputInvokedEventArgs>? OverlayToggleInvoked;
     public event EventHandler<MapInputInvokedEventArgs>? ManualRecognitionInvoked;
     public event EventHandler<MapInputInvokedEventArgs>? GameMapToggleInvoked;
+    public event EventHandler<MapInputInvokedEventArgs>? GameMapCloseInvoked;
     public event EventHandler<MapInputInvokedEventArgs>? ControlPanelToggleInvoked;
     public event EventHandler<MapInputInvokedEventArgs>? SwitchFloorInvoked;
     public event EventHandler<MapInputInvokedEventArgs>? SaveMapCacheInvoked;
@@ -136,6 +140,13 @@ public sealed partial class MapGlobalInputService : IDisposable
             // 也必须保持启用；滚轮事件只是观察，不会阻止原应用收到滚轮。
             var needsMouseHook = true;
 
+#if IDVB_DEVELOPMENT_BUILD
+            if (IDVBuff.Lifecycle.BackgroundTestRuntime.Enabled)
+            {
+                StartBackgroundMapPolling();
+                return;
+            }
+#endif
             StartHookThread(needsKeyboardHook, needsMouseHook);
             StartKeyboardPolling();
         }
@@ -244,8 +255,13 @@ public sealed partial class MapGlobalInputService : IDisposable
 
     private void StartKeyboardPolling()
     {
+#if IDVB_DEVELOPMENT_BUILD
+        if (IDVBuff.Lifecycle.BackgroundTestRuntime.Enabled) return;
+#endif
         lock (_keyboardStateLock)
         {
+            _keyboardPollKeysDirty = true;
+            _ = GetKeyboardPollKeys();
             _keyboardBindingsActive = true;
             InitializePressedKey(_quickScan);
             InitializePressedKey(_overlayToggle);
@@ -259,6 +275,15 @@ public sealed partial class MapGlobalInputService : IDisposable
             InitializePressedKey(_hideAlignmentResult);
             foreach (var binding in _pluginBindings.Values.SelectMany(bindings => bindings.Values))
                 InitializePressedKey(binding);
+            _pluginChordLatches.Clear();
+            foreach (var (pluginId, bindings) in _pluginBindings)
+            foreach (var (bindingKey, binding) in bindings)
+            {
+                if (binding.Kind != MapInputBindingKind.Keyboard || !binding.NormalizedCompanionVirtualKeys().Any()) continue;
+                var latch = new MapKeyboardChordLatch();
+                latch.Initialize(binding, IsKeyDown);
+                _pluginChordLatches[(pluginId, bindingKey)] = latch;
+            }
             var generation = ++_keyboardPollGeneration;
             _keyboardPoller = new Timer(
                 PollKeyboardBindings,
@@ -274,6 +299,12 @@ public sealed partial class MapGlobalInputService : IDisposable
             && IsKeyDown(binding.VirtualKey))
         {
             _keyboardEdges.InitializePressed(binding.VirtualKey);
+        }
+        else if (binding.Kind == MapInputBindingKind.Mouse
+            && TryMouseVirtualKey(binding.MouseButton, out var mouseKey)
+            && IsKeyDown(mouseKey))
+        {
+            _keyboardEdges.InitializePressed(mouseKey);
         }
     }
 
@@ -291,25 +322,7 @@ public sealed partial class MapGlobalInputService : IDisposable
             {
                 return;
             }
-            keys = new[]
-            {
-                _quickScan,
-                _overlayToggle,
-                _manualRecognition,
-                _gameMapToggle,
-                _controlPanelToggle,
-                _switchFloor,
-                _saveMapCache,
-                _restMapDisplay,
-                _matchStateToggle,
-                _hideAlignmentResult
-            }
-            .Concat(_pluginBindings.Values.SelectMany(bindings => bindings.Values))
-            .Where(binding => binding.Kind == MapInputBindingKind.Keyboard)
-            .Select(binding => binding.VirtualKey)
-            .Where(key => key != 0)
-            .Distinct()
-            .ToArray();
+            keys = GetKeyboardPollKeys();
         }
 
         foreach (var key in keys)
@@ -322,6 +335,7 @@ public sealed partial class MapGlobalInputService : IDisposable
         var invokeOverlayToggle = false;
         var invokeManualRecognition = false;
         var invokeGameMapToggle = false;
+        var invokeGameMapClose = false;
         var invokeControlPanelToggle = false;
         var invokeSwitchFloor = false;
         var invokeSaveMapCache = false;
@@ -329,7 +343,7 @@ public sealed partial class MapGlobalInputService : IDisposable
         var invokeMatchStateToggle = false;
         var invokeHideAlignmentResult = false;
         var invokeAlt = false;
-        List<(string PluginId, string BindingKey, MapInputBinding Binding)>? pluginMatches = null;
+        List<(string PluginId, string BindingKey, MapInputBinding Binding, bool IsDown)>? pluginMatches = null;
         lock (_keyboardStateLock)
         {
             if (!_keyboardBindingsActive
@@ -340,124 +354,53 @@ public sealed partial class MapGlobalInputService : IDisposable
             // Sample under the same lock as hook transitions. A snapshot read
             // before waiting for this lock must not overwrite a newer edge.
             if (expectedGeneration.HasValue)
+            {
                 isDown = IsKeyDown(key);
+                if (isDown && MatchesBinding(_gameMapToggle, key)) Interlocked.Increment(ref _gameMapPollDown);
+            }
             if (!_keyboardEdges.Observe(key, isDown, expectedGeneration.HasValue, Environment.TickCount64))
                 return;
             if (!isDown)
             {
-                foreach (var (pluginId, bindings) in _pluginBindings)
-                {
-                    foreach (var (bindingKey, binding) in bindings)
-                    {
-                        if (binding.Kind == MapInputBindingKind.Keyboard
-                            && binding.VirtualKey == key)
-                        {
-                            (pluginMatches ??= []).Add((pluginId, bindingKey, binding));
-                        }
-                    }
-                }
+                CollectPluginKeyboardEdges(key, isDown, ref pluginMatches);
                 goto Dispatch;
             }
-            invokeQuickScan = _quickScan.Kind == MapInputBindingKind.Keyboard
-                && _quickScan.VirtualKey == key
-                && IsKeyboardBindingActive(_quickScan);
-            invokeOverlayToggle = _overlayToggle.Kind == MapInputBindingKind.Keyboard
-                && _overlayToggle.VirtualKey == key
-                && IsKeyboardBindingActive(_overlayToggle);
-            invokeManualRecognition = _manualRecognition.Kind == MapInputBindingKind.Keyboard
-                && _manualRecognition.VirtualKey == key
-                && IsKeyboardBindingActive(_manualRecognition);
-            invokeGameMapToggle = _gameMapToggle.Kind == MapInputBindingKind.Keyboard
-                && _gameMapToggle.VirtualKey == key
-                && IsKeyboardBindingActive(_gameMapToggle);
-            invokeControlPanelToggle =
-                _controlPanelToggle.Kind == MapInputBindingKind.Keyboard
-                && _controlPanelToggle.VirtualKey == key
-                && IsKeyboardBindingActive(_controlPanelToggle);
-            invokeSwitchFloor = _switchFloor.Kind == MapInputBindingKind.Keyboard
-                && _switchFloor.VirtualKey == key
-                && IsKeyboardBindingActive(_switchFloor);
-            invokeSaveMapCache = _saveMapCache.Kind == MapInputBindingKind.Keyboard
-                && _saveMapCache.VirtualKey == key
-                && IsKeyboardBindingActive(_saveMapCache);
-            invokeRestMapDisplay = _restMapDisplay.Kind == MapInputBindingKind.Keyboard
-                && _restMapDisplay.VirtualKey == key
-                && IsKeyboardBindingActive(_restMapDisplay);
-            invokeMatchStateToggle = _matchStateToggle.Kind == MapInputBindingKind.Keyboard
-                && _matchStateToggle.VirtualKey == key
-                && IsKeyboardBindingActive(_matchStateToggle);
-            invokeHideAlignmentResult =
-                _hideAlignmentResult.Kind == MapInputBindingKind.Keyboard
-                && _hideAlignmentResult.VirtualKey == key
-                && IsKeyboardBindingActive(_hideAlignmentResult);
+            invokeQuickScan = MatchesBinding(_quickScan, key);
+            invokeOverlayToggle = MatchesBinding(_overlayToggle, key);
+            invokeManualRecognition = MatchesBinding(_manualRecognition, key);
+            invokeGameMapToggle = MatchesBinding(_gameMapToggle, key);
+            invokeGameMapClose = IsGameMapCloseKey(key) && !invokeGameMapToggle;
+            invokeControlPanelToggle = MatchesBinding(_controlPanelToggle, key);
+            invokeSwitchFloor = MatchesBinding(_switchFloor, key);
+            invokeSaveMapCache = MatchesBinding(_saveMapCache, key);
+            invokeRestMapDisplay = MatchesBinding(_restMapDisplay, key);
+            invokeMatchStateToggle = MatchesBinding(_matchStateToggle, key);
+            invokeHideAlignmentResult = MatchesBinding(_hideAlignmentResult, key);
             invokeAlt = key is 0x12 or 0xA4 or 0xA5;
 
-            foreach (var (pluginId, bindings) in _pluginBindings)
-            {
-                foreach (var (bindingKey, binding) in bindings)
-                {
-                    if (binding.Kind == MapInputBindingKind.Keyboard
-                        && binding.VirtualKey == key
-                        && IsKeyboardBindingActive(binding))
-                    {
-                        (pluginMatches ??= []).Add((pluginId, bindingKey, binding));
-                    }
-                }
-            }
+            CollectPluginKeyboardEdges(key, isDown, ref pluginMatches);
         }
 
     Dispatch:
-        var invoked = new MapInputInvokedEventArgs(Stopwatch.GetTimestamp());
-        if (invokeQuickScan)
-            DispatchInput(invoked, "keyboard", _quickScan.DisplayName,
-                "quick-scan", () => QuickScanInvoked?.Invoke(this, invoked));
-        if (invokeOverlayToggle)
-            DispatchInput(invoked, "keyboard", _overlayToggle.DisplayName,
-                "overlay-toggle", () => OverlayToggleInvoked?.Invoke(this, invoked));
-        if (invokeManualRecognition)
-            DispatchInput(invoked, "keyboard", _manualRecognition.DisplayName,
-                "manual-recognition", () => ManualRecognitionInvoked?.Invoke(this, invoked));
-        if (invokeGameMapToggle)
-            DispatchInput(invoked, "keyboard", _gameMapToggle.DisplayName,
-                "game-map-toggle", () => GameMapToggleInvoked?.Invoke(this, invoked));
-        if (invokeControlPanelToggle)
-        {
-            DispatchInput(invoked, "keyboard", _controlPanelToggle.DisplayName,
-                "control-panel-toggle",
-                () => ControlPanelToggleInvoked?.Invoke(this, invoked));
-        }
-        if (invokeSwitchFloor)
-            DispatchInput(invoked, "keyboard", _switchFloor.DisplayName,
-                "switch-floor", () => SwitchFloorInvoked?.Invoke(this, invoked));
-        if (invokeSaveMapCache)
-            DispatchInput(invoked, "keyboard", _saveMapCache.DisplayName,
-                "save-map-cache", () => SaveMapCacheInvoked?.Invoke(this, invoked));
-        if (invokeRestMapDisplay)
-            DispatchInput(invoked, "keyboard", _restMapDisplay.DisplayName,
-                "rest-map-display", () => RestMapDisplayInvoked?.Invoke(this, invoked));
-        if (invokeMatchStateToggle)
-            DispatchInput(invoked, "keyboard", _matchStateToggle.DisplayName,
-                "match-state-toggle", () => MatchStateToggleInvoked?.Invoke(this, invoked));
-        if (invokeHideAlignmentResult)
-            DispatchInput(invoked, "keyboard", _hideAlignmentResult.DisplayName,
-                "hide-alignment-result",
-                () => HideAlignmentResultInvoked?.Invoke(this, invoked));
-        if (invokeAlt)
-            DispatchInput(invoked, "keyboard", "Alt", "alt",
-                () => AltInvoked?.Invoke(this, invoked));
-        if (pluginMatches is not null)
-        {
-            foreach (var match in pluginMatches)
-            {
-                var pluginEvent = new PluginInputInvokedEventArgs(
-                    match.PluginId,
-                    match.BindingKey,
-                    invoked.Timestamp,
-                    isDown);
-                DispatchPluginInput(pluginEvent);
-            }
-        }
+        DispatchKeyboardEdge(invokeQuickScan, invokeOverlayToggle, invokeManualRecognition,
+            invokeGameMapToggle, invokeGameMapClose, invokeControlPanelToggle, invokeSwitchFloor,
+            invokeSaveMapCache, invokeRestMapDisplay, invokeMatchStateToggle, invokeHideAlignmentResult,
+            invokeAlt, pluginMatches);
     }
+
+    // Escape only follows a configured game-map binding: without one the
+    // runtime never tracks the game's map as open, so there is nothing to close.
+    // Caller holds _keyboardStateLock.
+    private bool IsGameMapCloseKey(uint key) =>
+        key == EscapeVirtualKey && _gameMapToggle.IsConfigured;
+
+    // Keep the poll fast path allocation-free. A capturing local predicate in
+    // HandleKeyboardState creates a display object even when no edge is seen.
+    private bool MatchesBinding(MapInputBinding binding, uint key) =>
+        (binding.Kind == MapInputBindingKind.Keyboard
+            && binding.VirtualKey == key && IsKeyboardBindingActive(binding))
+        || (binding.Kind == MapInputBindingKind.Mouse
+            && TryMouseVirtualKey(binding.MouseButton, out var mouseKey) && mouseKey == key);
 
     private static bool IsKeyDown(uint key) =>
         (GetAsyncKeyState((int)key) & 0x8000) != 0;

@@ -18,14 +18,15 @@ public sealed partial class MapStatusPage : UserControl
             XamlRoot = XamlRoot,
             Title = "准备校准地图区域",
             Content =
-                "点击开始后，请在 3 秒内切换到第五人格并打开完整地图。"
+                "地图区域默认按游戏界面布局自动推算，通常无需校准；仅在识别区域明显偏移时手动校准。"
+                + "点击开始后，请在 3 秒内切换到第五人格并打开完整地图。"
                 + "随后框选整张地图画布的外边缘，不要只框建筑主体或两个门。"
                 + "程序只保存相对坐标，截图不会写入磁盘。",
             PrimaryButtonText = "开始",
             CloseButtonText = "取消",
             DefaultButton = ContentDialogButton.Primary
         };
-        if (await prompt.ShowAsync() != ContentDialogResult.Primary)
+        if (await prompt.ShowThemedAsync() != ContentDialogResult.Primary)
             return;
 
         _status.Text = "请切换到游戏，3 秒后捕获完整地图……";
@@ -45,7 +46,10 @@ public sealed partial class MapStatusPage : UserControl
                 frame,
                 _runtime.Settings.ResolveMapViewportRegion(
                     (int)Math.Round(frame.ClientBounds.Width),
-                    (int)Math.Round(frame.ClientBounds.Height)),
+                    (int)Math.Round(frame.ClientBounds.Height))
+                    ?? MapDisplayCalibrationProfile.CreateDefaultMapViewportRegion(
+                        (int)Math.Round(frame.ClientBounds.Width),
+                        (int)Math.Round(frame.ClientBounds.Height)),
                 "校准游戏地图区域",
                 "请沿完整地图画布的外边缘框选，不要只框建筑主体、两个门或它们之间的区域。只保存相对坐标，截图不会写入磁盘。");
             if (region is null)
@@ -73,7 +77,7 @@ public sealed partial class MapStatusPage : UserControl
             CloseButtonText = "取消",
             DefaultButton = ContentDialogButton.Primary
         };
-        if (await prompt.ShowAsync() != ContentDialogResult.Primary)
+        if (await prompt.ShowThemedAsync() != ContentDialogResult.Primary)
             return;
 
         _status.Text = "请切换到游戏，3 秒后捕获楼层显示区……";
@@ -146,7 +150,7 @@ public sealed partial class MapStatusPage : UserControl
                 Title = "暂时无法开启",
                 Content = exception.Message,
                 CloseButtonText = "知道了"
-            }.ShowAsync();
+            }.ShowThemedAsync();
         }
         finally
         {
@@ -217,6 +221,14 @@ public sealed partial class MapStatusPage : UserControl
         var percentage = Math.Clamp(args.NewValue, 0d, 100d);
         _mapOpacityValue.Text = $"当前：{percentage:F0}%";
         QueueSliderSave(_mapOpacitySave, percentage / 100d, _runtime.SetMapOpacityAsync);
+    }
+
+    private void RouteOpacity_Changed(object sender, RangeBaseValueChangedEventArgs args)
+    {
+        if (_refreshing) return;
+        var percentage = Math.Clamp(args.NewValue, 0d, 100d);
+        _routeOpacityValue.Text = $"当前：{percentage:F0}%（越高越透明）";
+        QueueSliderSave(_routeOpacitySave, 1d - percentage / 100d, _runtime.SetRouteOpacityAsync);
     }
 
     private async void ShowAuxiliaryAnchors_Toggled(object sender, RoutedEventArgs e)
@@ -473,28 +485,5 @@ public sealed partial class MapStatusPage : UserControl
             _collectResearchToggle.IsOn);
     }
 
-    private async void DiagnosticModeToggle_Toggled(object sender, RoutedEventArgs e)
-    {
-        if (_refreshing)
-            return;
-        var diagnosticMode = _diagnosticModeToggle.IsOn;
-        try
-        {
-            if (!diagnosticMode
-                && !await ConfirmDataCleanupAsync(
-                    "关闭诊断模式",
-                    "关闭后会清理诊断模式文件夹中的全部图片，此操作不可恢复。"))
-            {
-                RestoreToggle(_diagnosticModeToggle);
-                return;
-            }
-            await _runtime.SetDiagnosticModeAsync(diagnosticMode);
-        }
-        catch (Exception exception)
-        {
-            _status.Text = exception.Message;
-            Refresh();
-        }
-    }
 
 }

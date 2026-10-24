@@ -10,10 +10,28 @@ namespace IDVBuff.Features.Maps;
 /// </summary>
 public sealed class Vpsg3PreparedIndexRegistry : IVpsg3PreparedIndexRegistry
 {
+    // Retain continuous K3 geometry for the map being aligned. Other RGB
+    // floors retain their exact semantic source, so a later manual rescan or
+    // variant selection can reconstruct the same words without disk I/O.
+    internal void ReleaseIdleDerivedGeometryForOtherMaps(Guid mapId)
+    {
+        foreach (var slot in _slots.Values)
+            if (slot.ExpectedKey.MapId != mapId) slot.Floor?.ReleaseDerivedGeometryK3IfIdle();
+    }
     private ImmutableDictionary<(Guid MapId, string FloorKey), Vpsg3FloorSlot> _slots =
         ImmutableDictionary<(Guid MapId, string FloorKey), Vpsg3FloorSlot>.Empty;
 
     private int _disposed;
+
+    internal void RetireUnselectedAuxiliaryFloors(Guid selectedMapId,
+        IReadOnlySet<(Guid MapId, string FloorKey)> scanFloors)
+    {
+        // Include Building slots: an old background completion must not publish
+        // an unselected auxiliary floor after its owning selection is retired.
+        foreach (var (key, _) in _slots)
+            if (key.MapId != selectedMapId && !scanFloors.Contains(key))
+                InvalidateFloor(key.MapId, key.FloorKey);
+    }
 
     public int Count => _slots.Count;
 
