@@ -166,6 +166,8 @@ public sealed partial class CapturedGameFrame : IDisposable
             _disposed = true;
             _vpsg3Observation?.Dispose();
             _vpsg3Observation = null;
+            _automaticIdentityObservation?.Dispose();
+            _automaticIdentityObservation = null;
             _nativeObservedStructure?.Dispose();
             _nativeObservedStructure = null;
             _defaultLiveStructureFeatures?.Dispose();

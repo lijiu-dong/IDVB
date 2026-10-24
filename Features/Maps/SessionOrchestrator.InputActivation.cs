@@ -31,7 +31,7 @@ public sealed partial class SessionOrchestrator
                 if (_settings.IsEnabled && !TryValidateEnablePrerequisites(out var failureMessage))
                     throw new InvalidOperationException(failureMessage);
                 ApplyBindings();
-                if (_settings.IsEnabled && _settings.ContinuousObservationEnabled)
+                if (_settings.IsEnabled)
                     StartMapObservation();
             }, SaveSettingsAsync);
             _statusMessage = v ? "运行层已开启。" : "运行层已关闭。";

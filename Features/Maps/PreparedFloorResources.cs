@@ -111,6 +111,10 @@ internal static class FloorResourcePreparation
                 }
             }
             cancellationToken.ThrowIfCancellationRequested();
+            var anchors = MapFloorRules.GetFloorProfile(map, floorKey)?.Anchors
+                .Select(anchor => anchor.Clone()).ToArray() ?? [];
+            alignment.AutomaticEntryIndex = MapFrontEntryReferenceIndexBuilder.Build(map, floorKey,
+                alignment, key, repository.GetCatalogRevision(), anchors, cancellationToken).Index;
             var result = new PreparedFloorResources(scan, alignment);
             scan = null; alignment = null;
             return result;

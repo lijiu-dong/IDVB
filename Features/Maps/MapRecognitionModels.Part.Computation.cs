@@ -6,6 +6,19 @@ public sealed partial class CapturedGameFrame
 {
     private IdvaNativeObservedExtractor.Result? _nativeObservedStructure;
     private Vpsg3LiveObservation? _vpsg3Observation;
+    private Vpsg3LiveObservation? _automaticIdentityObservation;
+    internal IReadOnlyList<MapScreenRect>? AutomaticIdentityUiExclusions { get; set; }
+
+    internal Vpsg3LiveObservation GetOrCreateAutomaticIdentityObservation()
+    {
+        lock (_derivedFeaturesGate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            return _automaticIdentityObservation ??= Vpsg3FastLiveExtractor.Extract(
+                Image, ViewportBounds, includeAutomaticIdentityEvidence: true,
+                excludedScreenRegions: AutomaticIdentityUiExclusions);
+        }
+    }
 
     // The capture path can prepare this once; alignment/recovery borrow the same immutable observation.
     internal Vpsg3LiveObservation GetOrCreateVpsg3Observation()
@@ -13,7 +26,8 @@ public sealed partial class CapturedGameFrame
         lock (_derivedFeaturesGate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            return _vpsg3Observation ??= Vpsg3FastLiveExtractor.Extract(Image, ViewportBounds);
+            return _automaticIdentityObservation
+                ?? (_vpsg3Observation ??= Vpsg3FastLiveExtractor.Extract(Image, ViewportBounds));
         }
     }
 

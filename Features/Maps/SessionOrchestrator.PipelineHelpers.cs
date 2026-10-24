@@ -76,7 +76,7 @@ public sealed partial class SessionOrchestrator
             return;
         }
         var route = _matchSession.Snapshot.Mode == MapRunMode.Survey ? "survey"
-            : CanObserveMap ? "continuous-observation"
+            : CanObserveMap ? "front-entrance-continuous"
             : _settings.SilentScanEnabled && _pendingAlignmentIdentity is null && _lastRecognition is null
                 ? "silent-scan"
             : _backgroundScanStatus == BackgroundScanStatus.CompletedFailed ? "background-failed-alignment"

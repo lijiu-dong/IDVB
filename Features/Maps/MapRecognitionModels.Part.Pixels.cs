@@ -20,7 +20,8 @@ public sealed partial class CapturedGameFrame
                     CaptureBackend = CaptureBackend,
                     CaptureSystemRelativeTicks = CaptureSystemRelativeTicks,
                     CaptureReadbackMilliseconds = CaptureReadbackMilliseconds,
-                    CaptureDroppedFrames = CaptureDroppedFrames
+                    CaptureDroppedFrames = CaptureDroppedFrames,
+                    AutomaticIdentityUiExclusions = AutomaticIdentityUiExclusions
                 };
             }
             catch { view?.Dispose(); lifetime.Dispose(); throw; }

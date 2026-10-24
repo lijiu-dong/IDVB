@@ -8,7 +8,7 @@ namespace IDVBuff.Features.Maps;
 /// Fully migrates the Phase 0.5 A-4 ablation winner (Cheap Dynamic Exclusion + Pure Morphology)
 /// while generating a semantically correct ValidMask with steady-state scratch buffer reuse.
 /// </summary>
-public static class Vpsg3FastLiveExtractor
+public static partial class Vpsg3FastLiveExtractor
 {
     private const double ContourMinPerimeter = 30d;
     private const double HoleMinArea = 900d;
@@ -29,7 +29,9 @@ public static class Vpsg3FastLiveExtractor
         Mat source,
         MapScreenRect? viewportBounds = null,
         int maxSparsePoints = 150,
-        Vpsg3LiveExtractorScratch? scratch = null)
+        Vpsg3LiveExtractorScratch? scratch = null,
+        bool includeAutomaticIdentityEvidence = false,
+        IReadOnlyList<MapScreenRect>? excludedScreenRegions = null)
     {
         ArgumentNullException.ThrowIfNull(source);
         IDVBuff.Core.Contracts.Online.RecognitionResources.Demand();
@@ -48,6 +50,7 @@ public static class Vpsg3FastLiveExtractor
         s.PrepareForSize(size);
 
         Mat? observedEdges = null, proposalEdges = null, validMask = null, semanticLabels = null;
+        Mat? visibleInterior = null, automaticWallEvidence = null;
         var published = false;
         try
         {
@@ -60,6 +63,8 @@ public static class Vpsg3FastLiveExtractor
 
             // 3. Fast dynamic exclusion (HUD and top glyph exclusion without connected components)
             ComputeFastDynamicExclusion(s.Hsv, s);
+            if (excludedScreenRegions is { Count: > 0 })
+                MapFrameUiExclusion.Fill(s.Exclusion, bounds, excludedScreenRegions, Scalar.White);
             NativeStructureTextureMask.Exclude(bgr, s.Exclusion);
 
             // 4. Classify room and corridor semantic areas with pure morphological filtering
@@ -105,6 +110,8 @@ public static class Vpsg3FastLiveExtractor
 
             semanticLabels = SemanticStructureContours.LabelLive(observedEdges, s.Room, s.Corridor,
                 s.SmoothedGray, s.BrightDetail, s.CannyWeak, s.K5);
+            if (includeAutomaticIdentityEvidence)
+                (visibleInterior, automaticWallEvidence) = CreateAutomaticIdentityEvidence(s, observedEdges, proposalEdges);
             sw.Stop();
 
             var observation = new Vpsg3LiveObservation(
@@ -119,7 +126,8 @@ public static class Vpsg3FastLiveExtractor
                 sparseEdgePoints: null,
                 extractionMilliseconds: sw.Elapsed.TotalMilliseconds,
                 proposalEdges: proposalEdges,
-                semanticLabels: semanticLabels);
+                semanticLabels: semanticLabels,
+                visibleInterior: visibleInterior, automaticWallEvidence: automaticWallEvidence);
             published = true;
             return observation;
         }
@@ -129,6 +137,7 @@ public static class Vpsg3FastLiveExtractor
             {
                 observedEdges?.Dispose(); proposalEdges?.Dispose();
                 validMask?.Dispose(); semanticLabels?.Dispose();
+                visibleInterior?.Dispose(); automaticWallEvidence?.Dispose();
             }
         }
     }

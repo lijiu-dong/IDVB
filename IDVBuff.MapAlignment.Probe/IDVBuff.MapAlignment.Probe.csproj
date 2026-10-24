@@ -111,6 +111,11 @@
     <Compile Include="..\Features\Maps\Vpsg3\Vpsg3SemanticPoints.cs" />
     <Compile Include="..\Features\Maps\Vpsg3\Vpsg3LiveObservation.cs" Link="Production\Vpsg3LiveObservation.cs" />
     <Compile Include="..\Features\Maps\Vpsg3\Vpsg3FastLiveExtractor.cs" Link="Production\Vpsg3FastLiveExtractor.cs" />
+    <Compile Include="..\Features\Maps\Vpsg3\Vpsg3FastLiveExtractor.AutomaticIdentity.cs" />
+    <Compile Include="..\Features\Maps\MapFrameUiExclusion.cs" />
+    <Compile Include="..\Features\Maps\MapLocalCornerGeometry.cs" />
+    <Compile Include="..\Features\Maps\MapFrontEntryReferenceIndex*.cs" />
+    <Compile Include="..\Features\Maps\Vpsg3\Vpsg3PreparedFloor.AutomaticIdentity.cs" />
     <Compile Include="..\Features\Maps\Vpsg3\Vpsg3LiveExtractorScratch.cs" Link="Production\Vpsg3LiveExtractorScratch.cs" />
     <Compile Include="..\Features\Maps\MapOperationProgress.cs" Link="Production\MapOperationProgress.cs" />
     <Compile Include="..\Features\Maps\MapRepository.cs" Link="Production\MapRepository.cs" />

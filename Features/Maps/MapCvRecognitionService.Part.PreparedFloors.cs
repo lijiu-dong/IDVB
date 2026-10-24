@@ -11,7 +11,7 @@ public sealed partial class MapCvRecognitionService
     {
         using var operation = MemoryJournal.BeginOperation("Match.PrepareFloorResources", _residentMapClass);
         var targets = maps.Select(map => (Map: map, Floor: MapScanFloorRules.ResolveScanFloorKey(map)))
-            .Where(item => _repository.TryGetValidSideEntranceFeaturePath(item.Map, item.Floor, out _, out _)).ToArray();
+            .Where(item => TryGetVpsg3IndexKey(item.Map, item.Floor, out _)).ToArray();
         var scans = new ScanStructureIndex?[targets.Length];
         var completed = 0; var progressGate = new object();
         try
@@ -23,7 +23,11 @@ public sealed partial class MapCvRecognitionService
                     MapFeatureCacheRules.ComputeContentFingerprint(map));
                 try
                 {
-                    using var prepared = FloorResourcePreparation.Prepare(_repository, map, floor, true,
+                    // Alignment geometry is independent of the optional side-door
+                    // marker. A front-entry-only map must still enter the full
+                    // identity pool; side scanning keeps its own eligibility.
+                    var prepareScan = _repository.TryGetValidSideEntranceFeaturePath(map, floor, out _, out _);
+                    using var prepared = FloorResourcePreparation.Prepare(_repository, map, floor, prepareScan,
                         _deterministicScanStorage, _deterministicSemanticStorage, runtimeKey: key);
                     var alignment = prepared.TakeAlignment();
                     try

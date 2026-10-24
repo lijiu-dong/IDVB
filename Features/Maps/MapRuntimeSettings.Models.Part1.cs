@@ -39,6 +39,7 @@ public sealed partial class MapRuntimeSettings
         FirstScanStrategy = FirstScanStrategy.SideEntrance;
         BackgroundScanEnabled = false;
         SilentScanEnabled = false;
+        ContinuousObservationEnabled = false;
         AllowAutomaticMapCache = false;
         SelectedResolutionPreset = null;
         EnableContinuousAlignment = false;
