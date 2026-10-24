@@ -14,21 +14,19 @@ public sealed partial class SessionOrchestrator
     private long _observationGeneration;
     private long _observationNextAttemptAt;
 
-    /// <summary>持续观察已由正门自动识别取代；兼容调用只能确保它保持关闭。</summary>
+    /// <summary>旧的侧门持续观察开关已退役；兼容调用只能确保它保持关闭。
+    /// 开图后的持续扫描循环始终运行，每一轮执行正门自动识别。</summary>
     public async Task SetContinuousObservationEnabledAsync(bool enabled)
     {
         if (_settings is null)
             throw new InvalidOperationException("设置尚未加载。");
         _settings.ContinuousObservationEnabled = false;
-        CancelMapObservation(clearPreview: true);
-        _overlayStatus.Clear();
         await SaveSettingsAsync();
         StateChanged?.Invoke(this, EventArgs.Empty);
     }
 
     private bool CanObserveMap => !_disposed && _initialized && !_headless
-        && _settings is { IsEnabled: true, ContinuousObservationEnabled: true,
-            SelectMapByTagsEnabled: false, BackgroundScanEnabled: false }
+        && _settings is { IsEnabled: true, SelectMapByTagsEnabled: false, BackgroundScanEnabled: false }
         && !_silentScanActive && !_manualSelectionActive
         && Volatile.Read(ref _activeScanOperations) == 0
         && _lastRecognition is null && _pendingAlignmentIdentity is null
@@ -72,7 +70,7 @@ public sealed partial class SessionOrchestrator
     }
 
     private bool IsMapObservationCurrent(MapMatchSnapshot match, MapGameToggleTransition toggle,
-        long generation) => !_disposed && _settings is { IsEnabled: true, ContinuousObservationEnabled: true }
+        long generation) => !_disposed && _settings is { IsEnabled: true }
         && IsCurrentMatchOperation(match)
         && _gameMapToggleState.IsCurrent(toggle)
         && generation == Volatile.Read(ref _observationGeneration);
@@ -92,7 +90,7 @@ public sealed partial class SessionOrchestrator
                 if (remaining > 0) await Task.Delay(TimeSpan.FromMilliseconds(remaining), token);
                 if (!CanObserveMap || !IsMapObservationCurrent(match, toggle, generation)) break;
                 var passStarted = System.Diagnostics.Stopwatch.GetTimestamp();
-                try { await ObserveMapOnceAsync(match, toggle, generation, token); }
+                try { await ObserveFrontEntranceOnceAsync(match, toggle, generation, token); }
                 finally
                 {
                     // Closing and immediately reopening must not bypass the idle
@@ -114,6 +112,24 @@ public sealed partial class SessionOrchestrator
         {
             if (ReferenceEquals(_observationCancellation, scope)) _observationCancellation = null;
             scope.Dispose();
+        }
+    }
+
+    // One pass of the continuous scan: the same front-entrance transaction as a
+    // map open, retried while the map stays open so newly explored structure counts.
+    private async Task ObserveFrontEntranceOnceAsync(MapMatchSnapshot match, MapGameToggleTransition toggle,
+        long generation, CancellationToken token)
+    {
+        await _scanGate.WaitAsync(token);
+        try
+        {
+            if (!CanObserveMap || !IsMapObservationCurrent(match, toggle, generation)) return;
+            if (!_captureSvc.TryGetForegroundClientBounds(out _, out _, out _)) return;
+            await RunFrontEntranceMapOpenIdentityAsync(toggle, match, token);
+        }
+        finally
+        {
+            _scanGate.Release();
         }
     }
 

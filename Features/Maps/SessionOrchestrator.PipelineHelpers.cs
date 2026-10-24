@@ -76,6 +76,7 @@ public sealed partial class SessionOrchestrator
             return;
         }
         var route = _matchSession.Snapshot.Mode == MapRunMode.Survey ? "survey"
+            : CanObserveMap ? "front-entrance-continuous"
             : _settings.SilentScanEnabled && _pendingAlignmentIdentity is null && _lastRecognition is null
                 ? "silent-scan"
             : _backgroundScanStatus == BackgroundScanStatus.CompletedFailed ? "background-failed-alignment"
@@ -83,6 +84,12 @@ public sealed partial class SessionOrchestrator
         ReportInputDecision("game-map-toggle", "dispatched", route);
         if (_matchSession.Snapshot.Mode == MapRunMode.Survey)
             await HandleSurveyMapOpenAsync(toggle);
+        else if (CanObserveMap)
+        {
+            ClearPendingBackgroundScan();
+            RefreshMiniMapForCurrentFloor();
+            StartMapObservation();
+        }
         else if (_settings.SilentScanEnabled
             && _pendingAlignmentIdentity is null
             && _lastRecognition is null)
