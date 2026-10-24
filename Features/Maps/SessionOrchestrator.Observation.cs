@@ -14,29 +14,15 @@ public sealed partial class SessionOrchestrator
     private long _observationGeneration;
     private long _observationNextAttemptAt;
 
+    /// <summary>持续观察已由正门自动识别取代；兼容调用只能确保它保持关闭。</summary>
     public async Task SetContinuousObservationEnabledAsync(bool enabled)
     {
         if (_settings is null)
             throw new InvalidOperationException("设置尚未加载。");
-        if (_settings.ContinuousObservationEnabled == enabled)
-            return;
-        _settings.ContinuousObservationEnabled = enabled;
-        try
-        {
-            await SaveSettingsAsync();
-        }
-        catch
-        {
-            _settings.ContinuousObservationEnabled = !enabled;
-            throw;
-        }
-        if (enabled)
-            StartMapObservation();
-        else
-        {
-            CancelMapObservation(clearPreview: true);
-            _overlayStatus.Clear();
-        }
+        _settings.ContinuousObservationEnabled = false;
+        CancelMapObservation(clearPreview: true);
+        _overlayStatus.Clear();
+        await SaveSettingsAsync();
         StateChanged?.Invoke(this, EventArgs.Empty);
     }
 

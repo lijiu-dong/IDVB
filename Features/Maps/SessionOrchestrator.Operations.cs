@@ -123,8 +123,6 @@ public sealed partial class SessionOrchestrator : ISessionOrchestrator, IDisposa
             _overlay.ClearMap();
             RefreshMiniMapForCurrentFloor();
         }
-        else if (CanObserveMap && !HasActiveQuickScan)
-            StartMapObservation();
         StateChanged?.Invoke(this, EventArgs.Empty);
     }
 

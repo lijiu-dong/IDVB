@@ -84,6 +84,7 @@ public sealed class MapRuntimeSettingsRepository
                 settings.FirstScanStrategy != FirstScanStrategy.SideEntrance
                 || settings.BackgroundScanEnabled
                 || settings.SilentScanEnabled
+                || settings.ContinuousObservationEnabled
                 || settings.AllowAutomaticMapCache
                 || !string.IsNullOrWhiteSpace(settings.SelectedResolutionPreset)
                 || !settings.ShowOverlayStatus

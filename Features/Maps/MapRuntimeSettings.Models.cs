@@ -10,7 +10,7 @@ public sealed partial class MapRuntimeSettings
 
     public int SchemaVersion { get; set; } = CurrentSchemaVersion;
     public bool IsEnabled { get; set; }
-    /// <summary>Repeatedly observe an open map until its identity is confirmed; opt-in only.</summary>
+    /// <summary>持续观察已由普通开图的正门自动识别取代；保留字段仅为兼容旧设置，始终为 false。</summary>
     public bool ContinuousObservationEnabled { get; set; }
     public ScanPerformanceMode ScanPerformanceMode { get; set; } = ScanPerformanceMode.Balanced;
     public ScanUncertainAction ScanUncertainAction { get; set; } = ScanUncertainAction.ShowCandidates;

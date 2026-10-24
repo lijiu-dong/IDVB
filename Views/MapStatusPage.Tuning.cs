@@ -62,9 +62,7 @@ public sealed partial class MapStatusPage : UserControl
         }
         _enabledToggle.IsOn = _runtime.Settings.IsEnabled;
         _continuousObservationToggle.IsOn = _runtime.Settings.ContinuousObservationEnabled;
-        _continuousObservationToggle.Visibility =
-            IDVBuff.Lifecycle.MainProgramPreferences.Load().DeveloperMode
-                ? Visibility.Visible : Visibility.Collapsed;
+        _continuousObservationToggle.Visibility = Visibility.Collapsed;
         _allowAutomaticMapCacheToggle.IsOn =
             _runtime.Settings.AllowAutomaticMapCache;
         _overlayStatusToggle.IsOn = _runtime.Settings.ShowOverlayStatus;
