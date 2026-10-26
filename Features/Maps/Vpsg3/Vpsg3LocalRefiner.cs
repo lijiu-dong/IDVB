@@ -10,7 +10,7 @@ namespace IDVBuff.Features.Maps;
 /// scoring: (hits_K5 + 2 * hits_K3) / (3 * N).
 /// Centered scaling parameterization preserves canonical transform coordinate semantics.
 /// </summary>
-public static class Vpsg3LocalRefiner
+public static partial class Vpsg3LocalRefiner
 {
     private static readonly double[] ScaleCoarseDeltas = [-0.020d, -0.015d, 0.000d, 0.015d, 0.020d];
     private static readonly double[] TranslationCoarseDeltas = [-6.0d, -4.0d, -2.0d, 0.0d, 2.0d, 4.0d, 6.0d];
@@ -100,6 +100,7 @@ public static class Vpsg3LocalRefiner
         var bX = seedX;
         var bY = seedY;
         var bestScore = EvaluateScore(sparsePoints!, preparedFloor, seedScale, seedX, seedY, viewportBounds, -1.0d);
+        var bestTightSupport = CountTightSupport(sparsePoints!, preparedFloor, seedScale, seedX, seedY, viewportBounds);
 
         for (var sIdx = 0; sIdx < ScaleCoarseDeltas.Length; sIdx++)
         {
@@ -117,10 +118,10 @@ public static class Vpsg3LocalRefiner
                 {
                     var dy = TranslationCoarseDeltas[j];
                     probes++;
-                    var sc = EvaluateScore(sparsePoints!, preparedFloor, cs, bx + dx, by + dy, viewportBounds, bestScore);
-                    if (sc > bestScore)
+                    var sc = EvaluateScore(sparsePoints!, preparedFloor, cs, bx + dx, by + dy, viewportBounds, bestScore, retainTies: true);
+                    if (PreferColdCandidate(sc, sparsePoints!, preparedFloor, cs, bx + dx, by + dy, viewportBounds,
+                        ref bestScore, ref bestTightSupport))
                     {
-                        bestScore = sc;
                         bS = cs;
                         bX = bx + dx;
                         bY = by + dy;
@@ -145,10 +146,10 @@ public static class Vpsg3LocalRefiner
             var nx = cx - rCentX * cs;
             var ny = cy - rCentY * cs;
             probes++;
-            var sc = EvaluateScore(sparsePoints!, preparedFloor, cs, nx, ny, viewportBounds, bestScore);
-            if (sc > bestScore)
+            var sc = EvaluateScore(sparsePoints!, preparedFloor, cs, nx, ny, viewportBounds, bestScore, retainTies: true);
+            if (PreferColdCandidate(sc, sparsePoints!, preparedFloor, cs, nx, ny, viewportBounds,
+                ref bestScore, ref bestTightSupport))
             {
-                bestScore = sc;
                 bS2 = cs;
                 bX2 = nx;
                 bY2 = ny;
@@ -179,10 +180,10 @@ public static class Vpsg3LocalRefiner
                         continue;
 
                     probes++;
-                    var sc = EvaluateScore(sparsePoints!, preparedFloor, cs, nx + fdx, ny + fdy, viewportBounds, bestScore);
-                    if (sc > bestScore)
+                    var sc = EvaluateScore(sparsePoints!, preparedFloor, cs, nx + fdx, ny + fdy, viewportBounds, bestScore, retainTies: true);
+                    if (PreferColdCandidate(sc, sparsePoints!, preparedFloor, cs, nx + fdx, ny + fdy, viewportBounds,
+                        ref bestScore, ref bestTightSupport))
                     {
-                        bestScore = sc;
                         finalS = cs;
                         finalX = nx + fdx;
                         finalY = ny + fdy;
@@ -246,7 +247,7 @@ public static class Vpsg3LocalRefiner
 
     private static double EvaluateScore(
         IReadOnlyList<Point> sparsePoints, Vpsg3PreparedFloor preparedFloor,
-        double scale, double offsetX, double offsetY, MapScreenRect viewportBounds, double bestScore)
+        double scale, double offsetX, double offsetY, MapScreenRect viewportBounds, double bestScore, bool retainTies = false)
     {
         var hitsK5 = 0;
         var hitsK3 = 0;
@@ -286,10 +287,13 @@ public static class Vpsg3LocalRefiner
                 }
             }
             // An unvisited point can contribute at most 3. Prune only when even that
-            // exact upper bound cannot beat the incumbent; ties retain the first probe.
-            if ((i & 15) == 15 &&
-                (hitsK5 + 2d * hitsK3 + 3d * (count - i - 1)) / (3d * count) <= bestScore)
-                return -1d;
+            // exact upper bound cannot improve the incumbent. Cold refinement must
+            // retain equal primary scores so its tight-support comparison can run.
+            if ((i & 15) == 15)
+            {
+                var upperBound = (hitsK5 + 2d * hitsK3 + 3d * (count - i - 1)) / (3d * count);
+                if (retainTies ? upperBound < bestScore : upperBound <= bestScore) return -1d;
+            }
         }
 
         return (hitsK5 + 2.0d * hitsK3) / (3.0d * Math.Max(1, count));

@@ -40,23 +40,29 @@ public sealed class GameOverlayToast : IGameOverlayToast
     {
         try
         {
+            OverlayNotificationCenter.UpdateGameBounds(GetGameBounds());
+        }
+        catch
+        {
+            // 通知窗口不可用时，定位失败也不能阻止提示发布。
+        }
+    }
+
+    private MapScreenRect GetGameBounds()
+    {
+        try
+        {
             if (_capture.TryGetForegroundClientBounds(out var boundsObject, out _, out _)
                 && boundsObject is MapScreenRect bounds
                 && bounds.IsValid)
             {
-                OverlayNotificationCenter.UpdateGameBounds(bounds);
-                return;
+                return bounds;
             }
-            // 拿不到游戏客户区时必须清掉旧的定位值，不能沿用上一次的矩形。
-            // 旧逻辑失败就直接 return，通知窗口会继续用很久以前记下的坐标
-            // （例如窗口化时的位置），表现就是提示跑到屏幕右上方、不再居中。
-            // 清空后 OverlayNotificationWindow.GetTargetBounds 会退回当前前台窗口，
-            // 拿到的是这一局的真实位置。
-            OverlayNotificationCenter.UpdateGameBounds(default);
         }
         catch
         {
-            // 定位失败不影响提示本身。
+            // 捕获异常与返回失败共用回退，不能保留上一次的游戏矩形。
         }
+        return default;
     }
 }
