@@ -29,6 +29,8 @@ public sealed partial class TeachingTipManager
     private const double TipMinHeight = 260;
     private const double TipMaxHeight = 340;
     private const double ContentMaxHeight = 320;
+    private const double ContentInset = 12;
+    private const double ScrollbarGutter = 20;
 
     private readonly DispatcherQueue _dispatcher;
     private readonly PluginPreferencesStore _store;
@@ -149,12 +151,14 @@ public sealed partial class TeachingTipManager
             ShouldConstrainToRootBounds = true,
             PreferredPlacement = TeachingTipPlacementMode.Bottom,
             TailVisibility = TeachingTipTailVisibility.Collapsed,
-            MinWidth = TipMinWidth
+            MinWidth = TipMinWidth,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch
         };
         // 默认模板将实际弹出内容移入 Popup，并通过资源约束尺寸；
         // TeachingTip 自身的 MinHeight/MaxHeight 不会约束这个弹出内容。
         tip.Resources["TeachingTipMinHeight"] = TipMinHeight;
         tip.Resources["TeachingTipMaxHeight"] = TipMaxHeight;
+        tip.Resources["TeachingTipContentMargin"] = new Thickness(ContentInset);
         AttachBlankAreaEditingHandler(tip, content);
 
         _tip = tip;
@@ -383,7 +387,12 @@ public sealed partial class TeachingTipManager
         var scrollViewer = new ScrollViewer
         {
             Content = rows,
-            Width = TipMinWidth - 40,
+            MinWidth = TipMinWidth - 40,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            // The viewport reaches the popup edge; only its content keeps an inset.
+            // A fixed width left unused space beside the scrollbar and let it overlap rows.
+            Margin = new Thickness(0, 0, -ContentInset, 0),
+            Padding = new Thickness(0, 0, ScrollbarGutter, 0),
             MaxHeight = ContentMaxHeight,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,

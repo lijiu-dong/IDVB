@@ -40,6 +40,21 @@ public sealed class AutoClickerPlugin : PluginBase, IPluginSettingsProvider
 
     public IReadOnlyList<IPluginSetting> Settings { get; } =
     [
+        new PluginKeyBindingSetting
+        {
+            Key = TriggerBindingKey,
+            DisplayName = "触发按键",
+            Description = "按住此键达到长按阈值后启动连点；支持键盘组合键或鼠标键。",
+            DefaultValue = "mouse:1"
+        },
+        new PluginKeyBindingSetting
+        {
+            Key = OutputBindingKey,
+            DisplayName = "发送按键",
+            Description = "连点器循环发送的键盘或鼠标按键。",
+            DefaultValue = "keyboard:46:0",
+            AllowedKinds = PluginInputBindingKinds.All
+        },
         new PluginSliderSetting
         {
             Key = KeyDownDelayKey,
@@ -81,21 +96,6 @@ public sealed class AutoClickerPlugin : PluginBase, IPluginSettingsProvider
             Maximum = AutoClickerOptions.MaximumRandomDelayMilliseconds,
             StepFrequency = 1,
             DefaultValue = AutoClickerOptions.DefaultMaximumRandomDelayMilliseconds
-        },
-        new PluginKeyBindingSetting
-        {
-            Key = TriggerBindingKey,
-            DisplayName = "触发按键",
-            Description = "按住此键达到长按阈值后启动连点；支持键盘组合键或鼠标键。",
-            DefaultValue = "mouse:1"
-        },
-        new PluginKeyBindingSetting
-        {
-            Key = OutputBindingKey,
-            DisplayName = "发送按键",
-            Description = "连点器循环发送的键盘或鼠标按键。",
-            DefaultValue = "keyboard:46:0",
-            AllowedKinds = PluginInputBindingKinds.All
         }
     ];
 
