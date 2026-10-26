@@ -407,10 +407,51 @@ public sealed partial class TeachingTipManager
             if (double.IsNaN(scrollViewer.Height) && scrollViewer.ActualHeight > 0)
                 scrollViewer.Height = scrollViewer.ActualHeight;
         };
+        foreach (var expander in rows.Children.OfType<Expander>())
+            AttachFirstSettingReveal(scrollViewer, expander);
         endNumericEditing = () =>
             scrollViewer.Focus(FocusState.Programmatic);
         AttachNumericCommit(scrollViewer, numericEditors, textEditors, endNumericEditing);
         return scrollViewer;
+    }
+    private static void AttachFirstSettingReveal(ScrollViewer scrollViewer, Expander expander)
+    {
+        // WinUI slides Expander content for 333ms. Measure its final position after
+        // that animation, and cancel pending reveals when closed or detached.
+        var timer = scrollViewer.DispatcherQueue.CreateTimer();
+        timer.Interval = TimeSpan.FromMilliseconds(350);
+        timer.IsRepeating = false;
+        timer.Tick += (_, _) => RevealFirstSetting(scrollViewer, expander);
+        expander.Expanding += (_, _) => { timer.Stop(); timer.Start(); };
+        expander.Collapsed += (_, _) => timer.Stop();
+        expander.Unloaded += (_, _) => timer.Stop();
+    }
+
+    private static void RevealFirstSetting(ScrollViewer scrollViewer, Expander expander)
+    {
+        // Reveal only the first visible row after
+        // layout, rather than bringing the whole group (and its last row) into view.
+        _ = scrollViewer.DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () =>
+        {
+            if (!scrollViewer.IsLoaded || !expander.IsExpanded
+                || expander.Content is not Panel group)
+                return;
+            scrollViewer.UpdateLayout();
+            var first = group.Children.OfType<FrameworkElement>()
+                .FirstOrDefault(row => row.Visibility == Visibility.Visible && row.ActualHeight > 0);
+            if (first is null || scrollViewer.ViewportHeight <= 0)
+                return;
+
+            const double inset = 8;
+            var top = first.TransformToVisual(scrollViewer).TransformPoint(new()).Y;
+            var bottom = top + Math.Min(first.ActualHeight, Math.Max(0, scrollViewer.ViewportHeight - 2 * inset));
+            var delta = top < inset ? top - inset
+                : Math.Min(top - inset, Math.Max(0, bottom - scrollViewer.ViewportHeight + inset));
+            if (Math.Abs(delta) > 0.5)
+                scrollViewer.ChangeView(null,
+                    Math.Clamp(scrollViewer.VerticalOffset + delta, 0, scrollViewer.ScrollableHeight),
+                    null, disableAnimation: false);
+        });
     }
 
 }
