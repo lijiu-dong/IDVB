@@ -17,55 +17,47 @@ public sealed partial class MatchHotkeysPlugin
     {
         EnsureMapClassesForFirstRender();
         var options = _options;
-        var classOptionsA = ClassOptionsFor(options.MapClassA);
-        var classOptionsB = ClassOptionsFor(options.MapClassB);
-        return
-        [
-            // 两个快捷键收进「按键」折叠区（默认收起），名字里不带任何括号说明。
-            new PluginKeyBindingSetting
+        var settings = new List<IPluginSetting>((MatchHotkeysOptions.SlotCount * 2) + 1);
+
+        // 各快捷键收进「按键」折叠区（默认收起），名字里不带任何括号说明。
+        // 宿主按「连续且 Group 相同」把设置项折进同一个折叠区，所以这两段必须各自连续。
+        for (var slot = 0; slot < MatchHotkeysOptions.SlotCount; slot++)
+        {
+            settings.Add(new PluginKeyBindingSetting
             {
-                Key = MatchHotkeysOptions.HotkeyAKey,
-                DisplayName = "快捷键一",
+                Key = MatchHotkeysOptions.HotkeyKeyAt(slot),
+                DisplayName = MatchHotkeysOptions.SlotNameAt(slot),
                 Group = MatchHotkeysOptions.KeyGroupTitle,
                 DefaultValue = MatchHotkeysOptions.NoBindingStorageValue,
                 AllowedKinds = PluginInputBindingKinds.All
-            },
-            new PluginKeyBindingSetting
+            });
+        }
+
+        // 各目标收进「目标」折叠区（默认收起）。用不到的槽位保持「（请选择地图模式）」即可。
+        for (var slot = 0; slot < MatchHotkeysOptions.SlotCount; slot++)
+        {
+            var mapClass = options.MapClassAt(slot);
+            var classOptions = ClassOptionsFor(mapClass);
+            settings.Add(new PluginChoiceSetting
             {
-                Key = MatchHotkeysOptions.HotkeyBKey,
-                DisplayName = "快捷键二",
-                Group = MatchHotkeysOptions.KeyGroupTitle,
-                DefaultValue = MatchHotkeysOptions.NoBindingStorageValue,
-                AllowedKinds = PluginInputBindingKinds.All
-            },
-            // 两个目标收进「目标」折叠区（默认收起）。
-            new PluginChoiceSetting
-            {
-                Key = MatchHotkeysOptions.MapClassAKey,
-                DisplayName = "地图 A",
+                Key = MatchHotkeysOptions.MapClassKeyAt(slot),
+                DisplayName = MatchHotkeysOptions.TargetNameAt(slot),
                 Description = "按一下进入，再按一下结束。",
                 Group = MatchHotkeysOptions.TargetGroupTitle,
-                Options = classOptionsA,
-                DefaultIndex = IndexOfOption(classOptionsA, options.MapClassA)
-            },
-            new PluginChoiceSetting
-            {
-                Key = MatchHotkeysOptions.MapClassBKey,
-                DisplayName = "地图 B",
-                Description = "按一下进入，再按一下结束。",
-                Group = MatchHotkeysOptions.TargetGroupTitle,
-                Options = classOptionsB,
-                DefaultIndex = IndexOfOption(classOptionsB, options.MapClassB)
-            },
-            // 未分组的项会被宿主平铺在设置页最上面（折叠区之上）。
-            new PluginToggleSetting
-            {
-                Key = MatchHotkeysOptions.ForegroundOnlyKey,
-                DisplayName = "仅在游戏窗口前台时生效",
-                Description = "非游戏前台时按键无效。",
-                DefaultValue = true
-            }
-        ];
+                Options = classOptions,
+                DefaultIndex = IndexOfOption(classOptions, mapClass)
+            });
+        }
+
+        // 未分组的项会被宿主平铺在设置页最上面（折叠区之上）。
+        settings.Add(new PluginToggleSetting
+        {
+            Key = MatchHotkeysOptions.ForegroundOnlyKey,
+            DisplayName = "仅在游戏窗口前台时生效",
+            Description = "非游戏前台时按键无效。",
+            DefaultValue = true
+        });
+        return settings;
     }
 
     /// <summary>
@@ -113,15 +105,20 @@ public sealed partial class MatchHotkeysPlugin
 
     // ════════════════ 设置读写 ════════════════
 
-    public object? GetSettingValue(string key) => key switch
+    public object? GetSettingValue(string key)
     {
-        MatchHotkeysOptions.HotkeyAKey => _options.HotkeyA.StorageValue,
-        MatchHotkeysOptions.HotkeyBKey => _options.HotkeyB.StorageValue,
-        MatchHotkeysOptions.MapClassAKey => _options.MapClassA,
-        MatchHotkeysOptions.MapClassBKey => _options.MapClassB,
-        MatchHotkeysOptions.ForegroundOnlyKey => _options.ForegroundOnly,
-        _ => null
-    };
+        var hotkeySlot = MatchHotkeysOptions.SlotOfHotkeyKey(key);
+        if (hotkeySlot >= 0)
+            return _options.HotkeyAt(hotkeySlot).StorageValue;
+
+        var classSlot = MatchHotkeysOptions.SlotOfMapClassKey(key);
+        if (classSlot >= 0)
+            return _options.MapClassAt(classSlot);
+
+        return string.Equals(key, MatchHotkeysOptions.ForegroundOnlyKey, StringComparison.Ordinal)
+            ? _options.ForegroundOnly
+            : null;
+    }
 
     public void SetSettingValue(string key, object? value)
     {
@@ -137,25 +134,22 @@ public sealed partial class MatchHotkeysPlugin
 
     private MatchHotkeysOptions BuildOptions(string key, object? value)
     {
-        switch (key)
+        var hotkeySlot = MatchHotkeysOptions.SlotOfHotkeyKey(key);
+        if (hotkeySlot >= 0)
         {
-            case MatchHotkeysOptions.HotkeyAKey when value is string hotkeyA:
-                return MatchHotkeysOptions.TryParseHotkey(hotkeyA, out var parsedA)
-                    ? _options with { HotkeyA = parsedA }
-                    : _options;
-            case MatchHotkeysOptions.HotkeyBKey when value is string hotkeyB:
-                return MatchHotkeysOptions.TryParseHotkey(hotkeyB, out var parsedB)
-                    ? _options with { HotkeyB = parsedB }
-                    : _options;
-            case MatchHotkeysOptions.MapClassAKey when value is string mapClassA:
-                return SelectClass(isSlotA: true, mapClassA);
-            case MatchHotkeysOptions.MapClassBKey when value is string mapClassB:
-                return SelectClass(isSlotA: false, mapClassB);
-            case MatchHotkeysOptions.ForegroundOnlyKey when value is bool foregroundOnly:
-                return _options with { ForegroundOnly = foregroundOnly };
-            default:
-                return _options;
+            return value is string hotkey && MatchHotkeysOptions.TryParseHotkey(hotkey, out var parsed)
+                ? _options.WithHotkey(hotkeySlot, parsed)
+                : _options;
         }
+
+        var classSlot = MatchHotkeysOptions.SlotOfMapClassKey(key);
+        if (classSlot >= 0)
+            return value is string mapClass ? SelectClass(classSlot, mapClass) : _options;
+
+        return string.Equals(key, MatchHotkeysOptions.ForegroundOnlyKey, StringComparison.Ordinal)
+            && value is bool foregroundOnly
+                ? _options with { ForegroundOnly = foregroundOnly }
+                : _options;
     }
 
     /// <summary>
@@ -163,21 +157,14 @@ public sealed partial class MatchHotkeysPlugin
     /// 但地图库此刻读不到内容时不清空——那种情况下这个值多半是宿主回填的默认项，
     /// 清掉会把用户之前保存的选择抹没。
     /// </summary>
-    private MatchHotkeysOptions SelectClass(bool isSlotA, string value)
+    private MatchHotkeysOptions SelectClass(int slot, string value)
     {
         if (!MatchHotkeysOptions.IsUnsetClass(value))
-        {
-            var trimmed = value.Trim();
-            return isSlotA
-                ? _options with { MapClassA = trimmed }
-                : _options with { MapClassB = trimmed };
-        }
+            return _options.WithMapClass(slot, value.Trim());
 
         if (!HasMapClasses)
             return _options;
-        return isSlotA
-            ? _options with { MapClassA = string.Empty }
-            : _options with { MapClassB = string.Empty };
+        return _options.WithMapClass(slot, string.Empty);
     }
 
     // ════════════════ 地图模式列表 ════════════════
