@@ -24,7 +24,7 @@ namespace IDVBuff.Plugins.MatchHotkeys;
     MatchHotkeysOptions.PluginId,
     DisplayName = "对局快捷键",
     Description = "五个可自定义的快捷键，各自一键进入/结束指定地图模式的对局；地图模式在插件设置里选。",
-    Version = "1.3.0",
+    Version = "1.3.1",
     AlwaysActive = true)]
 public sealed partial class MatchHotkeysPlugin
     : PluginBase, IPluginSettingsProvider, IHandle<MatchStateChangedMessage>
@@ -32,8 +32,21 @@ public sealed partial class MatchHotkeysPlugin
     /// <summary>地图库两次刷新之间的最短间隔，避免反复读目录。</summary>
     private const long MapClassRefreshCooldownMilliseconds = 3000;
 
-    /// <summary>首次渲染设置描述符时，同步等地图库的上限（见 EnsureMapClassesForFirstRender）。</summary>
+    /// <summary>首次渲染设置描述符时，同步等地图库的上限（见 RefreshMapClassesForSettings）。</summary>
     private const int MapClassSyncWaitMilliseconds = 3000;
+
+    /// <summary>
+    /// 之后每次渲染设置描述符时，同步等地图库的上限。地图库有修订版本缓存，
+    /// 命中时几乎立即返回；这里只是给「恰好赶上目录正在重写」留个退路。
+    /// </summary>
+    private const int MapClassSettingsSyncWaitMilliseconds = 800;
+
+    /// <summary>
+    /// 同一批渲染内复用地图库结果的时间窗。宿主渲染一次设置页会连续读若干次
+    /// <see cref="Settings"/>，有了这个窗口就不会每次都去读一遍目录；
+    /// 隔开更久再打开设置页，则一定会重新读。
+    /// </summary>
+    private const long MapClassSettingsRefreshWindowMilliseconds = 500;
 
     private const int OperationPollMilliseconds = 80;
 
@@ -189,6 +202,14 @@ public sealed partial class MatchHotkeysPlugin
         if (_matches is not { } matches)
         {
             LogWarning($"{slotName}：宿主没有提供对局控制能力，已忽略这次按键。");
+            return;
+        }
+        // 目标被删掉 / 被地图包更新替换后就成了「幽灵目标」：下拉里已经没有它，
+        // 直接交给宿主只会拿到「没有此模式：X」。这里先拦一次，给一条能照做的提示。
+        if (!IsTargetInCatalog(target))
+        {
+            LogWarning($"{slotName}的目标「{target}」已不在地图库里，已忽略这次按键。");
+            Toast(warning: true, $"{slotName}的目标已失效，请到插件设置里重新选择地图模式");
             return;
         }
         if (options.ForegroundOnly && !IsGameForeground())
